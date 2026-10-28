@@ -346,6 +346,8 @@ runs:
 
     - name: Upload Codex events
       if: always()
+      # The events only measure the run; losing them must not fail a review that is already published.
+      continue-on-error: true
       uses: actions/upload-artifact@v4
       with:
         name: codex-events
@@ -369,3 +371,9 @@ runs:
       run: |
         kill "$SSE_PID" 2>/dev/null || true
         tail -3 "$RUNNER_TEMP/sse.err" 2>/dev/null || true
+
+    - name: Drop the plugin cache
+      if: always()
+      shell: bash
+      # Every home syncs its own ~90MB copy of the curated plugins, which self-hosted runners would keep in /tmp; the session is already cached.
+      run: rm -rf "$CODEX_HOME/.tmp"
