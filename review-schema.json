@@ -22,6 +22,21 @@
         "additionalProperties": false
       }
     },
+    "merge": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "properties": {
+            "method": { "type": "string", "enum": ["squash", "merge", "rebase"] },
+            "subject": { "type": "string" },
+            "body": { "type": "string" }
+          },
+          "required": ["method", "subject", "body"],
+          "additionalProperties": false
+        }
+      ]
+    },
     "annotations": {
       "type": "array",
       "items": {
@@ -37,6 +52,6 @@
       }
     }
   },
-  "required": ["conclusion", "summary", "reactions", "commits", "annotations"],
+  "required": ["conclusion", "summary", "reactions", "commits", "merge", "annotations"],
   "additionalProperties": false
 }

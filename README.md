@@ -6,6 +6,7 @@ Reviews same-repository pull requests with [Codex](https://github.com/openai/cod
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
 - everything else as regular PR comments, including answers to comments posted during the review
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
+- routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
 
 ## Setup
