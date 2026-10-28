@@ -7,7 +7,6 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 3,
-      "uniqueItems": true,
       "items": { "type": "string", "enum": ["+1", "-1", "laugh", "hooray", "confused", "heart", "rocket"] }
     },
     "commits": {
