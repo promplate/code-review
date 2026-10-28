@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 input=$(cat)
-if jq -e '.tool_input.command | type == "string"' <<< "$input" > /dev/null; then
-  jq -c '{status: "in_progress", output: {title: ("Running: " + .tool_input.command | .[0:120]), summary: ("Running: " + .tool_input.command | .[0:300])}}' <<< "$input" \
+if jq -e '.hook_event_name == "PreToolUse"' <<< "$input" > /dev/null; then
+  # Four backticks keep fences inside commands and patches from closing the block early.
+  jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
+    | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
     | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
+  exit 0
 fi
 
 # PreToolUse additionalContext lands between parallel tool calls and their outputs, which strict providers reject, so deliver activity by blocking Stop.

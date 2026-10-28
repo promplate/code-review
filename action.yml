@@ -177,30 +177,24 @@ runs:
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "You opened PR #$PR_NUMBER to keep that fix out of the PR you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
-             Run \`git diff origin/$BASE...HEAD\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS" \
-            > "$RUNNER_TEMP/codex.jsonl" 2>&1 &
+             Run \`git diff origin/$BASE...HEAD\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
         elif [ -f "$CODEX_HOME/last-thread-id" ]; then
           codex exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "The PR has new commits since your last review. The workspace is a fresh checkout at the new HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff origin/$BASE...HEAD\` again, \
-             re-check what changed, and output the full updated JSON review. $INSTRUCTIONS" \
-            > "$RUNNER_TEMP/codex.jsonl" 2>&1 &
+             re-check what changed, and output the full updated JSON review. $INSTRUCTIONS"
         else
           codex exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
-            "Review this PR: run \`git diff origin/$BASE...HEAD\` and inspect the changed files. $INSTRUCTIONS" \
-            > "$RUNNER_TEMP/codex.jsonl" 2>&1 &
-        fi
-        CODEX_PID=$!
-        wait "$CODEX_PID" || { tail -50 "$RUNNER_TEMP/codex.jsonl"; exit 1; }
+            "Review this PR: run \`git diff origin/$BASE...HEAD\` and inspect the changed files. $INSTRUCTIONS"
+        fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
-        cat "$RUNNER_TEMP/review.json"
 
     - name: Save codex session
       uses: actions/cache/save@v4
