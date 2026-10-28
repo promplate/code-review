@@ -28,6 +28,7 @@ runs:
         minted=$(curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token") || { echo "::error::$minted"; exit 1; }
         token=$(jq -r .token <<< "$minted")
         events_url=$(jq -r .events_url <<< "$minted")
+        echo "BOT_LOGIN=$(jq -r .bot <<< "$minted")" >> "$GITHUB_ENV"
         echo "::add-mask::$token"
         echo "::add-mask::$events_url"
         echo "token=$token" >> "$GITHUB_OUTPUT"
@@ -279,12 +280,12 @@ runs:
       run: |
         # Reviews carry only the verdict; Codex posts everything else as regular PR comments. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
         LAST=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews?per_page=100" \
-          --jq '[.[] | select(.user.login == "muspi-merol-review[bot]" and .state != "COMMENTED")] | last | .state // ""' </dev/null)
+          --jq '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last | .state // ""' </dev/null)
         jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --arg author "${{ github.event.pull_request.user.login }}" --arg last "$LAST" '
           if $review.conclusion == "failure" then {
-            event: (if $author == "muspi-merol-review[bot]" then "COMMENT" else "REQUEST_CHANGES" end), body: $review.summary,
+            event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end), body: $review.summary,
             comments: [$review.annotations[] | select(.level == "failure") | {path, line, side: "RIGHT", body: .message}]}
-          elif $author == "muspi-merol-review[bot]" or $last == "APPROVED" then empty
+          elif $author == env.BOT_LOGIN or $last == "APPROVED" then empty
           else {event: "APPROVE"} end' > "$RUNNER_TEMP/pr-review.json"
         [ ! -s "$RUNNER_TEMP/pr-review.json" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews --input "$RUNNER_TEMP/pr-review.json" </dev/null
 
