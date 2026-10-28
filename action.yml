@@ -318,6 +318,14 @@ runs:
       run: |
         jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Upload Codex events
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: codex-events
+        path: ${{ runner.temp }}/codex.jsonl
+        if-no-files-found: ignore
+
     - name: Close check run on failure
       if: failure() && steps.check.outputs.id
       shell: bash
