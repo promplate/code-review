@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "properties": {
+    "conclusion": { "type": "string", "enum": ["success", "failure", "neutral"] },
+    "summary": { "type": "string" },
+    "reactions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["+1", "-1", "laugh", "hooray", "confused", "heart", "rocket"] }
+    },
+    "commits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "sha": { "type": "string" },
+          "conclusion": { "type": "string", "enum": ["success", "failure"] }
+        },
+        "required": ["sha", "conclusion"],
+        "additionalProperties": false
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": "integer" },
+          "level": { "type": "string", "enum": ["notice", "warning", "failure"] },
+          "message": { "type": "string" }
+        },
+        "required": ["path", "line", "level", "message"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["conclusion", "summary", "reactions", "commits", "annotations"],
+  "additionalProperties": false
+}
