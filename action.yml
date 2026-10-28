@@ -8,6 +8,8 @@ inputs:
   codex-config:
     description: Contents of a Codex config.toml whose model provider speaks the Responses API.
     required: true
+  codex-auth:
+    description: Contents of a Codex auth.json, to sign in with ChatGPT instead of an API key.
   codex-version:
     description: "@openai/codex version to install when the runner has no codex."
     default: 0.165.0
@@ -113,6 +115,7 @@ runs:
       shell: bash
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
+        CODEX_AUTH: ${{ inputs.codex-auth }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
         CODEX_HOME: /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}
@@ -122,6 +125,7 @@ runs:
         command -v codex > /dev/null || npm install -g --no-fund --no-audit "@openai/codex@$CODEX_VERSION"
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
+        [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
         cat >> "$CODEX_HOME/config.toml" <<EOF
         [[hooks.PreToolUse]]
         matcher = ".*"
