@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Commit working-tree changes via createCommitOnBranch so GitHub signs them as the App (Verified); git push would leave them unsigned.
 set -eo pipefail
-git add -A
+# Stage only the paths the fix touched; tests leave untracked artifacts such as __pycache__ behind.
+git add -A -- "${@:2}"
 additions=$(git diff --cached --no-renames --diff-filter=AM --name-only | while read -r path; do
   jq -n --arg path "$path" --arg contents "$(base64 < "$path" | tr -d '\n')" '{path: $path, contents: $contents}'
 done | jq -s .)
