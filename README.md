@@ -1,6 +1,6 @@
 # Codex Code Review
 
-Reviews same-repository pull requests with [Codex](https://github.com/openai/codex "openai/codex") as the [muspi-merol-review](https://github.com/apps/muspi-merol-review "muspi-merol-review GitHub App") GitHub App:
+Reviews same-repository pull requests, and optionally branch pushes, with [Codex](https://github.com/openai/codex "openai/codex") as the [muspi-merol-review](https://github.com/apps/muspi-merol-review "muspi-merol-review GitHub App") GitHub App:
 
 - a `codex-review` check run per commit, with annotations
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
@@ -8,6 +8,7 @@ Reviews same-repository pull requests with [Codex](https://github.com/openai/cod
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
 - routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
+- awareness of the repository's CI, waiting for workflows that push fixes such as formatting
 
 ## Setup
 
@@ -59,6 +60,31 @@ Reviews same-repository pull requests with [Codex](https://github.com/openai/cod
              codex-config: ${{ secrets.CODEX_CONFIG }}
    ```
 
+## Pushes
+
+To also review pushes outside PRs, such as direct commits to `main`, add a `push` trigger, key the concurrency group by ref for pushes, and let pushes pass the job's `if:`:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
+
+jobs:
+  review:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository && (...)
+```
+
+A push gets a `codex-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently.
+
+## Options
+
 `id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: write` lets it drop superseded session snapshots from the Actions cache.
+
+To review as your own GitHub App, deploy the broker with that App's credentials, point the `broker` input at it, and use the App's bot login in the job's `if:`.
 
 Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the job's `env` to trace reviews to Langfuse with [langfuse/codex-observability-plugin](https://github.com/langfuse/codex-observability-plugin "Langfuse observability plugin for Codex").

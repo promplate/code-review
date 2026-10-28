@@ -17,18 +17,20 @@ seen='[]'
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
   [split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty
-    | select(.event as $event | ["pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"] | index($event))
     | . as $frame | ($frame.body | fromjson) as $body
-    | select([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber))
+    | select(if $pr == "" then $frame.event == "push" and $body.ref == env.GITHUB_REF or $frame.event == "commit_comment"
+        else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
+          and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber)) end)
     | select(($seen | index($frame.delivery)) | not)
     | select($body.sender.login != env.BOT_LOGIN)
     | select(($body.comment // $body.review) == null or $frame.writer)
     | {delivery: $frame.delivery, context: ({event: $frame.event, action: $body.action, actor: $body.sender.login, url: ($body.comment.html_url // $body.review.html_url),
-        head: $body.after, merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
+        head: $body.after, commit: $body.comment.commit_id, merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
   ] as $new | {seen: ($seen + [$new[].delivery]), context: ($new | map(.context | tojson) | join("\n"))}
 ' "$RUNNER_TEMP/sse.jsonl")
 jq -c .seen <<< "$result" > "$SEEN_FILE"
 context=$(jq -r .context <<< "$result")
 [ -n "$context" ] || exit 0
-jq -n --arg pr "$PR_NUMBER" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on PR #" + $pr + ":\n" + $context + "\nTake it into account, reply with regular PR comments where useful, and output the full updated JSON review.")}'
+subject=${PR_NUMBER:+PR #$PR_NUMBER}
+jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, reply with regular comments where useful, and output the full updated JSON review.")}'
