@@ -187,6 +187,8 @@ runs:
            If the PR is merged or closed before your review ends, nothing waits for your verdict anymore: point out must-fix issues in a PR comment, editing your latest comment if nothing follows it, and fix certain ones in a separate PR as above rather than on this PR's branch. \
            In the PR description, fix only slips you are 100% sure are accidental, such as obvious typos, links or SHAs broken while pasting, stray spaces and unclosed backticks, via gh api -X PATCH repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER -F body=@-; never change wording or meaning, and reply about it only when useful. Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         ACTIVITY=${ACTIVITY:+New GitHub activity on PR #$PR_NUMBER while no review was running: $ACTIVITY}
+        # A ready PR that no longer merges cleanly still needs someone to merge its base in.
+        git merge-tree --write-tree "origin/$BASE" HEAD > /dev/null || CONFLICT="The PR conflicts with $BASE: if it is otherwise ready to merge, run git merge origin/$BASE, resolve the conflicts where the intent of both sides is clear, and commit the merge on its own with commit-fix.sh, passing the resolved paths and a subject like earlier merges in git log; otherwise point out the conflict. "
         if [ -n "$FORK_PR" ]; then
           cp -R "/tmp/codex-review-homes/${{ github.repository }}/pr-$FORK_PR/sessions" "/tmp/codex-review-homes/${{ github.repository }}/pr-$FORK_PR/last-thread-id" "$CODEX_HOME/"
           codex exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
@@ -201,12 +203,12 @@ runs:
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "${ACTIVITY:-The PR has new commits since your last review.} The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff origin/$BASE...HEAD\` again, \
-             re-check what changed, and output the full updated JSON review. $INSTRUCTIONS"
+             re-check what changed, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
         else
           codex exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
-            "Review this PR: run \`git diff origin/$BASE...HEAD\` and inspect the changed files. ${ACTIVITY:+$ACTIVITY }$INSTRUCTIONS"
+            "Review this PR: run \`git diff origin/$BASE...HEAD\` and inspect the changed files. ${ACTIVITY:+$ACTIVITY }$CONFLICT$INSTRUCTIONS"
         fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
