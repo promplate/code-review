@@ -75,9 +75,11 @@ runs:
     - name: Subscribe PR updates via SSE
       shell: bash
       run: |
-        # Resume from the last delivery after each reconnect so nothing arrives in between unseen.
-        ( for i in $(seq 1 360); do
-            last=$(sed -n 's/^id: //p' "$RUNNER_TEMP/sse.jsonl" 2>/dev/null | tail -1)
+        touch "$RUNNER_TEMP/sse.jsonl"
+        # Resume from the last delivery after each reconnect so nothing arrives in between unseen; every curl ends in a timeout, which must not stop the loop.
+        ( set +e
+          for i in $(seq 1 360); do
+            last=$(sed -n 's/^id: //p' "$RUNNER_TEMP/sse.jsonl" | tail -1)
             curl -sN --max-time 60 ${last:+-H "Last-Event-ID: $last"} "$EVENTS_URL" >> "$RUNNER_TEMP/sse.jsonl" 2>>"$RUNNER_TEMP/sse.err"
             sleep 1
           done ) &
@@ -153,7 +155,7 @@ runs:
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
-        jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" --arg run_id "$GITHUB_RUN_ID" '{sha: $sha, id: $id, run_id: $run_id}' >> "$CODEX_HOME/check-runs.jsonl"
+        jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
         COMMITS=$(jq -rs 'map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
         INSTRUCTIONS="Report real bugs, security issues and regressions only; nit-level findings must use level=notice. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
@@ -238,7 +240,7 @@ runs:
       run: |
         NEWER=$(jq -Rrs --arg pr "$PR_NUMBER" '[split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty |
           select(.event == "pull_request") | .body | fromjson | select(.number == ($pr | tonumber) and .action == "synchronize") | .after] | last // empty' \
-          < "$RUNNER_TEMP/sse.jsonl" 2>/dev/null)
+          < "$RUNNER_TEMP/sse.jsonl")
         LOCAL_HEAD=$(git rev-parse HEAD)
         if [ "$LOCAL_HEAD" != "$HEAD_SHA" ]; then NEWER="$LOCAL_HEAD"; fi
         if [ -n "$NEWER" ] && [ "$NEWER" != "$HEAD_SHA" ]; then
@@ -249,9 +251,9 @@ runs:
             | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
           exit 0
         fi
-        jq -n --arg sha "$HEAD_SHA" --arg details_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID?pr=$PR_NUMBER" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+        jq -n --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
         ($review.commits[] | select(.sha == $sha)) as $commit | {
-        name: "codex-review", head_sha: $sha, status: "completed", details_url: $details_url,
+        name: "codex-review", head_sha: $sha, status: "completed",
         conclusion: $commit.conclusion,
         output: {
           title: (if $commit.conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end),
@@ -271,8 +273,7 @@ runs:
           sha=$(jq -r .sha <<< "$verdict")
           conclusion=$(jq -r .conclusion <<< "$verdict")
           id=$(jq -rs --arg sha "$sha" 'map(select(.sha == $sha)) | last | .id' "$CODEX_HOME/check-runs.jsonl")
-          run_id=$(jq -rs --arg sha "$sha" 'map(select(.sha == $sha)) | last | .run_id' "$CODEX_HOME/check-runs.jsonl")
-          jq -n --arg conclusion "$conclusion" --arg details_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id?pr=$PR_NUMBER" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{status: "completed", conclusion: $conclusion, details_url: $details_url, output: {
+          jq -n --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
             | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
         done
@@ -320,8 +321,7 @@ runs:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        jq -n --arg details_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID?pr=$PR_NUMBER" \
-          '{status: "completed", conclusion: "neutral", details_url: $details_url, output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}' \
+        jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}' \
           | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
         [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
 
