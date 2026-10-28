@@ -225,6 +225,7 @@ runs:
         while read -r url; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null; done < "$RUNNER_TEMP/forked-prs"
 
     - name: Publish check run
+      id: publish
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -320,7 +321,8 @@ runs:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
-        jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}' \
+        # A failure after the verdict is published, such as in the PR review, keeps that verdict.
+        [ "${{ steps.publish.outcome }}" = success ] || jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}' \
           | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
         [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
 
