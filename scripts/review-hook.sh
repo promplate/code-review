@@ -22,7 +22,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
     | select([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber))
     | select(($seen | index($frame.delivery)) | not)
     | select($body.sender.login != env.BOT_LOGIN)
-    | select(($body.comment // $body.review).author_association | . == null or IN("OWNER", "MEMBER", "COLLABORATOR"))
+    | select(($body.comment // $body.review) == null or $frame.writer)
     | {delivery: $frame.delivery, context: ({event: $frame.event, action: $body.action, actor: $body.sender.login, url: ($body.comment.html_url // $body.review.html_url),
         head: $body.after, merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
