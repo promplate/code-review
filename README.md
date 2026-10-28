@@ -4,7 +4,7 @@ Reviews same-repository pull requests with [Codex](https://github.com/openai/cod
 
 - a `codex-review` check run per commit, with annotations
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
-- everything else as regular PR comments, including answers to comments posted during the review
+- everything else as regular PR comments, including answers to PR comments
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
 - routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
@@ -36,18 +36,21 @@ Reviews same-repository pull requests with [Codex](https://github.com/openai/cod
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, ready_for_review]
+     # Comments posted while no review is running.
+     repository_dispatch:
+       types: [codex-review]
 
    permissions:
      actions: write
      id-token: write
 
    concurrency:
-     group: codex-review-${{ github.event.pull_request.number }}
+     group: codex-review-${{ github.event.pull_request.number || github.event.client_payload.pr }}
 
    jobs:
      review:
        # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
-       if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == 'muspi-merol-review[bot]' && !github.event.pull_request.draft || github.event.pull_request.user.login != 'muspi-merol-review[bot]' && github.event.action != 'ready_for_review')
+       if: github.event_name == 'repository_dispatch' || github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == 'muspi-merol-review[bot]' && !github.event.pull_request.draft || github.event.pull_request.user.login != 'muspi-merol-review[bot]' && github.event.action != 'ready_for_review')
        cache-mode: write
        runs-on: ubuntu-latest
        steps:
