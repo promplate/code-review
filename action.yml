@@ -93,7 +93,6 @@ runs:
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/sessions
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/last-thread-id
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/*.sqlite*
         key: codex-review-${{ github.event.pull_request.number }}-${{ github.run_id }}
         restore-keys: codex-review-${{ github.event.pull_request.number }}-
 
@@ -107,7 +106,6 @@ runs:
           /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/sessions
           /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/last-thread-id
           /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/check-runs.jsonl
-          /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/*.sqlite*
         key: codex-review-${{ steps.check.outputs.fork-pr }}-
 
     - name: Configure codex
@@ -203,7 +201,6 @@ runs:
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/sessions
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/last-thread-id
           /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/*.sqlite*
         key: codex-review-${{ github.event.pull_request.number }}-${{ github.run_id }}
 
     - name: Drop older session snapshots
