@@ -24,7 +24,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
     | select($body.sender.login != "muspi-merol-review[bot]")
     | select(($body.comment // $body.review).author_association | . == null or IN("OWNER", "MEMBER", "COLLABORATOR"))
     | {delivery: $frame.delivery, context: ({event: $frame.event, action: $body.action, actor: $body.sender.login, url: ($body.comment.html_url // $body.review.html_url),
-        head: $body.after, comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
+        head: $body.after, merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
   ] as $new | {seen: ($seen + [$new[].delivery]), context: ($new | map(.context | tojson) | join("\n"))}
 ' "$RUNNER_TEMP/sse.jsonl")
