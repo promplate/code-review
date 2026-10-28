@@ -93,9 +93,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/sessions
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/last-thread-id
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/sessions
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/last-thread-id
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
         key: codex-review-${{ github.event.pull_request.number }}-${{ github.run_id }}
         restore-keys: codex-review-${{ github.event.pull_request.number }}-
 
@@ -106,9 +106,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
-          /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/sessions
-          /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/last-thread-id
-          /tmp/codex-review-homes/pr-${{ steps.check.outputs.fork-pr }}/check-runs.jsonl
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ steps.check.outputs.fork-pr }}/sessions
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ steps.check.outputs.fork-pr }}/last-thread-id
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ steps.check.outputs.fork-pr }}/check-runs.jsonl
         key: codex-review-${{ steps.check.outputs.fork-pr }}-
 
     - name: Configure codex
@@ -118,7 +118,7 @@ runs:
         CODEX_AUTH: ${{ inputs.codex-auth }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        CODEX_HOME: /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}
+        CODEX_HOME: /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Setting up Codex…" -f "output[summary]=Installing Codex and the review hooks." </dev/null > /dev/null
@@ -175,7 +175,7 @@ runs:
            If the PR is merged or closed before your review ends, nothing waits for your verdict anymore: point out must-fix issues in a PR comment, editing your latest comment if nothing follows it, and fix certain ones in a separate PR as above rather than on this PR's branch. \
            In the PR description, fix only slips you are 100% sure are accidental, such as obvious typos, links or SHAs broken while pasting, stray spaces and unclosed backticks, via gh api -X PATCH repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER -F body=@-; never change wording or meaning, and reply about it only when useful. Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         if [ -n "$FORK_PR" ]; then
-          cp -R "/tmp/codex-review-homes/pr-$FORK_PR/sessions" "/tmp/codex-review-homes/pr-$FORK_PR/last-thread-id" "$CODEX_HOME/"
+          cp -R "/tmp/codex-review-homes/${{ github.repository }}/pr-$FORK_PR/sessions" "/tmp/codex-review-homes/${{ github.repository }}/pr-$FORK_PR/last-thread-id" "$CODEX_HOME/"
           codex exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
@@ -204,9 +204,9 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: |
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/sessions
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/last-thread-id
-          /tmp/codex-review-homes/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/sessions
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/last-thread-id
+          /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}/check-runs.jsonl
         key: codex-review-${{ github.event.pull_request.number }}-${{ github.run_id }}
 
     - name: Drop older session snapshots
