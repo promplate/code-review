@@ -26,8 +26,11 @@ runs:
         BROKER: ${{ inputs.broker }}
       run: |
         : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Grant the job id-token: write so it can authenticate as the App.}"
-        oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -r .value)
-        minted=$(curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token") || { echo "::error::$minted"; exit 1; }
+        mint() {
+          oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -r .value)
+          curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token"
+        }
+        minted=$(mint) || { echo "::error::$minted"; exit 1; }
         token=$(jq -r .token <<< "$minted")
         events_url=$(jq -r .events_url <<< "$minted")
         echo "BOT_LOGIN=$(jq -r .bot <<< "$minted")" >> "$GITHUB_ENV"
@@ -35,18 +38,25 @@ runs:
         echo "::add-mask::$events_url"
         echo "token=$token" >> "$GITHUB_OUTPUT"
         echo "EVENTS_URL=$events_url" >> "$GITHUB_ENV"
+        # Installation tokens expire after an hour, which long reviews and merges waiting for CI outlast, so gh and git read the token from a gh config that a background loop keeps fresh.
+        save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
+        mkdir -p "$RUNNER_TEMP/gh"
+        save "$token"
+        ( while sleep 900; do minted=$(mint) && save "$(jq -r .token <<< "$minted")"; done ) &
+        echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
     - uses: actions/checkout@v4
       with:
         token: ${{ steps.app-token.outputs.token }}
         ref: ${{ github.event.pull_request.head.ref }}
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Open check run
       id: check
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ github.event.pull_request.number }}
       run: |
         # Reuse an unfinished check run on this head: scripts/open-pr.sh leaves a queued one whose external_id is the PR whose review opened this PR, and abandoned jobs leave in_progress ones.
@@ -69,7 +79,7 @@ runs:
     - name: Mark PR as reviewing
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions -f content=eyes --jq .id </dev/null)
         [ -n "$id" ] || exit 1
@@ -117,11 +127,14 @@ runs:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
         CODEX_VERSION: ${{ inputs.codex-version }}
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         CODEX_HOME: /tmp/codex-review-homes/${{ github.repository }}/pr-${{ github.event.pull_request.number }}
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Setting up Codex…" -f "output[summary]=Installing Codex and the review hooks." </dev/null > /dev/null
+        # The checkout keeps no credentials, so git fetches with the refreshed token as well; the empty helper skips credentials the runner's own helpers hold.
+        git config credential.https://github.com.helper ""
+        git config --add credential.https://github.com.helper "!gh auth git-credential"
         command -v codex > /dev/null || npm install -g --no-fund --no-audit "@openai/codex@$CODEX_VERSION"
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
@@ -151,7 +164,7 @@ runs:
         HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         FORK_PR: ${{ steps.fork.outputs.cache-matched-key && steps.check.outputs.fork-pr }}
         LANGFUSE_CODEX_ENVIRONMENT: codex-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ github.event.pull_request.number }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ github.event.pull_request.head.sha }}"}'
@@ -224,7 +237,7 @@ runs:
       if: always() && env.FORKED_PRS
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         while read -r url; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null; done < "$RUNNER_TEMP/forked-prs"
 
@@ -232,7 +245,7 @@ runs:
       id: publish
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
@@ -263,7 +276,7 @@ runs:
       if: env.SUPERSEDED != 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
@@ -280,7 +293,7 @@ runs:
       if: env.SUPERSEDED != 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         # Reviews carry only the verdict; Codex posts everything else as regular PR comments. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
@@ -304,7 +317,7 @@ runs:
       if: env.SUPERSEDED != 'true'
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null || true
@@ -330,7 +343,7 @@ runs:
       if: failure() && steps.check.outputs.id
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         # A failure after the verdict is published, such as in the PR review, keeps that verdict.
@@ -342,5 +355,5 @@ runs:
       if: always()
       shell: bash
       run: |
-        kill "$SSE_PID" 2>/dev/null || true
+        kill "$SSE_PID" "$TOKEN_PID" 2>/dev/null || true
         tail -3 "$RUNNER_TEMP/sse.err" 2>/dev/null || true
