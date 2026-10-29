@@ -195,7 +195,7 @@ runs:
           # Pending runs that newer pushes replace never start, so continue from the last head this session reviewed; new branches and force pushes may leave no such commit.
           RANGE="$(jq -rs 'map(.sha) | .[-2] // env.BEFORE' "$CODEX_HOME/check-runs.jsonl")..HEAD"
           git cat-file -e "${RANGE%..HEAD}^{commit}" 2>/dev/null || RANGE="origin/$BASE...HEAD"
-          MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
+          MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: commit certain fixes as usual, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
             Commits that landed through a reviewed PR need only a look at what merging could break. If commit-fix.sh is rejected, for example by branch protection, open a PR with the fix as above instead."
         fi
         INSTRUCTIONS="Report real bugs, security issues and regressions only; nit-level findings must use level=notice. \
