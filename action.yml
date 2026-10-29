@@ -276,7 +276,7 @@ runs:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
       run: |
         PUSHED=$(jq -Rrs '[split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty | .event as $event | .body | fromjson
-          | select(if env.PR_NUMBER != "" then $event == "pull_request" and .number == (env.PR_NUMBER | tonumber) and .action == "synchronize" else $event == "push" and .ref == env.GITHUB_REF end)
+          | select(if env.PR_NUMBER then $event == "pull_request" and .number == (env.PR_NUMBER | tonumber) and .action == "synchronize" else $event == "push" and .ref == env.GITHUB_REF end)
           | .after] | .[]' < "$RUNNER_TEMP/sse.jsonl")
         # Pushes made with GITHUB_TOKEN, such as CI autofixes, start no workflow, so this review covers them instead of leaving them to a newer run.
         # CI may push before this run subscribes, so whether a run exists tells them apart, not the push sender.
