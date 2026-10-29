@@ -8,4 +8,5 @@ fromjson? // {type: "error", message: .}
     .item.command | sub("^\\S+ -l?c "; "") | "$ " + if startswith("'") then .[1:-1] elif startswith("\"") then .[1:-1] | gsub("\\\\(?<c>[\\s\\S])"; .c) else . end
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning") | not) then .item.tool // .item.type
   else empty end
-| . + "\n"
+# GitHub's live log view drops empty lines, so blank lines between and within entries hold a single space.
+| " \n" + gsub("\n\n"; "\n \n")
