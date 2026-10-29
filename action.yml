@@ -314,6 +314,8 @@ runs:
           # The newer review covers reviewed heads and commits with their own runs, but not commits CI pushed during this one.
           if [ "$SUPERSEDED" = true ]; then [ -z "$id" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha" \
             --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" != true ] || continue; fi
+          # A superseded review may have already posted verdicts for commits CI pushed during it.
+          [ -n "$id" ] || [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$sha/check-runs?check_name=codex-review" --jq .total_count </dev/null)" = 0 ] || continue
           # Commits CI pushed during the review have no check run yet.
           jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "codex-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
