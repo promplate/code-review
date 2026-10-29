@@ -319,6 +319,7 @@ runs:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null || true
+        echo "EYES_REACTION_ID=" >> "$GITHUB_ENV"
         jq -r '.reactions[]' "$RUNNER_TEMP/review.json" | while read -r reaction; do
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions -f content="$reaction" </dev/null
         done
