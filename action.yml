@@ -343,7 +343,7 @@ runs:
         until checks=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100" \
           --jq "[.check_runs[] | select(.id != $JOB_CHECK_RUN_ID)]" </dev/null) && jq -e 'all(.status == "completed")' <<< "$checks" > /dev/null; do sleep 30; done
         jq -e 'all(.conclusion | IN("success", "neutral", "skipped"))' <<< "$checks" > /dev/null || { echo "::notice::Not merging: some checks did not pass."; exit 0; }
-        gh pr merge "$PR_NUMBER" --$(jq -r .method <<< "$merge") --subject "$(jq -r .subject <<< "$merge")" --body "$(jq -r .body <<< "$merge")" --match-head-commit "$HEAD_SHA"
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr merge "$PR_NUMBER" --$(jq -r .method <<< "$merge") --subject "$(jq -r .subject <<< "$merge")" --body "$(jq -r .body <<< "$merge")" --match-head-commit "$HEAD_SHA" </dev/null
 
     - name: Upload Codex events
       if: always()
