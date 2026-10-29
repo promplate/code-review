@@ -235,7 +235,7 @@ runs:
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. ${ACTIVITY:+$ACTIVITY }$CONFLICT$INSTRUCTIONS"
-        fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
+        fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
