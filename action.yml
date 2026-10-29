@@ -303,7 +303,6 @@ runs:
         }}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
 
     - name: Publish other commit verdicts
-      if: env.SUPERSEDED != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -312,6 +311,9 @@ runs:
           sha=$(jq -r .sha <<< "$verdict")
           conclusion=$(jq -r .conclusion <<< "$verdict")
           id=$(jq -rs --arg sha "$sha" 'map(select(.sha == $sha)) | last | .id // empty' "$CODEX_HOME/check-runs.jsonl")
+          # The newer review covers reviewed heads and commits with their own runs, but not commits CI pushed during this one.
+          if [ "$SUPERSEDED" = true ]; then [ -z "$id" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha" \
+            --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" != true ] || continue; fi
           # Commits CI pushed during the review have no check run yet.
           jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "codex-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
