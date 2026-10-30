@@ -404,14 +404,18 @@ runs:
         path: ${{ runner.temp }}/codex.jsonl
         if-no-files-found: ignore
 
-    - name: Close check run on failure
-      if: failure() && steps.check.outputs.id
+    - name: Close check run on failure or cancellation
+      if: (failure() || cancelled()) && steps.check.outputs.id
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # A failure after the verdict is published, such as in the PR review, keeps that verdict.
-        [ "${{ steps.publish.outcome }}" = success ] || jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}' \
+        [ "${{ steps.publish.outcome }}" = success ] || if [ "${{ job.status }}" = cancelled ]; then
+          jq -n '{status: "completed", conclusion: "cancelled", output: {title: "Review cancelled", summary: "The run was cancelled before Codex posted a verdict."}}'
+        else
+          jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
+        fi \
           | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
         [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
 
