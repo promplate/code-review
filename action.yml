@@ -12,7 +12,10 @@ inputs:
     description: Contents of a Codex auth.json, to sign in with ChatGPT instead of an API key.
   codex-version:
     description: "@openai/codex version to install when the runner has no codex."
-    default: 0.165.0
+    default: 0.166.0
+  bun-version:
+    description: Bun version to reuse or install for the Codex launcher and hooks.
+    default: 1.4.4
   broker:
     description: Service that exchanges the job's OIDC token for an installation token of the App and relays webhooks.
     default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
@@ -67,7 +70,7 @@ runs:
         fi
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "/tmp/codex-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         token: ${{ steps.app-token.outputs.token }}
         ref: ${{ env.HEAD_BRANCH }}
@@ -127,7 +130,7 @@ runs:
 
     - name: Restore codex session
       id: session-cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         # Branch names may contain "-" but never ":", so the key's prefix matches only this session's snapshots.
         path: |
@@ -141,7 +144,7 @@ runs:
     - name: Restore the session to fork
       id: fork
       if: steps.check.outputs.fork-key && !steps.session-cache.outputs.cache-matched-key
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           /tmp/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
@@ -149,7 +152,21 @@ runs:
           /tmp/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
         key: "codex-review-${{ steps.check.outputs.fork-key }}:"
 
+    - name: Reuse the runner's Bun
+      id: bun
+      shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: |
+        if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
+
+    - uses: oven-sh/setup-bun@v2
+      if: steps.bun.outputs.ready != 'true'
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
     - name: Configure codex
+      id: codex
       shell: bash
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
@@ -163,7 +180,17 @@ runs:
         # Reused checkouts already have both helpers; a plain set refuses to overwrite multiple values.
         git config --replace-all credential.https://github.com.helper ""
         git config --add credential.https://github.com.helper "!gh auth git-credential"
-        command -v codex > /dev/null || npm install -g --no-fund --no-audit "@openai/codex@$CODEX_VERSION"
+        if ! command -v codex > /dev/null; then
+          bun install --global "@openai/codex@$CODEX_VERSION"
+          export PATH="$(bun pm bin -g):$PATH"
+        fi
+        CODEX_BIN=$(command -v codex)
+        CODEX_RUNTIME=
+        # Bun runs the npm launcher, but native binaries and shell wrappers execute directly.
+        case "$(file -Lb "$CODEX_BIN")" in *JavaScript*|*Node.js*|*node\ script*) CODEX_RUNTIME=bun ;; esac
+        printf 'CODEX_BIN=%s\nCODEX_RUNTIME=%s\n' "$CODEX_BIN" "$CODEX_RUNTIME" >> "$GITHUB_ENV"
+        RUNTIME_INFO="Bun $(bun --version); $($CODEX_RUNTIME "$CODEX_BIN" --version)"
+        echo "runtime=$RUNTIME_INFO" >> "$GITHUB_OUTPUT"
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
@@ -180,8 +207,8 @@ runs:
         EOF
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
-          curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.2.tgz | tar xz -C "$RUNNER_TEMP"
-          printf '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "node %s/package/dist/index.mjs"\ntimeout = 30\n' "$RUNNER_TEMP" >> "$CODEX_HOME/config.toml"
+          curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.3.tgz | tar xz -C "$RUNNER_TEMP"
+          printf '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "bun %s/package/dist/index.mjs"\ntimeout = 30\n' "$RUNNER_TEMP" >> "$CODEX_HOME/config.toml"
         fi
 
     - name: Run codex review
@@ -213,7 +240,8 @@ runs:
           MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: commit certain fixes as usual, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
             Commits that landed through a reviewed PR need only a look at what merging could break. If commit-fix.sh is rejected, for example by branch protection, open a PR with the fix as above instead."
         fi
-        INSTRUCTIONS="Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
+        INSTRUCTIONS="Available review tooling: ${{ steps.codex.outputs.runtime }}. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
+           Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
            summary: one short paragraph explaining the verdict only; it becomes the check run summary and, for must-fix issues, the change request body. \
            Everything that does not change the verdict, such as replies to activity, non-blocking findings and PRs opened for out-of-scope fixes, goes into regular comments you post yourself with $COMMENT, never into review threads except to close them as below. \
@@ -233,21 +261,21 @@ runs:
         ACTIVITY=${ACTIVITY:+New GitHub activity on $SUBJECT while no review was running: $ACTIVITY}
         if [ -n "$FORK_KEY" ]; then
           cp -R "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
-          codex exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "You opened PR #$PR_NUMBER to keep that fix out of the change you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
              Run \`git diff $RANGE\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
         elif [ -f "$CODEX_HOME/last-thread-id" ]; then
-          codex exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "${ACTIVITY:-$SUBJECT has new commits since your last review.} The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\` again, \
              re-check what changed, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
         else
-          codex exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. ${ACTIVITY:+$ACTIVITY }$CONFLICT$INSTRUCTIONS"
@@ -261,7 +289,7 @@ runs:
       id: save-session
       # A cache upload failure must not discard a completed review.
       continue-on-error: true
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           ${{ env.CODEX_HOME }}/sessions
@@ -409,7 +437,7 @@ runs:
       if: always()
       # The events only measure the run; losing them must not fail a review that is already published.
       continue-on-error: true
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: codex-events
         path: ${{ runner.temp }}/codex.jsonl
