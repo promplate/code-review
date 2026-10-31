@@ -57,8 +57,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      review:
        # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
        if: >
-         (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
-         || (github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
+         (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.issue.state == 'open')
+         || (github.event_name != 'issue_comment' && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
              && (github.event.pull_request.user.login == 'muspi-merol-review[bot]' && !github.event.pull_request.draft
                  || github.event.pull_request.user.login != 'muspi-merol-review[bot]' && github.event.action != 'ready_for_review'))
        cache-mode: write
