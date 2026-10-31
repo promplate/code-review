@@ -160,7 +160,8 @@ runs:
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Setting up Codex…" -f "output[summary]=Installing Codex and the review hooks." </dev/null > /dev/null
         # The checkout keeps no credentials, so git fetches with the refreshed token as well; the empty helper skips credentials the runner's own helpers hold.
-        git config credential.https://github.com.helper ""
+        # Reused checkouts already have both helpers; a plain set refuses to overwrite multiple values.
+        git config --replace-all credential.https://github.com.helper ""
         git config --add credential.https://github.com.helper "!gh auth git-credential"
         command -v codex > /dev/null || npm install -g --no-fund --no-audit "@openai/codex@$CODEX_VERSION"
         mkdir -p "$CODEX_HOME"
@@ -255,6 +256,9 @@ runs:
           -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
 
     - name: Save codex session
+      id: save-session
+      # A cache upload failure must not discard a completed review.
+      continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: |
@@ -264,6 +268,8 @@ runs:
         key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}
 
     - name: Drop older session snapshots
+      if: steps.save-session.outcome == 'success'
+      continue-on-error: true
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
