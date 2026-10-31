@@ -334,3 +334,28 @@ test("the activity that started this run is not reported back to it", () => {
   const closed = frame("pull_request", { number: 7, action: "closed", pull_request: { number: 7, merged: true } });
   expect(runHook(closed).output).toContain("merged");
 });
+
+test("a run skips an event another review already consumed, and strangers", async () => {
+  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
+  const gate = action.runs.steps.find((step: any) => step.name === "Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ runner.temp }}", "/tmp");
+  const setup = fixture();
+  mkdirSync(join(setup.dir, "sessions"), { recursive: true });
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1 } }));
+  const body = JSON.stringify(JSON.parse(readFileSync(join(setup.dir, "event.json"), "utf8")));
+  const id = Bun.spawnSync(["bash", "-c", 'printf %s "$0" | sha256sum | cut -c1-40', body]).stdout.toString().trim();
+  const run = (extra: Record<string, string> = {}) => {
+    writeFileSync(join(setup.dir, "github-env"), "");
+    const result = Bun.spawnSync(["bash", "-c", gate], { env: { ...setup.env, GITHUB_ENV: join(setup.dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), ...extra }, timeout: 5000 });
+    expect(result.exitCode).toBe(0);
+    return readFileSync(join(setup.dir, "github-env"), "utf8");
+  };
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  expect(run()).toContain("ACTIVITY_ID=");
+  expect(run()).not.toContain("SKIP=true");
+  expect(run()).toContain("ACTIVITY_WRITER=true");
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([id]));
+  expect(run()).toContain("SKIP=true");
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'read\\n'\n");
+  expect(run()).toContain("SKIP=true");
+});
