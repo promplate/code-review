@@ -430,7 +430,8 @@ runs:
         jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --arg blob "$GITHUB_SERVER_URL/${{ github.repository }}/blob/$(git rev-parse HEAD)" \
           --arg author "$PR_AUTHOR" --arg last "$LAST" '
           def in_diff: .line as $line | any($hunks[.path][]?; .[0] <= $line and $line < .[1]);
-          if $review.conclusion == "failure" and $last == "CHANGES_REQUESTED" and env.GITHUB_EVENT_NAME == "repository_dispatch" then empty
+          if $review.conclusion == "failure" and $last == "CHANGES_REQUESTED"
+             and (env.GITHUB_EVENT_NAME | IN("issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "repository_dispatch")) then empty
           elif $review.conclusion == "failure" then [$review.annotations[] | select(.level == "failure")] as $issues | {
             event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end),
             body: ([$review.summary, ($issues[] | select(in_diff | not) | "\(.message)\n\($blob)/\(.path)#L\(.line)")] | join("\n\n")),
