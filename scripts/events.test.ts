@@ -39,7 +39,7 @@ function runHook(log: string, overrides = {}) {
   return { ...setup, run, result, output: result.stdout.toString() };
 }
 
-function runCI(responses: { pages?: object[]; error?: string }[], events = "", args: string[] = []) {
+function runCI(responses: { pages?: object[]; error?: string }[], events = "", args: string[] = [], extraEnv: Record<string, string> = {}) {
   const setup = fixture();
   writeFileSync(join(setup.dir, "sse.jsonl"), events);
   writeFileSync(join(setup.dir, "responses.json"), JSON.stringify(responses));
@@ -61,7 +61,7 @@ if (response.error) { console.error(response.error); process.exit(1); }
   // Keep the actual jq evaluator: mocking its JSON output would hide broken filters.
   executable(setup.dir, "jq", `#!/usr/bin/env bash\nprintf 'called\\n' >> "$RUNNER_TEMP/jq-calls"\nexec '${realJq}' "$@"\n`);
   executable(setup.dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\nexec '${realTail}' "$@"\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: setup.env, timeout: 3000 });
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: { ...setup.env, ...extraEnv }, timeout: 3000 });
   return { ...setup, result, calls: Number(readFileSync(join(setup.dir, "calls"), "utf8")) };
 }
 
@@ -194,6 +194,12 @@ test("pass mode rejects failed checks while the default waits only for completio
     expectTailReleased(dir);
   }
   expect(runCI([{ pages: [{ check_runs: [check({ conclusion: "failure" })] }] }]).result.exitCode).toBe(0);
+});
+
+test("an empty check list proceeds when the caller allows it", () => {
+  const r = runCI([{ pages: [{ check_runs: [] }] }], "", [".", "pass"], { WAIT_CI_ALLOW_EMPTY: "1" });
+  expect(r.result.exitCode).toBe(0);
+  expect(r.calls).toBe(1);
 });
 
 test("TERM interrupts an event wait and reaps its tail child", async () => {

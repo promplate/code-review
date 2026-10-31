@@ -16,7 +16,8 @@ trap 'exit 143' TERM
 deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
 while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
-  if jq -e 'length > 0 and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
+  # An empty list usually means the checks have not appeared yet, except for callers that may proceed without any.
+  if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
   # Checks that never match must fail the wait instead of hanging the review until the job timeout.
   [ "$SECONDS" -lt "$deadline" ] || { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
   while true; do
