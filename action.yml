@@ -67,6 +67,8 @@ runs:
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
+          # A deleted branch has no commit to check out, so a `push` trigger must not start a review for it.
+          [ -z "${{ github.event.deleted }}" ] || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A deleted branch has nothing to review."; }
           # Pushes outside PRs review the pushed branch; fixes split into PRs then target the default branch.
           printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
@@ -472,9 +474,16 @@ runs:
         merge=$(jq -c 'select(.conclusion == "success") | .merge // empty' "$RUNNER_TEMP/review.json")
         [ -n "$merge" ] || exit 0
         # This job's own check run is still in progress, so wait for every other check on the head instead.
+        deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
         until checks=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100" \
-          --jq "[.check_runs[] | select(.id != $JOB_CHECK_RUN_ID)]" </dev/null) && jq -e 'all(.status == "completed")' <<< "$checks" > /dev/null; do sleep 30; done
+          --jq "[.check_runs[] | select(.id != $JOB_CHECK_RUN_ID)]" </dev/null) && jq -e 'all(.status == "completed")' <<< "$checks" > /dev/null; do
+          [ "$SECONDS" -lt "$deadline" ] || { echo "::notice::Not merging: checks did not finish within ${WAIT_CI_TIMEOUT:-1800}s."; exit 0; }
+          sleep 30
+        done
         jq -e 'all(.conclusion | IN("success", "neutral", "skipped"))' <<< "$checks" > /dev/null || { echo "::notice::Not merging: some checks did not pass."; exit 0; }
+        # Workflows a push woke, such as a formatter, can move the branch past the reviewed commit; merging then would land code no review saw.
+        head=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq .head.sha </dev/null)
+        [ "$head" = "$HEAD_SHA" ] || { echo "::notice::Not merging: the branch moved past $HEAD_SHA to $head."; exit 0; }
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr merge "$PR_NUMBER" --$(jq -r .method <<< "$merge") --subject "$(jq -r .subject <<< "$merge")" --body "$(jq -r .body <<< "$merge")" --match-head-commit "$HEAD_SHA" </dev/null
 
     - name: Upload Codex events
@@ -513,4 +522,7 @@ runs:
       if: always()
       shell: bash
       # Every home syncs its own ~90MB copy of the curated plugins, which self-hosted runners would keep in /tmp; the session is already cached.
-      run: rm -rf "$CODEX_HOME/.tmp"
+      # A Resolve failure leaves CODEX_HOME unset, and `rm -rf "/.tmp"` would delete a real directory on a self-hosted runner.
+      run: |
+        [ -n "$CODEX_HOME" ] || exit 0
+        rm -rf "$CODEX_HOME/.tmp"

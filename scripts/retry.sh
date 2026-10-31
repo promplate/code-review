@@ -2,6 +2,7 @@
 # Preserve stdin so retries can replay --input - payloads.
 input=$(cat)
 err=$(mktemp)
+trap 'rm -f "$err"' EXIT
 delay=1
 for attempt in 1 2 3 4 5 6 7 8; do
   if printf '%s' "$input" | "$@" 2> "$err"; then cat "$err" >&2; exit 0; fi
