@@ -63,7 +63,7 @@ runs:
         pr=$(jq -c '.pull_request // empty' "$GITHUB_EVENT_PATH")
         [ -n "$pr" ] || [ -z "$number" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
         if [ -n "$pr" ]; then
-          jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "::error::Reviews only continue same-repository PRs."; exit 1; }
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Fork PRs are not reviewed."; }
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
@@ -93,18 +93,19 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # The webhook that started this run also reached any review running at the time, so a consumed event needs no second pass.
-        id=$(printf %s "$(jq -c . "$GITHUB_EVENT_PATH")" | sha256sum | cut -c1-40)
+        key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), (.comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // ""), (.comment.updated_at // .review.submitted_at // "")] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
+        id=$(printf %s "$key" | sha256sum | cut -c1-40)
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
-        if [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
-        # Anyone can comment on public repositories, so only people with write access may steer a review.
+        # Only activity is skippable: a queued run for a new head still has code to review.
         case $GITHUB_EVENT_NAME in
           issue_comment|pull_request_review|pull_request_review_comment|pull_request_review_thread)
             [ -z "$PR_NUMBER" ] || {
+              if [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
               sender=$(jq -r .sender.login "$GITHUB_EVENT_PATH")
               if [ "$sender" = "$BOT_LOGIN" ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Ignoring the App's own activity."
               else
-                permission=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/collaborators/$sender/permission" --jq .permission </dev/null || echo none)
+                permission=$(gh api "repos/${{ github.repository }}/collaborators/$sender/permission" --jq .permission </dev/null 2>/dev/null || echo none)
                 case $permission in admin|write|maintain) echo "ACTIVITY_WRITER=true" >> "$GITHUB_ENV" ;; *) echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::$sender may not steer reviews." ;; esac
               fi
             } ;;

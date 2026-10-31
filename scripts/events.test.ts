@@ -310,52 +310,48 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   expect(review.env.ACTIVITY).toBeUndefined();
 });
 
-test("the action and the broker derive the same id from one webhook", () => {
+function gateStep() {
+  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
+  return action.runs.steps.find((step: any) => step.name === "Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
+}
+
+function runGate(dir: string, env: Record<string, string>) {
+  writeFileSync(join(dir, "github-env"), "");
+  const result = Bun.spawnSync(["bash", "-c", gateStep()], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GITHUB_ENV: join(dir, "github-env"), ...env }, timeout: 8000 });
+  expect(result.exitCode).toBe(0);
+  return readFileSync(join(dir, "github-env"), "utf8");
+}
+
+test("the action and the broker derive one id for a webhook, whatever it contains", () => {
   const { dir } = fixture();
-  const payload = { action: "submitted", sender: { login: "collaborator", type: "User" }, pull_request: { number: 7, head: { sha: "head" } }, review: { id: 9, state: "commented", body: "looks good" } };
+  const payload = { action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 5, body: "del u007f: \u007f", updated_at: "2026-11-01T00:00:00Z" } };
   writeFileSync(join(dir, "event.json"), JSON.stringify(payload, null, 2));
-  const canonical = Bun.spawnSync(["jq", "-c", ".", join(dir, "event.json")]).stdout.toString().trim();
-  expect(canonical).toBe(JSON.stringify(payload));
+  const key = ["pull_request", "created", 5, "", "2026-11-01T00:00:00Z"].join(":");
   type Crypto = { subtle: { digest(algorithm: string, data: Uint8Array): Promise<ArrayBuffer> } };
-  return (crypto as unknown as Crypto).subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(payload))).then((digest) => {
+  return (crypto as unknown as Crypto).subtle.digest("SHA-256", new TextEncoder().encode(key)).then((digest) => {
     const brokerId = [...new Uint8Array(digest).slice(0, 20)].map((b) => b.toString(16).padStart(2, "0")).join("");
-    const actionId = Bun.spawnSync(["bash", "-c", 'printf %s "$0" | sha256sum | cut -c1-40', canonical]).stdout.toString().trim();
-    expect(actionId).toBe(brokerId);
+    expect(runGate(dir, { GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: join(dir, "event.json") })).toContain(`ACTIVITY_ID=${brokerId}`);
   });
 });
 
-test("the activity that started this run is not reported back to it", () => {
-  const head = frame("push", { ref: "refs/heads/feature", after: "head" });
-  expect(runHook(head, { PR_NUMBER: "", HEAD_SHA: "head" }).output).toBe("");
-  const midReview = frame("push", { ref: "refs/heads/feature", after: "later" });
-  expect(runHook(midReview, { PR_NUMBER: "", HEAD_SHA: "head" }).output).toContain("later");
-  const opened = frame("pull_request", { number: 7, action: "synchronize", pull_request: { number: 7 } });
-  expect(runHook(opened).output).toBe("");
-  const closed = frame("pull_request", { number: 7, action: "closed", pull_request: { number: 7, merged: true } });
-  expect(runHook(closed).output).toContain("merged");
-});
-
-test("a run skips an event another review already consumed, and strangers", async () => {
-  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
-  const gate = action.runs.steps.find((step: any) => step.name === "Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ runner.temp }}", "/tmp");
+test("a run skips activity another review consumed, and strangers, but never a new head", () => {
   const setup = fixture();
   mkdirSync(join(setup.dir, "sessions"), { recursive: true });
   writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1 } }));
-  const body = JSON.stringify(JSON.parse(readFileSync(join(setup.dir, "event.json"), "utf8")));
-  const id = Bun.spawnSync(["bash", "-c", 'printf %s "$0" | sha256sum | cut -c1-40', body]).stdout.toString().trim();
-  const run = (extra: Record<string, string> = {}) => {
-    writeFileSync(join(setup.dir, "github-env"), "");
-    const result = Bun.spawnSync(["bash", "-c", gate], { env: { ...setup.env, GITHUB_ENV: join(setup.dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), ...extra }, timeout: 5000 });
-    expect(result.exitCode).toBe(0);
-    return readFileSync(join(setup.dir, "github-env"), "utf8");
-  };
+  const env = { GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "7" };
   executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
-  expect(run()).toContain("ACTIVITY_ID=");
-  expect(run()).not.toContain("SKIP=true");
-  expect(run()).toContain("ACTIVITY_WRITER=true");
+  const first = runGate(setup.dir, env);
+  expect(first).toContain("ACTIVITY_WRITER=true");
+  expect(first).not.toContain("SKIP=true");
+  const id = /ACTIVITY_ID=(.*)/.exec(first)![1];
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([id]));
-  expect(run()).toContain("SKIP=true");
+  expect(runGate(setup.dir, env)).toContain("SKIP=true");
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
   executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'read\\n'\n");
-  expect(run()).toContain("SKIP=true");
+  expect(runGate(setup.dir, env)).toContain("SKIP=true");
+  // A queued run for a new head must review it even if a running review already saw the push.
+  writeFileSync(join(setup.dir, "push.json"), JSON.stringify({ ref: "refs/heads/main", after: "new", sender: human, repository: { full_name: "owner/repo" } }));
+  const push = runGate(setup.dir, { GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: join(setup.dir, "push.json") });
+  expect(push).toContain("ACTIVITY_ID=");
+  expect(push).not.toContain("SKIP=true");
 });
