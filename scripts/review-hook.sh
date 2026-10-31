@@ -23,9 +23,10 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
           and $body.check_run.name != "codex-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // ""))
         or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // ""))
         or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
-        or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH))
+        or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH) and $body.after != env.HEAD_SHA)
         or (if $pr == "" then $frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA
           else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
+            and (($frame.event != "pull_request") or ($body.action | IN("opened", "synchronize", "reopened", "ready_for_review") | not))
             and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber)) end))
     | select($body.sender.login != env.BOT_LOGIN)
     | select(($frame.event | IN("commit_comment", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread") | not)

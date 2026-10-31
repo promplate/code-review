@@ -323,3 +323,14 @@ test("the action and the broker derive the same id from one webhook", () => {
     expect(actionId).toBe(brokerId);
   });
 });
+
+test("the activity that started this run is not reported back to it", () => {
+  const head = frame("push", { ref: "refs/heads/feature", after: "head" });
+  expect(runHook(head, { PR_NUMBER: "", HEAD_SHA: "head" }).output).toBe("");
+  const midReview = frame("push", { ref: "refs/heads/feature", after: "later" });
+  expect(runHook(midReview, { PR_NUMBER: "", HEAD_SHA: "head" }).output).toContain("later");
+  const opened = frame("pull_request", { number: 7, action: "synchronize", pull_request: { number: 7 } });
+  expect(runHook(opened).output).toBe("");
+  const closed = frame("pull_request", { number: 7, action: "closed", pull_request: { number: 7, merged: true } });
+  expect(runHook(closed).output).toContain("merged");
+});
