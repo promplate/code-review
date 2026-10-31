@@ -2,7 +2,7 @@
 
 Reviews same-repository pull requests, and optionally branch pushes, with [Codex](https://github.com/openai/codex "openai/codex") as the [muspi-merol-review](https://github.com/apps/muspi-merol-review "muspi-merol-review GitHub App") GitHub App:
 
-- a `codex-review` check run per commit, with annotations
+- a `codex-review` check run per commit, with annotations on the reviewed head
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
 - everything else as regular PR comments, including answers to PR comments
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
@@ -38,21 +38,29 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, ready_for_review]
-     # Comments posted while no review is running.
-     repository_dispatch:
-       types: [codex-review]
+     # Comments and reviews that start a review when none is running.
+     issue_comment:
+       types: [created, edited, deleted]
+     pull_request_review:
+       types: [submitted, edited, dismissed]
+     pull_request_review_comment:
+       types: [created, edited, deleted]
 
    permissions:
      actions: write
      id-token: write
 
    concurrency:
-     group: codex-review-${{ github.event.pull_request.number || github.event.client_payload.pr }}
+     group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
 
    jobs:
      review:
        # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
-       if: github.event_name == 'repository_dispatch' || github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.user.login == 'muspi-merol-review[bot]' && !github.event.pull_request.draft || github.event.pull_request.user.login != 'muspi-merol-review[bot]' && github.event.action != 'ready_for_review')
+       if: >
+         (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+         || (github.event_name != 'issue_comment' && github.event.pull_request.head.repo.full_name == github.repository
+             && (github.event.pull_request.user.login == 'muspi-merol-review[bot]' && !github.event.pull_request.draft
+                 || github.event.pull_request.user.login != 'muspi-merol-review[bot]' && github.event.action != 'ready_for_review'))
        cache-mode: write
        runs-on: ubuntu-latest
        steps:
@@ -60,6 +68,28 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
            with:
              codex-config: ${{ secrets.CODEX_CONFIG }}
    ```
+
+Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers:
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+```
+
+These triggers, like `repository_dispatch`, only start runs when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)). A workflow added only on a PR branch can review that PR, but cannot receive comment wake-ups until it reaches the default branch.
+
+Each run seeds the webhook that started it into its event stream in the same shape the broker relays, so the review hooks read one stream and dedupe by an id derived from the webhook body. A run started for a comment another run was already handling is skipped. Comments posted between runs are replayed from the last consumed event, so nothing needs to be dispatched or acknowledged:
+
+- Only people with write access can steer a review, and the App's own comments are ignored.
+- While a review runs, its SSE subscription takes the comments live.
+- Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 
 ## Pushes
 

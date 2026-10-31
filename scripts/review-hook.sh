@@ -18,16 +18,28 @@ seen='[]'
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
   [split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty
     | . as $frame | ($frame.body | fromjson) as $body
-    | select(if $pr == "" then $frame.event == "push" and $body.ref == env.GITHUB_REF or $frame.event == "commit_comment"
-        else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
-          and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber)) end)
-    | select(($seen | index($frame.delivery)) | not)
+    | select(
+        ($frame.event == "check_run" and $body.action == "completed" and $body.check_run.head_sha == env.HEAD_SHA
+          and $body.check_run.name != "codex-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // ""))
+        or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // ""))
+        or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
+        or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH))
+        or (if $pr == "" then $frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA
+          else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
+            and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber)) end))
     | select($body.sender.login != env.BOT_LOGIN)
-    | select(($body.comment // $body.review) == null or $frame.writer)
-    | {delivery: $frame.delivery, context: ({event: $frame.event, action: $body.action, actor: $body.sender.login, url: ($body.comment.html_url // $body.review.html_url),
-        head: $body.after, commit: $body.comment.commit_id, merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
+    | select(($frame.event | IN("commit_comment", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread") | not)
+        or ($frame.writer == true and $body.sender.type != "Bot"))
+    | select(($frame.event | IN("check_run", "status") | not) or (env.GITHUB_RUN_ID // "") == ""
+        or (($body.check_run.details_url // $body.target_url // "") | test("/actions/runs/" + env.GITHUB_RUN_ID + "(/|[?#]|$)") | not))
+    | {delivery: $frame.delivery, context: ({event: $frame.event, action: $body.action, actor: $body.sender.login,
+        url: ($body.comment.html_url // $body.review.html_url // $body.check_run.details_url // $body.workflow_run.html_url // $body.target_url),
+        head: ($body.after // $body.check_run.head_sha // $body.workflow_run.head_sha // $body.sha), commit: $body.comment.commit_id,
+        name: ($body.check_run.name // $body.workflow_run.name // $body.context), conclusion: ($body.check_run.conclusion // $body.workflow_run.conclusion), state: $body.state,
+        merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
-  ] as $new | {seen: ($seen + [$new[].delivery]), context: ($new | map(.context | tojson) | join("\n"))}
+  ] | reduce .[] as $event ({seen: $seen, context: []}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
+    | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl")
 jq -c .seen <<< "$result" > "$SEEN_FILE"
 context=$(jq -r .context <<< "$result")

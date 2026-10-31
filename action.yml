@@ -57,10 +57,13 @@ runs:
         DISPATCHED_PR: ${{ github.event.client_payload.pr }}
         SESSION_KEY: ${{ inputs.session-key }}
       run: |
-        # Runs dispatched for comments posted while no review was running carry only the PR number and the activity.
+        # Comments and dispatches name only the PR, so their PR is fetched fresh; other events carry it.
+        number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
+        [ -z "$DISPATCHED_PR" ] || number=$DISPATCHED_PR
         pr=$(jq -c '.pull_request // empty' "$GITHUB_EVENT_PATH")
-        [ -z "$DISPATCHED_PR" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$DISPATCHED_PR" </dev/null)
+        [ -n "$pr" ] || [ -z "$number" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
         if [ -n "$pr" ]; then
+          jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "::error::Reviews only continue same-repository PRs."; exit 1; }
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
@@ -69,8 +72,46 @@ runs:
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
+        # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
+        rm -f "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json"
+
+    - name: Restore codex session
+      id: session-cache
+      uses: actions/cache/restore@v6
+      with:
+        # Branch names may contain "-" but never ":", so the key's prefix matches only this session's snapshots.
+        path: |
+          ${{ env.CODEX_HOME }}/sessions
+          ${{ env.CODEX_HOME }}/last-thread-id
+          ${{ env.CODEX_HOME }}/check-runs.jsonl
+        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: "codex-review-${{ env.SESSION_KEY }}:"
+
+    - name: Skip activity another review already handled
+      shell: bash
+      env:
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
+      run: |
+        # The webhook that started this run also reached any review running at the time, so a consumed event needs no second pass.
+        id=$(printf %s "$(jq -c . "$GITHUB_EVENT_PATH")" | sha256sum | cut -c1-40)
+        echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
+        receipts=$CODEX_HOME/sessions/.github-deliveries.json
+        if [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
+        # Anyone can comment on public repositories, so only people with write access may steer a review.
+        case $GITHUB_EVENT_NAME in
+          issue_comment|pull_request_review|pull_request_review_comment|pull_request_review_thread)
+            [ -z "$PR_NUMBER" ] || {
+              sender=$(jq -r .sender.login "$GITHUB_EVENT_PATH")
+              if [ "$sender" = "$BOT_LOGIN" ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Ignoring the App's own activity."
+              else
+                permission=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/collaborators/$sender/permission" --jq .permission </dev/null || echo none)
+                case $permission in admin|write|maintain) echo "ACTIVITY_WRITER=true" >> "$GITHUB_ENV" ;; *) echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::$sender may not steer reviews." ;; esac
+              fi
+            } ;;
+        esac
 
     - uses: actions/checkout@v7
+      if: env.SKIP != 'true'
       with:
         token: ${{ steps.app-token.outputs.token }}
         ref: ${{ env.HEAD_BRANCH }}
@@ -79,6 +120,7 @@ runs:
 
     - name: Open check run
       id: check
+      if: env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -102,7 +144,7 @@ runs:
         echo "CHECK_ID=$id" >> "$GITHUB_ENV"
 
     - name: Mark PR as reviewing
-      if: env.PR_NUMBER
+      if: env.PR_NUMBER && env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -112,38 +154,30 @@ runs:
         echo "EYES_REACTION_ID=$id" >> "$GITHUB_ENV"
 
     - name: Subscribe PR updates via SSE
+      if: env.SKIP != 'true'
       shell: bash
-      env:
-        DELIVERY: ${{ github.event.client_payload.delivery }}
       run: |
-        touch "$RUNNER_TEMP/sse.jsonl"
-        # Resume from the last delivery after each reconnect so nothing arrives in between unseen; every curl ends in a timeout, which must not stop the loop.
-        # A dispatched run starts from the comment that dispatched it, so comments posted before it subscribed reach it too. pr= keeps the broker from dispatching runs for comments this one takes.
+        # The webhook that started this run has the shape the broker relays, so the hooks read one stream and dedupe by id.
+        mkdir -p "$CODEX_HOME/sessions"
+        jq -nr --arg event "$GITHUB_EVENT_NAME" --arg delivery "$ACTIVITY_ID" --argjson writer "${ACTIVITY_WRITER:-false}" --rawfile body "$GITHUB_EVENT_PATH" \
+          '"id: \($delivery)\nevent: \($event)\ndata: \(({receivedAt: (now * 1000 | floor), event: $event, delivery: $delivery, body: $body, writer: $writer} | tojson))\n"' > "$RUNNER_TEMP/sse.jsonl"
+        receipts=$CODEX_HOME/sessions/.github-deliveries.json
+        cursor=
+        [ ! -f "$receipts" ] || cursor=$(jq -r 'last // empty' "$receipts")
+        # The first connection resumes after the last consumed event, so anything posted between runs reaches this one too; later ones follow what arrived.
         ( set +e
           for i in $(seq 1 360); do
-            last=$(sed -n 's/^id: //p' "$RUNNER_TEMP/sse.jsonl" | tail -1)
-            last=${last:-$DELIVERY}
-            curl -sN --max-time 60 ${last:+-H "Last-Event-ID: $last"} "$EVENTS_URL&pr=$PR_NUMBER" >> "$RUNNER_TEMP/sse.jsonl" 2>>"$RUNNER_TEMP/sse.err"
+            curl -sN --max-time 60 ${cursor:+-H "Last-Event-ID: $cursor"} "$EVENTS_URL&pr=$PR_NUMBER&sha=$HEAD_SHA&run=$GITHUB_RUN_ID" 2>>"$RUNNER_TEMP/sse.err" \
+              | awk -f "$GITHUB_ACTION_PATH/scripts/sse-frames.awk" >> "$RUNNER_TEMP/sse.jsonl"
+            cursor=$(sed -n 's/^id: //p' "$RUNNER_TEMP/sse.jsonl" | tail -1)
             sleep 1
           done ) &
         echo "SSE_PID=$!" >> "$GITHUB_ENV"
 
-    - name: Restore codex session
-      id: session-cache
-      uses: actions/cache/restore@v6
-      with:
-        # Branch names may contain "-" but never ":", so the key's prefix matches only this session's snapshots.
-        path: |
-          ${{ env.CODEX_HOME }}/sessions
-          ${{ env.CODEX_HOME }}/last-thread-id
-          ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}
-        restore-keys: "codex-review-${{ env.SESSION_KEY }}:"
-
     # Paths are part of the cache version, so restore into the opening review's home; the review copies the session from there.
     - name: Restore the session to fork
       id: fork
-      if: steps.check.outputs.fork-key && !steps.session-cache.outputs.cache-matched-key
+      if: steps.check.outputs.fork-key && !steps.session-cache.outputs.cache-matched-key && env.SKIP != 'true'
       uses: actions/cache/restore@v6
       with:
         path: |
@@ -154,6 +188,7 @@ runs:
 
     - name: Reuse the runner's Bun
       id: bun
+      if: env.SKIP != 'true'
       shell: bash
       env:
         BUN_VERSION: ${{ inputs.bun-version }}
@@ -161,12 +196,13 @@ runs:
         if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
 
     - uses: oven-sh/setup-bun@v2
-      if: steps.bun.outputs.ready != 'true'
+      if: steps.bun.outputs.ready != 'true' && env.SKIP != 'true'
       with:
         bun-version: ${{ inputs.bun-version }}
 
     - name: Configure codex
       id: codex
+      if: env.SKIP != 'true'
       shell: bash
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
@@ -212,12 +248,13 @@ runs:
         fi
 
     - name: Run codex review
+      if: env.SKIP != 'true'
       shell: bash
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         FORK_KEY: ${{ steps.fork.outputs.cache-matched-key && steps.check.outputs.fork-key }}
-        ACTIVITY: ${{ github.event.client_payload.activity && toJSON(github.event.client_payload.activity) }}
+        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         LANGFUSE_CODEX_ENVIRONMENT: codex-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ env.PR_NUMBER || ''null'' }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ env.HEAD_SHA }}"}'
       run: |
@@ -225,6 +262,8 @@ runs:
           -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
         jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
         COMMITS=$(jq -rs 'map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
+        # Keep consumption receipts inside the existing cache paths without invalidating earlier session snapshots.
+        if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then cp "$CODEX_HOME/sessions/.github-deliveries.json" "$RUNNER_TEMP/injected-deliveries.json"; else printf '[]\n' > "$RUNNER_TEMP/injected-deliveries.json"; fi
         if [ -n "$PR_NUMBER" ]; then
           SUBJECT="PR #$PR_NUMBER" MENTION="#$PR_NUMBER" RANGE="origin/$BASE...HEAD" COMMENT="gh pr comment $PR_NUMBER --body-file -"
           MODE_INSTRUCTIONS="If the PR is merged or closed before your review ends, nothing waits for your verdict anymore: point out must-fix issues in a PR comment, editing your latest comment if nothing follows it, and fix certain ones in a separate PR as above rather than on this PR's branch. \
@@ -258,7 +297,6 @@ runs:
            Keep this review in scope: for a certain fix outside its scope, run git worktree add \"\$RUNNER_TEMP/<branch>\" origin/$BASE, apply the fix there, and run bash $GITHUB_ACTION_PATH/scripts/open-pr.sh '<branch>' '<title>' '<body>' <changed paths> from that worktree; open one PR per independent fix, mention $MENTION in its body, first check gh pr list to avoid duplicates, and link opened PRs in regular comments. \
            For an out-of-scope problem you are certain is real but cannot fix with certainty, open an issue with gh issue create instead, after checking gh issue list --search for duplicates, mention $MENTION in it, and link it in a regular comment. \
            $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
-        ACTIVITY=${ACTIVITY:+New GitHub activity on $SUBJECT while no review was running: $ACTIVITY}
         if [ -n "$FORK_KEY" ]; then
           cp -R "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
@@ -272,21 +310,23 @@ runs:
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
-            "${ACTIVITY:-$SUBJECT has new commits since your last review.} The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\` again, \
-             re-check what changed, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
+            "Continue reviewing $SUBJECT. The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\`, \
+             re-check what changed, reply to the activity the hooks report, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
         else
           $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
-            "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. ${ACTIVITY:+$ACTIVITY }$CONFLICT$INSTRUCTIONS"
+            "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
         fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
+        jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
 
     - name: Save codex session
       id: save-session
+      if: env.SKIP != 'true'
       # A cache upload failure must not discard a completed review.
       continue-on-error: true
       uses: actions/cache/save@v6
@@ -295,7 +335,7 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}
+        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Drop older session snapshots
       if: steps.save-session.outcome == 'success'
@@ -303,7 +343,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        KEY: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}
+        KEY: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=codex-review-$SESSION_KEY:&per_page=100" \
@@ -311,7 +351,7 @@ runs:
           | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
 
     - name: Mark forked PRs ready
-      if: always() && env.FORKED_PRS
+      if: always() && env.FORKED_PRS && env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -320,6 +360,7 @@ runs:
 
     - name: Publish check run
       id: publish
+      if: env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -352,6 +393,7 @@ runs:
         }}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
 
     - name: Publish other commit verdicts
+      if: env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -373,7 +415,7 @@ runs:
         done
 
     - name: Publish PR review
-      if: env.SUPERSEDED != 'true' && env.PR_NUMBER
+      if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -398,7 +440,7 @@ runs:
         [ ! -s "$RUNNER_TEMP/pr-review.json" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews --input "$RUNNER_TEMP/pr-review.json" </dev/null
 
     - name: Finish PR reactions
-      if: env.SUPERSEDED != 'true' && env.PR_NUMBER
+      if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -413,13 +455,13 @@ runs:
         done
 
     - name: Write review summary
-      if: env.SUPERSEDED != 'true'
+      if: env.SUPERSEDED != 'true' && env.SKIP != 'true'
       shell: bash
       run: |
         jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Merge PR
-      if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.PR_AUTHOR != env.BOT_LOGIN
+      if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.PR_AUTHOR != env.BOT_LOGIN && env.SKIP != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
