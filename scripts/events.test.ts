@@ -48,13 +48,14 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs
 const dir = process.env.RUNNER_TEMP;
 const argv = process.argv.slice(2);
 appendFileSync(dir + "/gh-args", JSON.stringify(argv) + "\\n");
-if (!argv.includes("--paginate") || !argv.includes("--slurp")) { console.error("missing pagination"); process.exit(1); }
+if (!argv.includes("--paginate")) { console.error("missing pagination"); process.exit(1); }
+if (argv.includes("--slurp")) { console.error("unknown flag: --slurp"); process.exit(1); }
 const countFile = dir + "/calls";
 const count = existsSync(countFile) ? Number(readFileSync(countFile, "utf8")) : 0;
 writeFileSync(countFile, String(count + 1));
 const response = JSON.parse(readFileSync(dir + "/responses.json", "utf8"))[count];
 if (!response) { console.error("unexpected API call"); process.exit(1); }
-if (response.pages) console.log(JSON.stringify(response.pages));
+if (response.pages) for (const page of response.pages) console.log(JSON.stringify(page));
 if (response.error) { console.error(response.error); process.exit(1); }
 `);
   // Keep the actual jq evaluator: mocking its JSON output would hide broken filters.
@@ -197,7 +198,7 @@ test("pass mode rejects failed checks while the default waits only for completio
 
 test("TERM interrupts an event wait and reaps its tail child", async () => {
   const { dir, env } = fixture();
-  executable(dir, "gh", "#!/usr/bin/env bash\nprintf '[{\"check_runs\":[]}]\\n'\n");
+  executable(dir, "gh", "#!/usr/bin/env bash\nprintf '{\"check_runs\":[]}\\n'\n");
   executable(dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\nprintf 'tail-ready\\n' >&2\nexec '${realTail}' "$@"\n`);
   executable(dir, "jq", `#!/usr/bin/env bash\n'${realJq}' "$@"\nstatus=$?\nif [[ "$*" == *'length > 0'* ]]; then printf 'waiting\\n' >&2; fi\nexit "$status"\n`);
   const child = Bun.spawn(["bash", join(scripts, "wait-ci.sh"), "head"], { env, stdout: "pipe", stderr: "pipe", timeout: 3000 });
@@ -221,7 +222,7 @@ test("TERM interrupts an event wait and reaps its tail child", async () => {
 
 test("an ended tail fails instead of spinning on EOF", () => {
   const { dir, env } = fixture();
-  executable(dir, "gh", "#!/usr/bin/env bash\nprintf '[{\"check_runs\":[]}]\\n'\n");
+  executable(dir, "gh", "#!/usr/bin/env bash\nprintf '{\"check_runs\":[]}\\n'\n");
   executable(dir, "tail", '#!/usr/bin/env bash\nprintf "%s" "$$" > "$RUNNER_TEMP/tail-pid"\n');
   const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env, timeout: 3000 });
   expect(result.exitCode).toBe(1);
