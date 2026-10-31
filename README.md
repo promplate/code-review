@@ -6,6 +6,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
 - everything else as regular PR comments, including answers to PR comments
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
+- out-of-scope problems it is certain of but cannot fix with certainty opened as issues
 - routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
 - awareness of the repository's CI, waiting for workflows that push fixes such as formatting

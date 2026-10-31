@@ -213,7 +213,7 @@ runs:
           MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: commit certain fixes as usual, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
             Commits that landed through a reviewed PR need only a look at what merging could break. If commit-fix.sh is rejected, for example by branch protection, open a PR with the fix as above instead."
         fi
-        INSTRUCTIONS="Report real bugs, security issues and regressions only; nit-level findings must use level=notice. \
+        INSTRUCTIONS="Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
            summary: one short paragraph explaining the verdict only; it becomes the check run summary and, for must-fix issues, the change request body. \
            Everything that does not change the verdict, such as replies to activity, non-blocking findings and PRs opened for out-of-scope fixes, goes into regular comments you post yourself with $COMMENT, never into review threads except to close them as below. \
@@ -221,13 +221,15 @@ runs:
            Across all output, write native, concise, informative English: use established technical terminology rather than perpetuating questionable repository names, while matching collaborators' writing conventions. Omit boilerplate, routine validation results already visible in CI, filler, and implicit contrasts; use a qualifier only when its contrast is meaningful and explicit. Never mention syntax checks unless they fail or the repo uses an unusual DSL. line must be a line number in the new file. \
            Use GFM deliberately: full 40-character SHAs without backticks for this repository's commits, #123 for its PRs/issues, owner/repo#123 for other GitHub repositories, and [short SHA](full commit URL) for external commits. For other links, use [text](url \"title\"), prefer deep links, and choose a semantic title such as the page or section title, optionally followed by the site name. \
            commits: give exactly one verdict for every reviewed head SHA in $COMMITS and every commit CI pushed during this review; failure only for a commit that introduced a must-fix issue, success for innocent or fixing commits. \
-           reactions: choose 1-3 final PR-body reactions; use -1 or confused for clearly unjustified low-quality changes or convention violations. \
+           reactions: choose 1-3 final PR-body reactions that agree with the verdict; never use a positive reaction such as +1 or hooray when the verdict is failure, and use -1 or confused for clearly unjustified low-quality changes or convention violations. \
            merge: if the verdict is success and you are certain the PR needs no human judgment, such as a routine dependency update or a change that cannot affect behavior, search git log --first-parent origin/$BASE for PRs like it and, when they were merged, copy how: method, commit subject and body; otherwise null. It is merged only after all other checks pass. \
            Learn this repository's CI from .github/workflows. When a workflow run on this commit may push fixes such as formatting to the branch, wait for it with bash $GITHUB_ACTION_PATH/scripts/wait-ci.sh $HEAD_SHA '<check run name regex>', which blocks until those checks finish, before judging what it fixes, \
            then git fetch origin $HEAD_BRANCH; if CI pushed, git reset --hard FETCH_HEAD, review its commits too and never redo its changes. \
            If and only if a small fix is completely certain, edit the files and run bash $GITHUB_ACTION_PATH/scripts/commit-fix.sh '<commit headline>' <changed paths> once to commit all such fixes; never use git commit or git push, and never commit uncertain fixes. When you comment on a fix you committed, lead with what you found before how you fixed it, as in \"Found <problem> and fixed it in <SHA>.\", then add details. When a fix settles a review thread you opened, reply in that thread instead, naming the fix commit, with bash $GITHUB_ACTION_PATH/scripts/resolve-thread.sh <id of a comment in it> '<reply>', which also resolves it; comment ids are in gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments. \
            Read other PRs only when they bear on this review, such as touching the same code, being referenced, or possibly covering a fix you consider; pick them from titles and changed files (gh pr list --json number,title,files) before reading their discussions. \
-           Keep this review in scope: for a certain fix outside its scope, run git worktree add \"\$RUNNER_TEMP/<branch>\" origin/$BASE, apply the fix there, and run bash $GITHUB_ACTION_PATH/scripts/open-pr.sh '<branch>' '<title>' '<body>' <changed paths> from that worktree; open one PR per independent fix, mention $MENTION in its body, first check gh pr list to avoid duplicates, and reference opened PRs in summary. \           $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
+           Keep this review in scope: for a certain fix outside its scope, run git worktree add \"\$RUNNER_TEMP/<branch>\" origin/$BASE, apply the fix there, and run bash $GITHUB_ACTION_PATH/scripts/open-pr.sh '<branch>' '<title>' '<body>' <changed paths> from that worktree; open one PR per independent fix, mention $MENTION in its body, first check gh pr list to avoid duplicates, and link opened PRs in regular comments. \
+           For an out-of-scope problem you are certain is real but cannot fix with certainty, open an issue with gh issue create instead, after checking gh issue list --search for duplicates, mention $MENTION in it, and link it in a regular comment. \
+           $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         ACTIVITY=${ACTIVITY:+New GitHub activity on $SUBJECT while no review was running: $ACTIVITY}
         if [ -n "$FORK_KEY" ]; then
           cp -R "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
@@ -373,9 +375,12 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null || true
+        # Replace only this bot's reactions; earlier verdicts must not leave contradictory signals behind.
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/reactions?per_page=100" --paginate </dev/null \
+          | jq -r --slurpfile review "$RUNNER_TEMP/review.json" '.[] | select(.user.login == env.BOT_LOGIN) | select(.content as $content | $review[0].reactions | index($content) | not) | .id' \
+          | while read -r id; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$id -X DELETE </dev/null; done
         echo "EYES_REACTION_ID=" >> "$GITHUB_ENV"
-        jq -r '.reactions[]' "$RUNNER_TEMP/review.json" | while read -r reaction; do
+        jq -r '.reactions | unique[]' "$RUNNER_TEMP/review.json" | while read -r reaction; do
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions -f content="$reaction" </dev/null
         done
 
