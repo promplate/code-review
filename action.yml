@@ -68,7 +68,7 @@ runs:
           printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
-        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "/tmp/codex-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
+        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
 
     - uses: actions/checkout@v7
       with:
@@ -147,9 +147,9 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: |
-          /tmp/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
-          /tmp/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
-          /tmp/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
+          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
+          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
+          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
         key: "codex-review-${{ steps.check.outputs.fork-key }}:"
 
     - name: Reuse the runner's Bun
@@ -260,7 +260,7 @@ runs:
            $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         ACTIVITY=${ACTIVITY:+New GitHub activity on $SUBJECT while no review was running: $ACTIVITY}
         if [ -n "$FORK_KEY" ]; then
-          cp -R "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "/tmp/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
+          cp -R "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
