@@ -69,27 +69,15 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
              codex-config: ${{ secrets.CODEX_CONFIG }}
    ```
 
-Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers:
+Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers. They start runs only when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)), so a workflow added on a PR branch can review that PR but cannot take comments until it reaches the default branch.
 
-```yaml
-on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-  issue_comment:
-    types: [created, edited, deleted]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
-```
-
-These triggers, like `repository_dispatch`, only start runs when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)). A workflow added only on a PR branch can review that PR, but cannot receive comment wake-ups until it reaches the default branch.
-
-Each run seeds the webhook that started it into its event stream in the same shape the broker relays, so the review hooks read one stream and dedupe by an id derived from the webhook body. A run started for a comment another run was already handling is skipped. Comments posted between runs are replayed from the last consumed event, so nothing needs to be dispatched or acknowledged:
+Each run seeds the webhook that started it into its event stream in the same shape the broker relays, so the review hooks read one stream and dedupe by an id derived from the webhook body. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
+
+Add `repository_dispatch: { types: [codex-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.
 
 ## Pushes
 
