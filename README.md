@@ -51,7 +51,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      id-token: write
 
    concurrency:
-     group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
+     # The App's own comments and reviews only produce skipped runs, so they must not take the slot of a review that has to wait for a runner.
+     group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ github.event.sender.login == 'muspi-merol-review[bot]' && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
 
    jobs:
      review:
@@ -74,6 +75,7 @@ Comments and reviews wake a new review by starting a workflow run themselves, th
 Each run seeds the webhook that started it into its event stream in the same shape the broker relays, so the review hooks read one stream and dedupe by an id derived from the webhook body. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
+- A run started by the App's own comment or review skips, and sits in its own concurrency group, so it can never cancel a review that is waiting for a runner.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 
