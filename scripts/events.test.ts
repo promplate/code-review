@@ -266,8 +266,7 @@ process.exit(28);
 `);
   executable(dir, "seq", "#!/usr/bin/env bash\nprintf '1\\n2\\n3\\n'\n");
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
-  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
-  const subscription = action.runs.steps.find((step: any) => step.name === "Subscribe PR updates via SSE").run;
+  const subscription = step("Subscribe PR updates via SSE").run;
   mkdirSync(join(dir, "sessions"), { recursive: true });
   writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify(["dispatch"]));
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", sender: { login: "collaborator", type: "User" } }));
@@ -292,8 +291,7 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   executable(dir, "curl", "#!/usr/bin/env bash\nexit 28\n");
   executable(dir, "seq", "#!/usr/bin/env bash\nprintf '1\\n'\n");
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
-  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
-  const subscription = action.runs.steps.find((step: any) => step.name === "Subscribe PR updates via SSE").run;
+  const subscription = step("Subscribe PR updates via SSE").run;
   expect(subscription).toContain('| awk -f "$GITHUB_ACTION_PATH/scripts/sse-frames.awk"');
   expect(subscription).toContain("&sha=$HEAD_SHA&run=$GITHUB_RUN_ID");
   const result = Bun.spawnSync(["bash", "-c", subscription + '\nwait "$!"'], { env: { ...env, EVENTS_URL: "https://example.test/events?token=fixture", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(dir, "event.json"), ACTIVITY_ID: delivery, ACTIVITY_WRITER: "true" }, timeout: 3000 });
@@ -306,14 +304,15 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   expect(parsed.event).toBe("issue_comment");
   expect(JSON.parse(parsed.body)).toEqual(JSON.parse(readFileSync(join(dir, "event.json"), "utf8")));
   expect(parsed.writer).toBe(true);
-  const review = action.runs.steps.find((step: any) => step.name === "Run codex review");
+  const review = step("Run codex review");
   expect(review.env.JOB_CHECK_RUN_ID).toBe("${{ job.check_run_id }}");
   expect(review.env.ACTIVITY).toBeUndefined();
 });
 
+const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
+
 function gateStep() {
-  const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any;
-  return action.runs.steps.find((step: any) => step.name === "Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
+  return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
 
 function runGate(dir: string, env: Record<string, string>) {

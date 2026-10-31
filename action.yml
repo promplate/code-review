@@ -204,7 +204,6 @@ runs:
         bun-version: ${{ inputs.bun-version }}
 
     - name: Configure codex
-      id: codex
       if: env.SKIP != 'true'
       shell: bash
       env:
@@ -227,9 +226,8 @@ runs:
         CODEX_RUNTIME=
         # Bun runs the npm launcher, but native binaries and shell wrappers execute directly.
         case "$(file -Lb "$CODEX_BIN")" in *JavaScript*|*Node.js*|*node\ script*) CODEX_RUNTIME=bun ;; esac
-        printf 'CODEX_BIN=%s\nCODEX_RUNTIME=%s\n' "$CODEX_BIN" "$CODEX_RUNTIME" >> "$GITHUB_ENV"
         RUNTIME_INFO="Bun $(bun --version); $($CODEX_RUNTIME "$CODEX_BIN" --version)"
-        echo "runtime=$RUNTIME_INFO" >> "$GITHUB_OUTPUT"
+        printf 'CODEX_BIN=%s\nCODEX_RUNTIME=%s\nRUNTIME_INFO=%s\n' "$CODEX_BIN" "$CODEX_RUNTIME" "$RUNTIME_INFO" >> "$GITHUB_ENV"
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
@@ -282,7 +280,7 @@ runs:
           MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: commit certain fixes as usual, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
             Commits that landed through a reviewed PR need only a look at what merging could break. If commit-fix.sh is rejected, for example by branch protection, open a PR with the fix as above instead."
         fi
-        INSTRUCTIONS="Available review tooling: ${{ steps.codex.outputs.runtime }}. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
+        INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
            Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
            summary: one short paragraph explaining the verdict only; it becomes the check run summary and, for must-fix issues, the change request body. \
@@ -301,7 +299,8 @@ runs:
            For an out-of-scope problem you are certain is real but cannot fix with certainty, open an issue with gh issue create instead, after checking gh issue list --search for duplicates, mention $MENTION in it, and link it in a regular comment. \
            $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         if [ -n "$FORK_KEY" ]; then
-          cp -R "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/sessions" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY/last-thread-id" "$CODEX_HOME/"
+          fork=${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY
+          cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
@@ -473,14 +472,8 @@ runs:
       run: |
         merge=$(jq -c 'select(.conclusion == "success") | .merge // empty' "$RUNNER_TEMP/review.json")
         [ -n "$merge" ] || exit 0
-        # This job's own check run is still in progress, so wait for every other check on the head instead.
-        deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
-        until checks=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs?per_page=100" \
-          --jq "[.check_runs[] | select(.id != $JOB_CHECK_RUN_ID)]" </dev/null) && jq -e 'all(.status == "completed")' <<< "$checks" > /dev/null; do
-          [ "$SECONDS" -lt "$deadline" ] || { echo "::notice::Not merging: checks did not finish within ${WAIT_CI_TIMEOUT:-1800}s."; exit 0; }
-          sleep 30
-        done
-        jq -e 'all(.conclusion | IN("success", "neutral", "skipped"))' <<< "$checks" > /dev/null || { echo "::notice::Not merging: some checks did not pass."; exit 0; }
+        # The shared wait excludes this job's own check runs, wakes on the SSE stream and gives up at WAIT_CI_TIMEOUT instead of holding the runner.
+        bash "$GITHUB_ACTION_PATH/scripts/wait-ci.sh" "$HEAD_SHA" '.' pass || { echo "::notice::Not merging: checks did not all pass in time."; exit 0; }
         # Workflows a push woke, such as a formatter, can move the branch past the reviewed commit; merging then would land code no review saw.
         head=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq .head.sha </dev/null)
         [ "$head" = "$HEAD_SHA" ] || { echo "::notice::Not merging: the branch moved past $HEAD_SHA to $head."; exit 0; }

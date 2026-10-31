@@ -3,11 +3,9 @@
 set -euo pipefail
 export SHA=$1 NAME=${2:-.}
 checks() {
-  local pages
-  pages=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?filter=latest&per_page=100" --paginate < /dev/null) || return
-  jq -s -c '[.[].check_runs[] | select((.id | tostring) != (env.CHECK_ID // "") and (.id | tostring) != (env.JOB_CHECK_RUN_ID // ""))
+  gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?filter=latest&per_page=100" --paginate < /dev/null | jq -s -c '[.[].check_runs[] | select((.id | tostring) != (env.CHECK_ID // "") and (.id | tostring) != (env.JOB_CHECK_RUN_ID // ""))
     | select(.name != "codex-review" or .app.slug != ((env.BOT_LOGIN // "") | rtrimstr("[bot]")))
-    | select(.name | test(env.NAME))]' <<< "$pages"
+    | select(.name | test(env.NAME))]'
 }
 # Reading from the start covers webhooks arriving between the API request and the wait.
 exec 3< <(exec tail -n +1 -F "$RUNNER_TEMP/sse.jsonl")
@@ -23,6 +21,8 @@ while true; do
   [ "$SECONDS" -lt "$deadline" ] || { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
   while true; do
     if IFS= read -r -t 30 line <&3; then
+      # Most frames are for other commits, and jq per line costs more than the match that rejects them.
+      grep -qF -- "$SHA" <<< "$line" || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
         | ($event == "check_run" and .check_run.head_sha == env.SHA) or ($event == "workflow_run" and .workflow_run.head_sha == env.SHA) or ($event == "status" and .sha == env.SHA)' <<< "$line" > /dev/null; then break; fi
     else
