@@ -318,6 +318,8 @@ runs:
         if [ -n "$FORK_KEY" ]; then
           fork=${{ runner.temp }}/code-review-homes/${{ github.repository }}/$FORK_KEY
           cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
+          # The conversation transfers, but events filtered for the source PR were never consumed for this one.
+          rm -f "$CODEX_HOME/sessions/.github-cursor" "$CODEX_HOME/sessions/.github-deliveries.json"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \

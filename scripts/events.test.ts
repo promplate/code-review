@@ -398,6 +398,19 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
 
 const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
 
+test("forking a review copies its conversation but not another PRs consumption position", () => {
+  const { dir, env } = fixture(), source = join(dir, "code-review-homes/owner/repo/source"), target = join(dir, "target");
+  mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
+  for (const name of [".github-cursor", ".github-deliveries.json", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
+  writeFileSync(join(source, "last-thread-id"), "thread");
+  const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
+  const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
+  expect(existsSync(join(target, "sessions/.github-cursor"))).toBe(false);
+  expect(existsSync(join(target, "sessions/.github-deliveries.json"))).toBe(false);
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
