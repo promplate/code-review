@@ -14,20 +14,26 @@ trap 'exec 3<&-; kill "$tail_pid" 2>/dev/null || true; wait "$tail_pid" 2>/dev/n
 trap 'exit 130' INT
 trap 'exit 143' TERM
 deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
+expired() { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
 while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
   # An empty list usually means the checks have not appeared yet, except for callers that may proceed without any.
   if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
   # Checks that never match must fail the wait instead of hanging the review until the job timeout.
-  [ "$SECONDS" -lt "$deadline" ] || { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
+  [ "$SECONDS" -lt "$deadline" ] || expired
   while true; do
-    if IFS= read -r -t 30 line <&3; then
+    # Heartbeats and unrelated events can keep read succeeding forever; neither may extend the deadline.
+    remaining=$((deadline - SECONDS))
+    [ "$remaining" -gt 0 ] || expired
+    if IFS= read -r -t "$((remaining < 30 ? remaining : 30))" line <&3; then
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
       grep -qF -- "$SHA" <<< "$line" || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
         | ($event == "check_run" and .check_run.head_sha == env.SHA) or ($event == "workflow_run" and .workflow_run.head_sha == env.SHA) or ($event == "status" and .sha == env.SHA)' <<< "$line" > /dev/null; then break; fi
     else
-      [ "$?" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+      status=$?
+      [ "$SECONDS" -lt "$deadline" ] || expired
+      [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
       break
     fi
   done

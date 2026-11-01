@@ -240,6 +240,16 @@ test("an ended tail fails instead of spinning on EOF", () => {
   expectTailReleased(dir);
 });
 
+test.each(["heartbeat", "silence"])("CI deadline remains bounded during %s", (mode) => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", '#!/usr/bin/env bash\nprintf \'{"check_runs":[]}\\n\'\n');
+  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => { ${mode === "heartbeat" ? 'console.log(": ping")' : ''} }, 50);\n`);
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "1" }, timeout: 3000 });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("within 1s");
+  expectTailReleased(dir);
+});
+
 function parseFrames(input: string) {
   const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
