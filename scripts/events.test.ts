@@ -147,6 +147,17 @@ test("history plus pending replay is deduplicated within one Stop and across Sto
   expect(JSON.parse(readFileSync(join(dir, "injected-deliveries.json"), "utf8"))).toEqual(["same-delivery"]);
 });
 
+test("a failed context write leaves the event available for the next Stop", async () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event"));
+  const child = Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), stdout: "pipe", stderr: "pipe" });
+  await child.stdout.cancel();
+  expect(await child.exited).not.toBe(0);
+  const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+  expect(retry.exitCode).toBe(0);
+  expect(retry.stdout.toString()).toContain("pending-event");
+});
+
 test("CI wait paginates, excludes both owned IDs and only its own App review check", () => {
   const { result, dir, calls } = runCI([{ pages: [
     { check_runs: [check({ id: 10, status: "in_progress" }), check({ id: 11, status: "in_progress" }), check({ id: 12, name: "code-review", app: { slug: "reviewer" }, status: "in_progress" })] },

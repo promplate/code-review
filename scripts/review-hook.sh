@@ -41,9 +41,12 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
   ] | reduce .[] as $event ({seen: $seen, context: []}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
     | .context |= join("\n")
-' "$RUNNER_TEMP/sse.jsonl")
-jq -c .seen <<< "$result" > "$SEEN_FILE"
-context=$(jq -r .context <<< "$result")
-[ -n "$context" ] || exit 0
-subject=${PR_NUMBER:+PR #$PR_NUMBER}
-jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, reply with regular comments where useful, and output the full updated JSON review.")}'
+' "$RUNNER_TEMP/sse.jsonl") || exit 1
+context=$(jq -r .context <<< "$result") || exit 1
+jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
+if [ -n "$context" ]; then
+  subject=${PR_NUMBER:+PR #$PR_NUMBER}
+  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, reply with regular comments where useful, and output the full updated JSON review.")}' || exit 1
+fi
+# A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
+mv "$SEEN_FILE.new" "$SEEN_FILE"
