@@ -67,7 +67,11 @@ if (response.error) { console.error(response.error); process.exit(1); }
 
 function expectTailReleased(dir: string) {
   const pid = Number(readFileSync(join(dir, "tail-pid"), "utf8"));
-  expect(() => process.kill(pid, 0)).toThrow();
+  // A killed child can outlive its parent's exit for a few milliseconds, while a leaked one never leaves.
+  for (const deadline = performance.now() + 2000; ; Bun.sleepSync(5)) {
+    try { process.kill(pid, 0); } catch { return; }
+    if (performance.now() > deadline) throw new Error(`tail ${pid} outlived the wait`);
+  }
 }
 
 afterEach(() => {
