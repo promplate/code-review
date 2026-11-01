@@ -279,6 +279,17 @@ test("SSE only commits blank-line-terminated frames and discards reconnect fragm
   expect(parseFrames(first.replaceAll("\n", "\r\n"))).toBe(first);
 });
 
+test("a failed SSE write does not advance its replay cursor", async () => {
+  const { dir, env } = fixture(), cursor = join(dir, "sse.cursor");
+  writeFileSync(cursor, "previous\n");
+  const child = Bun.spawn(["bash", join(scripts, "sse-frames.sh")], {
+    env, stdin: Buffer.from(frame("status", { sha: "head", state: "success" }, "unwritten")), stdout: "pipe", stderr: "pipe",
+  });
+  await child.stdout.cancel();
+  expect(await child.exited).not.toBe(0);
+  expect(readFileSync(cursor, "utf8")).toBe("previous\n");
+});
+
 test.each([
   ["empty response", "", "dispatch"],
   ["heartbeat", ": ping\n\n", "dispatch"],
@@ -331,7 +342,7 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   executable(dir, "seq", "#!/usr/bin/env bash\nprintf '1\\n'\n");
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
   const subscription = step("Subscribe PR updates via SSE").run;
-  expect(subscription).toContain('| awk -f "$GITHUB_ACTION_PATH/scripts/sse-frames.awk"');
+  expect(subscription).toContain('| bash "$GITHUB_ACTION_PATH/scripts/sse-frames.sh"');
   expect(subscription).toContain("&sha=$HEAD_SHA&run=$GITHUB_RUN_ID");
   const result = Bun.spawnSync(["bash", "-c", subscription + '\nwait "$!"'], { env: { ...env, EVENTS_URL: "https://example.test/events?token=fixture", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(dir, "event.json"), ACTIVITY_ID: delivery, ACTIVITY_WRITER: "true" }, timeout: 3000 });
   expect(result.exitCode).toBe(0);
