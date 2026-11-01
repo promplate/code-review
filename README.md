@@ -89,6 +89,8 @@ Each run seeds the webhook that started it into its event stream in the same sha
 
 The broker's SSE cursor includes its storage epoch and sequence; event identity is separate. The action saves a consumption checkpoint with the review session only after the Stop hook writes its context successfully. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Older sessions without sequence checkpoints replay the retained window and dedupe it locally.
 
+The broker must return HTTP 200 with `Content-Type: text/event-stream`. The subscription retries failures with jittered backoff up to 30 seconds and exposes interruptions to the review; an HTML error page or a timeout before response headers cannot count as a healthy stream. Stopping the subscription also stops its curl, parser and retry timer.
+
 History is bounded. When continuity cannot be established, a `replay_gap` notification asks the review to reconcile current state, CI and discussion through GitHub, checking commenters' write access before following instructions. This requests recovery; it does not reconstruct deleted history or prove the model completed those reads. A crash after writing context can replay it, and a thread-triggered run can see both its trigger and broker copy; delivery is not exactly once.
 
 Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.

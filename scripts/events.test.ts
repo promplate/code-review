@@ -8,6 +8,7 @@ const scripts = process.env.REVIEW_SCRIPTS_PATH || import.meta.dir;
 const realJq = Bun.which("jq")!;
 const realTail = Bun.which("tail")!;
 const realSleep = Bun.which("sleep")!;
+const realCurl = Bun.which("curl")!;
 const homes: string[] = [];
 const human = { login: "collaborator", type: "User" };
 const bot = { login: "ci[bot]", type: "Bot" };
@@ -344,6 +345,16 @@ test("a failed SSE write does not advance its replay cursor", async () => {
   expect(readFileSync(cursor, "utf8")).toBe("previous\n");
 });
 
+test("HTTP framing skips informational headers before accepting an HTTP/2 event stream", () => {
+  const { dir, env } = fixture(), response = join(dir, "response");
+  const event = frame("status", { sha: "head", state: "success" }, "accepted");
+  const headers = "HTTP/1.1 103 Early Hints\r\nLink: </asset>\r\n\r\nHTTP/2 200\r\ncOnTeNt-TyPe: Text/Event-Stream ; charset=utf-8\r\n\r\n";
+  const result = Bun.spawnSync(["bash", join(scripts, "sse-frames.sh"), response], { env, stdin: Buffer.from(headers + event) });
+  expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe(event);
+  expect(readFileSync(response, "utf8")).toBe("200 text/event-stream\n");
+  expect(readFileSync(join(dir, "sse.cursor"), "utf8")).toBe("accepted\n");
+});
+
 test("the subscription survives 360 HTTP failures and stops all its own children", async () => {
   const { dir, env } = fixture();
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
@@ -392,13 +403,37 @@ test("a failed stream writer records a visible terminal failure", () => {
   expect(readFileSync(join(dir, "sse.failed"), "utf8")).toContain("status 1");
 });
 
+test.each(["html", "wrong type with SSE bytes", "no headers", "empty SSE", "SSE rotation"])("the subscriber distinguishes %s from a failed response", async mode => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.cursor"), "previous\n");
+  executable(dir, "curl", `#!/usr/bin/env bash\nexec '${realCurl}' "$@" --max-time 0.1\n`);
+  executable(dir, "sleep", '#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> "$RUNNER_TEMP/delays"\n[ "$(wc -l < "$RUNNER_TEMP/delays")" -lt 2 ] || kill -TERM "$PPID"\n');
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    if (mode === "no headers") return new Promise<Response>(() => {});
+    if (mode === "html") return new Response("<html>Service unavailable</html>", { headers: { "content-type": "text/html" } });
+    if (mode === "wrong type with SSE bytes") return new Response(frame("status", { sha: "head", state: "success" }, "invalid-cursor"), { headers: { "content-type": "text/plain" } });
+    const body = mode === "empty SSE" ? "" : new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(": ping\n\n")); } });
+    return new Response(body, { headers: { "content-type": "Text/Event-Stream; charset=utf-8" } });
+  } });
+  const child = Bun.spawn(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: `${server.url}?fixture=1` }, stdout: "pipe", stderr: "pipe", timeout: 3000 });
+  try {
+    expect(await child.exited).toBe(143);
+    const failure = mode === "html" || mode === "wrong type with SSE bytes" || mode === "no headers";
+    expect(readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number)).toEqual(failure ? [1, 2] : [1, 1]);
+    const log = readFileSync(join(dir, "sse.jsonl"), "utf8");
+    expect(log.includes("connection_failed")).toBe(failure);
+    expect(log).not.toContain("invalid-cursor"); expect(log).not.toContain("<html>"); expect(log).not.toContain("content-type:");
+    expect(readFileSync(join(dir, "sse.cursor"), "utf8")).toBe("previous\n");
+  } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; server.stop(true); }
+});
+
 test.each([
   ["outage and recovery", [22, 22, 22, 22, 22, 22, 22, 22, 28, 7, 0, 22, 22], [[1, 1], [2, 2], [3, 4], [6, 8], [12, 16], [23, 30], [23, 30], [23, 30], [1, 1], [1, 1], [1, 1], [1, 1], [2, 2]]],
   ["healthy rotations", [28, 28, 0], [[1, 1], [1, 1], [1, 1]]],
 ] as const)("subscription retry delays stay bounded through %s", (_, statuses, bounds) => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "statuses"), statuses.join("\n") + "\n");
-  executable(dir, "curl", '#!/usr/bin/env bash\ncount=$(wc -l < "$RUNNER_TEMP/delays" 2>/dev/null || echo 0)\nexit "$(sed -n "$((count + 1))p" "$RUNNER_TEMP/statuses")"\n');
+  executable(dir, "curl", '#!/usr/bin/env bash\nprintf "HTTP/1.1 200 OK\\r\\nContent-Type: text/event-stream\\r\\n\\r\\n"\ncount=$(wc -l < "$RUNNER_TEMP/delays" 2>/dev/null || echo 0)\nexit "$(sed -n "$((count + 1))p" "$RUNNER_TEMP/statuses")"\n');
   executable(dir, "sleep", `#!/usr/bin/env bash\nprintf '%s\\n' "$1" >> "$RUNNER_TEMP/delays"\n[ "$(wc -l < "$RUNNER_TEMP/delays")" -lt ${statuses.length} ] || kill -TERM "$PPID"\n`);
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(143);
@@ -412,7 +447,7 @@ test.each([
 
 test("branch subscriptions do not require a PR number", () => {
   const { dir, env } = fixture(), { PR_NUMBER: _, ...branchEnv } = env;
-  executable(dir, "curl", '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/curl-args"\nexit 28\n');
+  executable(dir, "curl", '#!/usr/bin/env bash\nprintf "HTTP/1.1 200 OK\\r\\nContent-Type: text/event-stream\\r\\n\\r\\n"\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/curl-args"\nexit 28\n');
   executable(dir, "sleep", '#!/usr/bin/env bash\nkill -TERM "$PPID"\n');
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...branchEnv, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(143);
@@ -459,6 +494,7 @@ const dir = process.env.RUNNER_TEMP;
 const log = dir + "/curl-calls";
 const count = existsSync(log) ? readFileSync(log, "utf8").trim().split("\\n").length : 0;
 appendFileSync(log, JSON.stringify(process.argv.slice(2)) + "\\n");
+process.stdout.write("HTTP/1.1 200 OK\\r\\nContent-Type: text/event-stream\\r\\n\\r\\n");
 process.stdout.write(readFileSync(dir + "/response-" + count));
 process.exit(28);
 `);
@@ -488,7 +524,7 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi" } }));
   const body = Bun.spawnSync(["jq", "-c", ".", join(dir, "event.json")]).stdout.toString().trim();
   const delivery = Bun.spawnSync(["bash", "-c", 'printf %s "$0" | sha256sum | cut -c1-40', body]).stdout.toString().trim();
-  executable(dir, "curl", "#!/usr/bin/env bash\nexit 28\n");
+  executable(dir, "curl", '#!/usr/bin/env bash\nprintf "HTTP/1.1 200 OK\\r\\nContent-Type: text/event-stream\\r\\n\\r\\n"\nexit 28\n');
   executable(dir, "sleep", '#!/usr/bin/env bash\nkill -TERM "$PPID"\n');
   const subscription = step("Subscribe PR updates via SSE").run;
   expect(subscription).toContain('bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh"');
