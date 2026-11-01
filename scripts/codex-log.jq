@@ -14,5 +14,5 @@ fromjson? // {type: "error", message: .}
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type
   else empty end
-# GitHub's live log view drops empty lines, so blank lines between and within entries hold a single space.
-| " \n" + gsub("\n(?=\n)"; "\n ")
+# The live log view hides empty lines; keep them empty rather than filling them with a space that shows up in copied logs.
+| . + "\n"
