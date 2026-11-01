@@ -19,8 +19,6 @@ while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
   # An empty list usually means the checks have not appeared yet, except for callers that may proceed without any.
   if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
-  # Checks that never match must fail the wait instead of hanging the review until the job timeout.
-  [ "$SECONDS" -lt "$deadline" ] || expired
   recheck=$((SECONDS + ${WAIT_CI_RECHECK:-30}))
   while true; do
     # Heartbeats cannot postpone either the deadline or the API fallback for a missed webhook.
@@ -30,7 +28,7 @@ while true; do
     [ "$remaining" -gt 0 ] || continue
     if IFS= read -r -t "$remaining" line <&3; then
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
-      grep -qF -- "$SHA" <<< "$line" || continue
+      [[ "$line" == *"$SHA"* ]] || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
         | ($event == "check_run" and .check_run.head_sha == env.SHA) or ($event == "workflow_run" and .workflow_run.head_sha == env.SHA) or ($event == "status" and .sha == env.SHA)' <<< "$line" > /dev/null; then break; fi
     else
