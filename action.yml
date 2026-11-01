@@ -391,7 +391,8 @@ runs:
         done
         if [ -n "$NEWER" ]; then
           echo "SUPERSEDED=true" >> "$GITHUB_ENV"
-          jq -n --arg newer "$NEWER" '{status: "in_progress", output: {
+          # A check left in progress would wait forever on a commit nothing will finish reviewing.
+          jq -n --arg newer "$NEWER" '{status: "completed", conclusion: "cancelled", output: {
             title: ("Superseded by " + $newer[0:7] + " — review continues there"),
             summary: "A newer commit was pushed during this review, so no verdict is posted for this commit."}}' \
             | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
