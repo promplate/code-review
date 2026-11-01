@@ -103,6 +103,17 @@ test("a replay gap requests GitHub reconciliation once without trusting recovere
   expect(parseFrames(gap)).toBe(gap);
 });
 
+test("gap control frames do not break CI waiting or publishing newer heads", () => {
+  const gap = `event: replay_gap\ndata: ${JSON.stringify({ event: "replay_gap", delivery: "gap:head", writer: false, body: JSON.stringify({ reason: "expired" }) })}\n\n`;
+  const ci = runCI([{ pages: [{ check_runs: [check({ status: "in_progress" })] }] }, { pages: [{ check_runs: [check()] }] }], gap + frame("status", { sha: "head", state: "success" }));
+  expect(ci.result.exitCode).toBe(0); expect(ci.calls).toBe(2); expectTailReleased(ci.dir);
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.jsonl"), gap + frame("pull_request", { action: "synchronize", number: 7, after: "newer" }));
+  const publish = step("Publish check run").run.split("# Pushes made")[0] + '\nprintf "%s" "$PUSHED"';
+  const result = Bun.spawnSync(["bash", "-ec", publish], { env });
+  expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("newer");
+});
+
 test("consumption checkpoints cover the Stop snapshot, never later arrivals", () => {
   const one = frame("issue_comment", { issue: { number: 7 }, comment: { body: "first" } }, "first", true, "seq:epoch:1");
   const two = frame("issue_comment", { issue: { number: 8 }, comment: { body: "other PR" } }, "second", true, "seq:epoch:2");
