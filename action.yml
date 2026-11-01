@@ -416,6 +416,8 @@ runs:
             title: ("Superseded by " + $newer[0:7] + " — review continues there"),
             summary: "A newer commit was pushed during this review, so no verdict is posted for this commit."}}' \
             | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
+          # The run that continues on the newer commit keeps its own reaction; this one is done waiting.
+          [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
           exit 0
         fi
         jq -n --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
