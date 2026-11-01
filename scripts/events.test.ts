@@ -284,6 +284,16 @@ test.each(["heartbeat", "silence"])("CI deadline remains bounded during %s", (mo
   expectTailReleased(dir);
 });
 
+test("heartbeats do not postpone the fallback CI check after a missed webhook", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}\nimport { existsSync, writeFileSync } from "node:fs";\nconst marker = process.env.RUNNER_TEMP + "/checked";\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => console.log(": ping"), 50);\n`);
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "2", WAIT_CI_RECHECK: "1" }, timeout: 4000 });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("test: success");
+  expectTailReleased(dir);
+});
+
 function parseFrames(input: string) {
   const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);

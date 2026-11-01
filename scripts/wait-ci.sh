@@ -21,11 +21,13 @@ while true; do
   if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
   # Checks that never match must fail the wait instead of hanging the review until the job timeout.
   [ "$SECONDS" -lt "$deadline" ] || expired
+  recheck=$((SECONDS + ${WAIT_CI_RECHECK:-30}))
   while true; do
-    # Heartbeats and unrelated events can keep read succeeding forever; neither may extend the deadline.
-    remaining=$((deadline - SECONDS))
-    [ "$remaining" -gt 0 ] || expired
-    if IFS= read -r -t "$((remaining < 30 ? remaining : 30))" line <&3; then
+    # Heartbeats cannot postpone either the deadline or the API fallback for a missed webhook.
+    [ "$SECONDS" -lt "$deadline" ] || expired
+    [ "$SECONDS" -lt "$recheck" ] || break
+    remaining=$(((deadline < recheck ? deadline : recheck) - SECONDS))
+    if IFS= read -r -t "$remaining" line <&3; then
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
       grep -qF -- "$SHA" <<< "$line" || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
@@ -33,6 +35,7 @@ while true; do
     else
       status=$?
       [ "$SECONDS" -lt "$deadline" ] || expired
+      [ "$SECONDS" -lt "$recheck" ] || break
       [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
       break
     fi
