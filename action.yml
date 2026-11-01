@@ -509,6 +509,8 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
+        # The wait identifies this workflow's other runs, which the App token cannot list.
+        ACTIONS_TOKEN: ${{ github.token }}
       run: |
         merge=$(jq -c 'select(.conclusion == "success") | .merge // empty' "$RUNNER_TEMP/review.json")
         [ -n "$merge" ] || exit 0

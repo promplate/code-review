@@ -231,6 +231,29 @@ test("CI wait paginates, excludes both owned IDs and only its own App review che
   expectTailReleased(dir);
 });
 
+test("another run of this workflow is review status, not CI", () => {
+  const { result, dir, calls } = runCI([
+    { pages: [{ workflow_id: 42 }] },
+    { pages: [{ workflow_runs: [{ id: 1, workflow_id: 42, check_suite_id: 7 }] }] },
+    { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] },
+  ], "", [".", "pass"], { ACTIONS_TOKEN: "job-token" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("test: success\n");
+  expect(calls).toBe(3);
+  expectTailReleased(dir);
+});
+
+test("a queued check from another workflow still blocks the wait", () => {
+  const { result, dir } = runCI([
+    { pages: [{ workflow_id: 42 }] },
+    { pages: [{ workflow_runs: [{ id: 1, workflow_id: 42, check_suite_id: 7 }] }] },
+    { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 9 } })] }] },
+  ], "", [".", "pass"], { ACTIONS_TOKEN: "job-token", WAIT_CI_TIMEOUT: "0" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("No CI checks matching");
+  expectTailReleased(dir);
+});
+
 test("zero matching checks waits for an SSE event instead of succeeding vacuously", () => {
   const { result, calls, dir } = runCI([{ pages: [{ check_runs: [check({ name: "unrelated" })] }] }, { pages: [{ check_runs: [check()] }] }],
     frame("check_run", { action: "completed", check_run: check() }), ["^test$"]);
