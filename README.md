@@ -80,12 +80,16 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 
 Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers. They start runs only when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)), so a workflow added on a PR branch can review that PR but cannot take comments until it reaches the default branch.
 
-Each run seeds the webhook that started it into its event stream in the same shape the broker relays, so the review hooks read one stream and dedupe by an id derived from the webhook body. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
+Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
 - A run started by the App's own comment or review skips, and sits in its own concurrency group, so it can never cancel a review that is waiting for a runner.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
+
+The broker's SSE cursor includes its storage epoch and sequence; event identity is separate. The action saves a consumption checkpoint with the review session only after the Stop hook writes its context successfully. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Older sessions without sequence checkpoints replay the retained window and dedupe it locally.
+
+History is bounded. When continuity cannot be established, a `replay_gap` notification asks the review to reconcile current state, CI and discussion through GitHub, checking commenters' write access before following instructions. This requests recovery; it does not reconstruct deleted history or prove the model completed those reads. A crash after writing context can replay it, and a thread-triggered run can see both its trigger and broker copy; delivery is not exactly once.
 
 Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.
 
