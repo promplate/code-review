@@ -100,6 +100,8 @@ runs:
         # The webhook that started this run also reached any review running at the time, so a consumed event needs no second pass.
         key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // ""), (.comment.updated_at // .review.submitted_at // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
         id=$(printf %s "$key" | sha256sum | cut -c1-40)
+        # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
+        [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
         # Only activity is skippable: a queued run for a new head still has code to review.

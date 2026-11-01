@@ -445,6 +445,25 @@ test("the action distinguishes workflow attempts on the same SHA", () => {
   }
 });
 
+test("a repeated thread transition is not skipped as an older trigger", () => {
+  const { dir, env } = fixture();
+  mkdirSync(join(dir, "sessions"), { recursive: true });
+  writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "resolved", sender: human, pull_request: { number: 7 }, thread: { node_id: "thread", comments: [] } }));
+  executable(dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  const vars = { ...env, GITHUB_EVENT_NAME: "pull_request_review_thread", GITHUB_EVENT_PATH: join(dir, "event.json") };
+  const first = /ACTIVITY_ID=(.*)/.exec(runGate(dir, vars))![1];
+  writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify([first]));
+  expect(runGate(dir, { ...vars, GITHUB_RUN_ID: "13" })).not.toContain("SKIP=true");
+});
+
+test("review thread context derives resolution from the webhook action", () => {
+  for (const action of ["resolved", "unresolved"]) {
+    const { output } = runHook(frame("pull_request_review_thread", { action, pull_request: { number: 7 }, thread: { node_id: "thread", comments: [{ path: "file.ts", html_url: "https://github.com/owner/repo/pull/7#discussion_r1" }] } }, `webhook:${action}`));
+    expect(output).toContain(`\\"resolved\\":${action === "resolved"}`);
+    expect(output).toContain("discussion_r1");
+  }
+});
+
 test("the action and the broker derive one id for a webhook, whatever it contains", () => {
   const { dir } = fixture();
   const payload = { action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 5, body: "del u007f: \u007f", updated_at: "2026-11-01T00:00:00Z" } };
