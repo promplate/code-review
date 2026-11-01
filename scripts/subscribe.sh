@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cursor=${1:-}
-curl_pid= parser_pid= sleep_pid= warned= pipe_dir=
+curl_pid= parser_pid= sleep_pid= warned= pipe_dir= retry_delay=1
 cleanup() {
   status=$?
   trap - EXIT
@@ -29,14 +29,17 @@ while true; do
   parser_status=0; wait "$parser_pid" || parser_status=$?; parser_pid=
   [ "$parser_status" = 0 ] || exit "$parser_status"
   [ ! -s "$RUNNER_TEMP/sse.cursor" ] || cursor=$(cat "$RUNNER_TEMP/sse.cursor")
-  # curl 28 is the normal connection rotation; HTTP/network errors require visible reconciliation while reconnecting.
+  delay=1
+  # curl 28 is the normal connection rotation; only HTTP/network errors back off, with jitter to spread concurrent jobs.
   if [ "$curl_status" != 0 ] && [ "$curl_status" != 28 ]; then
+    jitter=$((retry_delay / 4)); delay=$((retry_delay - jitter + RANDOM % (jitter + 1)))
+    retry_delay=$((retry_delay * 2)); [ "$retry_delay" -le 30 ] || retry_delay=30
     if [ "$warned" != "$cursor:failed" ]; then
       jq -nr --arg delivery "gap:connection:$cursor" --arg status "$curl_status" \
         '"event: replay_gap\ndata: \(({event: "replay_gap", delivery: $delivery, writer: false, body: ({reason: "connection_failed", status: $status} | tojson)} | tojson))\n"' >> "$RUNNER_TEMP/sse.jsonl"
       warned=$cursor:failed
     fi
-  else warned=; fi
-  sleep 1 & sleep_pid=$!
+  else warned=; retry_delay=1; fi
+  sleep "$delay" & sleep_pid=$!
   wait "$sleep_pid"; sleep_pid=
 done

@@ -7,6 +7,7 @@ const root = resolve(import.meta.dir, "..");
 const scripts = process.env.REVIEW_SCRIPTS_PATH || import.meta.dir;
 const realJq = Bun.which("jq")!;
 const realTail = Bun.which("tail")!;
+const realSleep = Bun.which("sleep")!;
 const homes: string[] = [];
 const human = { login: "collaborator", type: "User" };
 const bot = { login: "ci[bot]", type: "Bot" };
@@ -297,9 +298,10 @@ test.each(["heartbeat", "silence"])("CI deadline remains bounded during %s", (mo
   const { dir, env } = fixture();
   executable(dir, "gh", '#!/usr/bin/env bash\nprintf \'{"check_runs":[]}\\n\'\n');
   executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => { ${mode === "heartbeat" ? 'console.log(": ping")' : ''} }, 50);\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "1" }, timeout: 3000 });
+  // Bash's whole-second clock can exhaust a 1s budget before the child even writes its PID near a clock boundary.
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "2" }, timeout: 4000 });
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain("within 1s");
+  expect(result.stderr.toString()).toContain("within 2s");
   expectTailReleased(dir);
 });
 
@@ -390,6 +392,24 @@ test("a failed stream writer records a visible terminal failure", () => {
   expect(readFileSync(join(dir, "sse.failed"), "utf8")).toContain("status 1");
 });
 
+test.each([
+  ["outage and recovery", [22, 22, 22, 22, 22, 22, 22, 22, 28, 7, 0, 22, 22], [[1, 1], [2, 2], [3, 4], [6, 8], [12, 16], [23, 30], [23, 30], [23, 30], [1, 1], [1, 1], [1, 1], [1, 1], [2, 2]]],
+  ["healthy rotations", [28, 28, 0], [[1, 1], [1, 1], [1, 1]]],
+] as const)("subscription retry delays stay bounded through %s", (_, statuses, bounds) => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "statuses"), statuses.join("\n") + "\n");
+  executable(dir, "curl", '#!/usr/bin/env bash\ncount=$(wc -l < "$RUNNER_TEMP/delays" 2>/dev/null || echo 0)\nexit "$(sed -n "$((count + 1))p" "$RUNNER_TEMP/statuses")"\n');
+  executable(dir, "sleep", `#!/usr/bin/env bash\nprintf '%s\\n' "$1" >> "$RUNNER_TEMP/delays"\n[ "$(wc -l < "$RUNNER_TEMP/delays")" -lt ${statuses.length} ] || kill -TERM "$PPID"\n`);
+  const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
+  expect(child.exitCode).toBe(143);
+  const delays = readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number);
+  expect(delays).toHaveLength(bounds.length);
+  for (const [i, [min, max]] of bounds.entries()) { expect(delays[i]!).toBeGreaterThanOrEqual(min); expect(delays[i]!).toBeLessThanOrEqual(max); }
+  const { output, run } = runHook(readFileSync(join(dir, "sse.jsonl"), "utf8"));
+  expect((output.match(/connection_failed/g) || []).length).toBe(statuses.some(status => status !== 0 && status !== 28) ? 1 : 0);
+  expect(run().stdout.toString()).toBe("");
+});
+
 test("branch subscriptions do not require a PR number", () => {
   const { dir, env } = fixture(), { PR_NUMBER: _, ...branchEnv } = env;
   executable(dir, "curl", '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$RUNNER_TEMP/curl-args"\nexit 28\n');
@@ -397,6 +417,24 @@ test("branch subscriptions do not require a PR number", () => {
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...branchEnv, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(143);
   expect(readFileSync(join(dir, "curl-args"), "utf8")).toContain("&pr=&sha=head&run=12");
+});
+
+test("TERM interrupts a long retry delay after the failure becomes visible", async () => {
+  const { dir, env } = fixture();
+  executable(dir, "curl", "#!/usr/bin/env bash\nexit 22\n");
+  executable(dir, "sleep", `#!/usr/bin/env bash\n[ "$1" -ge 20 ] || exit 0\nprintf '%s' "$$" > "$RUNNER_TEMP/sleep-pid"\nexec '${realSleep}' "$1"\n`);
+  const child = Bun.spawn(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, stdout: "pipe", stderr: "pipe" });
+  try {
+    const marker = join(dir, "sleep-pid");
+    for (const deadline = performance.now() + 3000; !existsSync(marker) && performance.now() < deadline;) await Bun.sleep(5);
+    expect(existsSync(marker)).toBe(true);
+    expect(readFileSync(join(dir, "sse.jsonl"), "utf8")).toContain("connection_failed");
+    const sleeper = Number(readFileSync(marker, "utf8"));
+    child.kill("SIGTERM");
+    expect(await Promise.race([child.exited, Bun.sleep(2000).then(() => "timed out")])).toBe(143);
+    expect(() => process.kill(sleeper, 0)).toThrow();
+    expect(existsSync(join(dir, "sse.failed"))).toBe(false);
+  } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; }
 });
 
 test.each([
