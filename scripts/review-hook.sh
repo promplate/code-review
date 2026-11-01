@@ -46,7 +46,8 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
-  ] | reduce .[] as $event ({seen: $seen, context: [], cursor: ([$frames[].cursor | select(type == "string") | select(test("^seq:[A-Za-z0-9_-]+:[0-9]+$"))] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
+  # Cursor syntax belongs to the broker; consumers retain and return it unchanged.
+  ] | reduce .[] as $event ({seen: $seen, context: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
     | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl") || exit 1
 context=$(jq -r .context <<< "$result") || exit 1
