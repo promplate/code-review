@@ -340,6 +340,19 @@ function runGate(dir: string, env: Record<string, string>) {
   return readFileSync(join(dir, "github-env"), "utf8");
 }
 
+test("the action distinguishes commit statuses on the same SHA", async () => {
+  const { dir, env } = fixture(), ids: string[] = [];
+  for (const id of [1, 2, 1]) {
+    writeFileSync(join(dir, "event.json"), JSON.stringify({ id, sha: "head", state: "success" }));
+    const output = runGate(dir, { ...env, GITHUB_EVENT_NAME: "status", GITHUB_EVENT_PATH: join(dir, "event.json") });
+    const expected = new Bun.CryptoHasher("sha256").update(`status::${id}:head:`).digest("hex").slice(0, 40);
+    expect(output).toContain(`ACTIVITY_ID=${expected}`);
+    ids.push(/ACTIVITY_ID=(.*)/.exec(output)![1]);
+  }
+  expect(ids[0]).not.toBe(ids[1]);
+  expect(ids[0]).toBe(ids[2]);
+});
+
 test("the action and the broker derive one id for a webhook, whatever it contains", () => {
   const { dir } = fixture();
   const payload = { action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 5, body: "del u007f: \u007f", updated_at: "2026-11-01T00:00:00Z" } };
