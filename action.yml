@@ -170,12 +170,14 @@ runs:
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
         cursor=
         [ ! -f "$receipts" ] || cursor=$(jq -r 'last // empty' "$receipts")
+        : > "$RUNNER_TEMP/sse.cursor"
         # The first connection resumes after the last consumed event, so anything posted between runs reaches this one too; later ones follow what arrived.
         ( set +e
           for i in $(seq 1 360); do
             curl -sN --max-time 60 ${cursor:+-H "Last-Event-ID: $cursor"} "$EVENTS_URL&pr=$PR_NUMBER&sha=$HEAD_SHA&run=$GITHUB_RUN_ID" 2>>"$RUNNER_TEMP/sse.err" \
-              | awk -f "$GITHUB_ACTION_PATH/scripts/sse-frames.awk" >> "$RUNNER_TEMP/sse.jsonl"
-            cursor=$(sed -n 's/^id: //p' "$RUNNER_TEMP/sse.jsonl" | tail -1)
+              | awk -f "$GITHUB_ACTION_PATH/scripts/sse-frames.awk" -v cursor_file="$RUNNER_TEMP/sse.cursor" >> "$RUNNER_TEMP/sse.jsonl"
+            # The local trigger is not a replay checkpoint; an empty connection must keep the last remote cursor.
+            [ ! -s "$RUNNER_TEMP/sse.cursor" ] || cursor=$(cat "$RUNNER_TEMP/sse.cursor")
             sleep 1
           done ) &
         echo "SSE_PID=$!" >> "$GITHUB_ENV"

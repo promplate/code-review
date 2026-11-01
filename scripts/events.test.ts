@@ -258,13 +258,20 @@ test("SSE only commits blank-line-terminated frames and discards reconnect fragm
   expect(parseFrames(first.replaceAll("\n", "\r\n"))).toBe(first);
 });
 
-test("the real subscription reconnects from the last complete delivery, not a truncated id", () => {
+test.each([
+  ["empty response", "", "dispatch"],
+  ["heartbeat", ": ping\n\n", "dispatch"],
+  ["truncated id", "id: lost", "dispatch"],
+  ["truncated frame", "id: lost\ndata: {}\n", "dispatch"],
+  ["no saved cursor", "", ""],
+])("the real subscription preserves its replay cursor after %s", (_, initialResponse, savedCursor) => {
   const { dir, env } = fixture();
   const first = frame("status", { sha: "head", state: "success" }, "first");
   const second = frame("status", { sha: "head", state: "failure" }, "second");
-  writeFileSync(join(dir, "response-0"), first + second.slice(0, -1));
-  writeFileSync(join(dir, "response-1"), second);
-  writeFileSync(join(dir, "response-2"), "");
+  writeFileSync(join(dir, "response-0"), initialResponse!);
+  writeFileSync(join(dir, "response-1"), first + second.slice(0, -1));
+  writeFileSync(join(dir, "response-2"), second);
+  writeFileSync(join(dir, "response-3"), "");
   executable(dir, "curl", `#!${process.execPath}
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const dir = process.env.RUNNER_TEMP;
@@ -274,11 +281,11 @@ appendFileSync(log, JSON.stringify(process.argv.slice(2)) + "\\n");
 process.stdout.write(readFileSync(dir + "/response-" + count));
 process.exit(28);
 `);
-  executable(dir, "seq", "#!/usr/bin/env bash\nprintf '1\\n2\\n3\\n'\n");
+  executable(dir, "seq", "#!/usr/bin/env bash\nprintf '1\\n2\\n3\\n4\\n'\n");
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
   const subscription = step("Subscribe PR updates via SSE").run;
   mkdirSync(join(dir, "sessions"), { recursive: true });
-  writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify(["dispatch"]));
+  if (savedCursor) writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify([savedCursor]));
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", sender: { login: "collaborator", type: "User" } }));
   const result = Bun.spawnSync(["bash", "-c", subscription + '\nwait "$!"'], { env: { ...env, EVENTS_URL: "https://example.test/events?token=fixture", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(dir, "event.json"), ACTIVITY_ID: "seed", ACTIVITY_WRITER: "true" }, timeout: 3000 });
   expect(result.exitCode).toBe(0);
@@ -286,8 +293,9 @@ process.exit(28);
   expect(log.startsWith("id: seed\nevent: issue_comment\ndata: {")).toBe(true);
   expect(log.endsWith(first + second)).toBe(true);
   const calls = readFileSync(join(dir, "curl-calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-  for (const [i, delivery] of ["dispatch", "first", "second"].entries()) {
-    expect(calls[i]).toContain(`Last-Event-ID: ${delivery}`);
+  for (const [i, delivery] of [savedCursor, savedCursor, "first", "second"].entries()) {
+    if (delivery) expect(calls[i]).toContain(`Last-Event-ID: ${delivery}`);
+    else expect(calls[i].some((arg: string) => arg.startsWith("Last-Event-ID:"))).toBe(false);
     expect(calls[i]).toContain("https://example.test/events?token=fixture&pr=7&sha=head&run=12");
   }
 });
