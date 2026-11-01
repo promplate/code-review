@@ -320,6 +320,9 @@ runs:
             --output-last-message "$RUNNER_TEMP/review.json" \
             "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
         fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
+        # Recorded before the verdict check, so a fresh review can resume the thread it just started.
+        jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
+          < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         # A turn can end without a verdict, such as when the model stops to report progress; ask once more and let it name what it still does not know.
         verdict() { jq -e '.summary and (.commits | type == "array")' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
         if ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; then
@@ -332,8 +335,6 @@ runs:
             < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         fi
         verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
-        jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
-          < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
