@@ -58,8 +58,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      id-token: write
 
    concurrency:
-     # The App's own comments and reviews only produce skipped runs, so they must not take the slot of a review that has to wait for a runner.
-     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ github.event.sender.login == 'muspi-merol-review[bot]' && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
+     # Comments and reviews from bots cannot steer a review, yet their runs would evict a review that waits for a runner when queued after it.
+     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ endsWith(github.event.sender.login, '[bot]') && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
 
    jobs:
      review:
