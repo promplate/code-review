@@ -78,7 +78,7 @@ runs:
         MODEL=$(printf '%s\n' "${{ inputs.codex-config }}" | sed -n 's/^model *= *"\([^"]*\)".*/\1/p' | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
         # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
-        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json"
+        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-cursor"
 
     - name: Restore codex session
       id: session-cache
@@ -169,7 +169,8 @@ runs:
           '"id: \($delivery)\nevent: \($event)\ndata: \(({receivedAt: (now * 1000 | floor), event: $event, delivery: $delivery, body: $body, writer: $writer} | tojson))\n"' > "$RUNNER_TEMP/sse.jsonl"
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
         cursor=
-        [ ! -f "$receipts" ] || cursor=$(jq -r 'last // empty' "$receipts")
+        [ ! -f "$receipts" ] || cursor=$(jq -r 'map(select(startswith("gap:") | not)) | last // empty' "$receipts")
+        [ ! -s "$CODEX_HOME/sessions/.github-cursor" ] || cursor=$(cat "$CODEX_HOME/sessions/.github-cursor")
         : > "$RUNNER_TEMP/sse.cursor"
         # The first connection resumes after the last consumed event, so anything posted between runs reaches this one too; later ones follow what arrived.
         ( set +e
@@ -272,6 +273,7 @@ runs:
         COMMITS=$(jq -rs 'map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
         # Keep consumption receipts inside the existing cache paths without invalidating earlier session snapshots.
         if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then cp "$CODEX_HOME/sessions/.github-deliveries.json" "$RUNNER_TEMP/injected-deliveries.json"; else printf '[]\n' > "$RUNNER_TEMP/injected-deliveries.json"; fi
+        rm -f "$RUNNER_TEMP/injected-cursor"
         if [ -n "$PR_NUMBER" ]; then
           SUBJECT="PR #$PR_NUMBER" MENTION="#$PR_NUMBER" RANGE="origin/$BASE...HEAD" COMMENT="gh pr comment $PR_NUMBER --body-file -"
           MODE_INSTRUCTIONS="If the PR is merged or closed before your review ends, nothing waits for your verdict anymore: point out must-fix issues in a PR comment, editing your latest comment if nothing follows it, and fix certain ones in a separate PR as above rather than on this PR's branch. \
@@ -360,6 +362,7 @@ runs:
         fi
         verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
         jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
+        [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
 

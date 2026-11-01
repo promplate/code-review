@@ -16,7 +16,8 @@ seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
-  [split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty
+  [split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty] as $frames
+  | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
         ($frame.event == "replay_gap")
@@ -42,7 +43,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
         name: ($body.check_run.name // $body.workflow_run.name // $body.context), conclusion: ($body.check_run.conclusion // $body.workflow_run.conclusion), state: $body.state,
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), resolved: $body.thread.resolved} | with_entries(select(.value != null)))}
-  ] | reduce .[] as $event ({seen: $seen, context: []}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
+  ] | reduce .[] as $event ({seen: $seen, context: [], cursor: ([$frames[].cursor | select(type == "string") | select(test("^seq:[A-Za-z0-9_-]+:[0-9]+$"))] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
     | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl") || exit 1
 context=$(jq -r .context <<< "$result") || exit 1
@@ -52,4 +53,8 @@ if [ -n "$context" ]; then
   jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, reply with regular comments where useful, and output the full updated JSON review.")}' || exit 1
 fi
 # A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
-mv "$SEEN_FILE.new" "$SEEN_FILE"
+mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
+# This comes from the exact snapshot above, including safely filtered events, never from the concurrently growing transport log.
+if jq -e '.cursor != null' <<< "$result" > /dev/null; then
+  jq -r .cursor <<< "$result" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
+fi

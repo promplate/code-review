@@ -11,7 +11,7 @@ const homes: string[] = [];
 const human = { login: "collaborator", type: "User" };
 const bot = { login: "ci[bot]", type: "Bot" };
 const check = (overrides = {}) => ({ id: 100, name: "test", status: "completed", conclusion: "success", head_sha: "head", app: { slug: "github-actions" }, ...overrides });
-const frame = (event: string, body: object, delivery = event, writer = true) => `id: ${delivery}\ndata: ${JSON.stringify({ event, delivery, writer, body: JSON.stringify({ sender: human, ...body }) })}\n\n`;
+const frame = (event: string, body: object, delivery = event, writer = true, cursor?: string) => `id: ${cursor ?? delivery}\ndata: ${JSON.stringify({ event, delivery, writer, cursor, body: JSON.stringify({ sender: human, ...body }) })}\n\n`;
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "review-events-"));
@@ -103,6 +103,16 @@ test("a replay gap requests GitHub reconciliation once without trusting recovere
   expect(parseFrames(gap)).toBe(gap);
 });
 
+test("consumption checkpoints cover the Stop snapshot, never later arrivals", () => {
+  const one = frame("issue_comment", { issue: { number: 7 }, comment: { body: "first" } }, "first", true, "seq:epoch:1");
+  const two = frame("issue_comment", { issue: { number: 8 }, comment: { body: "other PR" } }, "second", true, "seq:epoch:2");
+  const { dir, output } = runHook(one + two);
+  expect(output).toContain("first");
+  expect(output).not.toContain("other PR");
+  writeFileSync(join(dir, "sse.jsonl"), one + two + frame("status", { sha: "head", state: "failure" }, "later", false, "seq:epoch:3"));
+  expect(readFileSync(join(dir, "injected-cursor"), "utf8")).toBe("seq:epoch:2\n");
+});
+
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
   const log = [
     frame("check_run", { action: "completed", check_run: check({ head_sha: "other" }) }, "other"),
@@ -160,10 +170,12 @@ test("history plus pending replay is deduplicated within one Stop and across Sto
 
 test("a failed context write leaves the event available for the next Stop", async () => {
   const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event"));
+  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true, "seq:epoch:9"));
+  writeFileSync(join(dir, "injected-cursor"), "seq:epoch:8\n");
   const child = Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), stdout: "pipe", stderr: "pipe" });
   await child.stdout.cancel();
   expect(await child.exited).not.toBe(0);
+  expect(readFileSync(join(dir, "injected-cursor"), "utf8")).toBe("seq:epoch:8\n");
   const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
   expect(retry.exitCode).toBe(0);
   expect(retry.stdout.toString()).toContain("pending-event");
@@ -302,12 +314,14 @@ test("a failed SSE write does not advance its replay cursor", async () => {
 });
 
 test.each([
-  ["empty response", "", "dispatch"],
-  ["heartbeat", ": ping\n\n", "dispatch"],
-  ["truncated id", "id: lost", "dispatch"],
-  ["truncated frame", "id: lost\ndata: {}\n", "dispatch"],
-  ["no saved cursor", "", ""],
-])("the real subscription preserves its replay cursor after %s", (_, initialResponse, savedCursor) => {
+  ["empty response", "", "dispatch", ""],
+  ["heartbeat", ": ping\n\n", "dispatch", ""],
+  ["truncated id", "id: lost", "dispatch", ""],
+  ["truncated frame", "id: lost\ndata: {}\n", "dispatch", ""],
+  ["no saved cursor", "", "", ""],
+  ["only a gap receipt", "", "gap:old:cursor", ""],
+  ["a consumed sequence", "", "dispatch", "seq:epoch:5"],
+])("the real subscription preserves its replay cursor after %s", (_, initialResponse, savedCursor, checkpoint) => {
   const { dir, env } = fixture();
   const first = frame("status", { sha: "head", state: "success" }, "first");
   const second = frame("status", { sha: "head", state: "failure" }, "second");
@@ -329,6 +343,7 @@ process.exit(28);
   const subscription = step("Subscribe PR updates via SSE").run;
   mkdirSync(join(dir, "sessions"), { recursive: true });
   if (savedCursor) writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify([savedCursor]));
+  if (checkpoint) writeFileSync(join(dir, "sessions/.github-cursor"), checkpoint);
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", sender: { login: "collaborator", type: "User" } }));
   const result = Bun.spawnSync(["bash", "-c", subscription + '\nwait "$!"'], { env: { ...env, EVENTS_URL: "https://example.test/events?token=fixture", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(dir, "event.json"), ACTIVITY_ID: "seed", ACTIVITY_WRITER: "true" }, timeout: 3000 });
   expect(result.exitCode).toBe(0);
@@ -336,7 +351,8 @@ process.exit(28);
   expect(log.startsWith("id: seed\nevent: issue_comment\ndata: {")).toBe(true);
   expect(log.endsWith(first + second)).toBe(true);
   const calls = readFileSync(join(dir, "curl-calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-  for (const [i, delivery] of [savedCursor, savedCursor, "first", "second"].entries()) {
+  const initialCursor = checkpoint || (savedCursor?.startsWith("gap:") ? "" : savedCursor);
+  for (const [i, delivery] of [initialCursor, initialCursor, "first", "second"].entries()) {
     if (delivery) expect(calls[i]).toContain(`Last-Event-ID: ${delivery}`);
     else expect(calls[i].some((arg: string) => arg.startsWith("Last-Event-ID:"))).toBe(false);
     expect(calls[i]).toContain("https://example.test/events?token=fixture&pr=7&sha=head&run=12");
