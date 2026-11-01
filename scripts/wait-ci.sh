@@ -4,7 +4,7 @@ set -euo pipefail
 export SHA=$1 NAME=${2:-.}
 checks() {
   gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?filter=latest&per_page=100" --paginate < /dev/null | jq -s -c '[.[].check_runs[] | select((.id | tostring) != (env.CHECK_ID // "") and (.id | tostring) != (env.JOB_CHECK_RUN_ID // ""))
-    | select(.name != "codex-review" or .app.slug != ((env.BOT_LOGIN // "") | rtrimstr("[bot]")))
+    | select(.app.slug != ((env.BOT_LOGIN // "") | rtrimstr("[bot]")))
     | select(.name | test(env.NAME))]'
 }
 # Reading from the start covers webhooks arriving between the API request and the wait.

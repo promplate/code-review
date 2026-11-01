@@ -92,7 +92,7 @@ test("Stop excludes other heads, nonterminal CI, suites, its App and this workfl
   const log = [
     frame("check_run", { action: "completed", check_run: check({ head_sha: "other" }) }, "other"),
     frame("check_run", { action: "created", check_run: check() }, "created"),
-    frame("check_run", { action: "completed", check_run: check({ name: "codex-review" }) }, "review"),
+    frame("check_run", { action: "completed", check_run: check({ name: "code-review" }) }, "review"),
     frame("check_run", { action: "completed", check_run: check({ id: 11 }) }, "job"),
     frame("check_run", { action: "completed", check_run: check({ id: 10 }) }, "check"),
     frame("check_run", { action: "completed", check_run: check({ details_url: "https://github.com/owner/repo/actions/runs/12/job/99" }) }, "run-check"),
@@ -145,11 +145,11 @@ test("history plus pending replay is deduplicated within one Stop and across Sto
 
 test("CI wait paginates, excludes both owned IDs and only its own App review check", () => {
   const { result, dir, calls } = runCI([{ pages: [
-    { check_runs: [check({ id: 10, status: "in_progress" }), check({ id: 11, status: "in_progress" }), check({ id: 12, name: "codex-review", app: { slug: "reviewer" }, status: "in_progress" })] },
-    { check_runs: [check({ name: "codex-review", app: { slug: "other-reviewer" }, conclusion: "failure" }), check()] },
+    { check_runs: [check({ id: 10, status: "in_progress" }), check({ id: 11, status: "in_progress" }), check({ id: 12, name: "code-review", app: { slug: "reviewer" }, status: "in_progress" })] },
+    { check_runs: [check({ name: "code-review", app: { slug: "other-reviewer" }, conclusion: "failure" }), check()] },
   ] }]);
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString()).toBe("codex-review: failure\ntest: success\n");
+  expect(result.stdout.toString()).toBe("code-review: failure\ntest: success\n");
   expect(calls).toBe(1);
   expect(existsSync(join(dir, "jq-calls"))).toBe(true);
   expectTailReleased(dir);

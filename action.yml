@@ -73,9 +73,9 @@ runs:
           printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
-        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
+        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
         # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
-        rm -f "${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json"
+        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json"
 
     - name: Restore codex session
       id: session-cache
@@ -86,8 +86,8 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: "codex-review-${{ env.SESSION_KEY }}:"
+        key: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: "code-review-${{ env.SESSION_KEY }}:"
 
     - name: Skip activity another review already handled
       shell: bash
@@ -130,7 +130,7 @@ runs:
         DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ env.PR_NUMBER }}
       run: |
         # Reuse an unfinished check run on this head: scripts/open-pr.sh leaves a queued one whose external_id is the session key of the review that opened this PR, and abandoned jobs leave in_progress ones.
-        unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=codex-review" \
+        unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=code-review" \
           --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "")"' </dev/null)
         if [ -n "$unfinished" ]; then
           id=${unfinished% *}
@@ -138,7 +138,7 @@ runs:
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH -f status=in_progress -f details_url=$DETAILS_URL \
             -f "output[title]=Restoring the Codex session…" -f "output[summary]=Looking for an earlier review to continue." </dev/null > /dev/null
         else
-          id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs -f name=codex-review \
+          id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs -f name=code-review \
             -f head_sha=${{ env.HEAD_SHA }} -f status=in_progress -f details_url=$DETAILS_URL \
             -f "output[title]=Restoring the Codex session…" -f "output[summary]=Looking for an earlier review to continue." --jq .id </dev/null)
         fi
@@ -184,10 +184,10 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: |
-          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
-          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
-          ${{ runner.temp }}/codex-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
-        key: "codex-review-${{ steps.check.outputs.fork-key }}:"
+          ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
+          ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
+          ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
+        key: "code-review-${{ steps.check.outputs.fork-key }}:"
 
     - name: Reuse the runner's Bun
       id: bun
@@ -256,7 +256,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         FORK_KEY: ${{ steps.fork.outputs.cache-matched-key && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
-        LANGFUSE_CODEX_ENVIRONMENT: codex-review
+        LANGFUSE_CODEX_ENVIRONMENT: code-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ env.PR_NUMBER || ''null'' }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ env.HEAD_SHA }}"}'
       run: |
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
@@ -299,7 +299,7 @@ runs:
            For an out-of-scope problem you are certain is real but cannot fix with certainty, open an issue with gh issue create instead, after checking gh issue list --search for duplicates, mention $MENTION in it, and link it in a regular comment. \
            $MODE_INSTRUCTIONS Run focused tests when available. Verify by execution, not inspection: run what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
         if [ -n "$FORK_KEY" ]; then
-          fork=${{ runner.temp }}/codex-review-homes/${{ github.repository }}/$FORK_KEY
+          fork=${{ runner.temp }}/code-review-homes/${{ github.repository }}/$FORK_KEY
           cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
@@ -350,7 +350,7 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        key: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Drop older session snapshots
       if: steps.save-session.outcome == 'success'
@@ -358,10 +358,10 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        KEY: codex-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        KEY: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=codex-review-$SESSION_KEY:&per_page=100" \
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$SESSION_KEY:&per_page=100" \
           --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
           | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
 
@@ -399,7 +399,7 @@ runs:
         fi
         jq -n --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
         ($review.commits[] | select(.sha == $sha)) as $commit | {
-        name: "codex-review", head_sha: $sha, status: "completed",
+        name: "code-review", head_sha: $sha, status: "completed",
         conclusion: $commit.conclusion,
         output: {
           title: (if $commit.conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end),
@@ -421,9 +421,9 @@ runs:
           if [ "$SUPERSEDED" = true ]; then [ -z "$id" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha" \
             --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" != true ] || continue; fi
           # A superseded review may have already posted verdicts for commits CI pushed during it.
-          [ -n "$id" ] || [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$sha/check-runs?check_name=codex-review" --jq .total_count </dev/null)" = 0 ] || continue
+          [ -n "$id" ] || [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$sha/check-runs?check_name=code-review" --jq .total_count </dev/null)" = 0 ] || continue
           # Commits CI pushed during the review have no check run yet.
-          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "codex-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
+          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
             | if [ -n "$id" ]; then jq 'del(.head_sha)' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
               else bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs --input - > /dev/null; fi

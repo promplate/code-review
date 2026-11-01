@@ -20,7 +20,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
         ($frame.event == "check_run" and $body.action == "completed" and $body.check_run.head_sha == env.HEAD_SHA
-          and $body.check_run.name != "codex-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // ""))
+          and $body.check_run.name != "code-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // ""))
         or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // ""))
         or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
         or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH) and $body.after != env.HEAD_SHA)

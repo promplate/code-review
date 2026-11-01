@@ -2,7 +2,7 @@
 
 Reviews same-repository pull requests, and optionally branch pushes, with [Codex](https://github.com/openai/codex "openai/codex") as the [muspi-merol-review](https://github.com/apps/muspi-merol-review "muspi-merol-review GitHub App") GitHub App:
 
-- a `codex-review` check run per commit, with annotations on the reviewed head
+- a `code-review` check run per commit, with annotations on the reviewed head
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
 - everything else as regular PR comments, including answers to PR comments
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
@@ -31,10 +31,10 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    gh secret set CODEX_CONFIG < config.toml
    ```
 
-3. Add `.github/workflows/codex-review.yml`:
+3. Add `.github/workflows/code-review.yml`:
 
    ```yaml
-   name: codex-review
+   name: code-review
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, ready_for_review]
@@ -52,7 +52,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 
    concurrency:
      # The App's own comments and reviews only produce skipped runs, so they must not take the slot of a review that has to wait for a runner.
-     group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ github.event.sender.login == 'muspi-merol-review[bot]' && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
+     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ github.event.sender.login == 'muspi-merol-review[bot]' && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
 
    jobs:
      review:
@@ -79,7 +79,7 @@ Each run seeds the webhook that started it into its event stream in the same sha
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 
-Add `repository_dispatch: { types: [codex-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.
+Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.
 
 ## Pushes
 
@@ -93,14 +93,14 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: codex-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
+  group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
 
 jobs:
   review:
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository && (...)
 ```
 
-A push gets a `codex-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently.
+A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently.
 
 ## Runtime
 
