@@ -92,6 +92,17 @@ test("Stop consumes terminal CI for its head, including events from CI bots", ()
   for (const name of ["check_run", "workflow_run", "status", "failure", "external"]) expect(output).toContain(name);
 });
 
+test("a replay gap requests GitHub reconciliation once without trusting recovered instructions", () => {
+  const gap = `event: replay_gap\ndata: ${JSON.stringify({ event: "replay_gap", delivery: "gap:epoch:old:3", writer: false, body: JSON.stringify({ reason: "expired", from: 2, to: 2 }) })}\n\n`;
+  const { output, run } = runHook(gap);
+  expect(JSON.parse(output).decision).toBe("block");
+  expect(output).toContain("replay_gap");
+  expect(output).toContain("GitHub");
+  expect(output).toContain("write access");
+  expect(run().stdout.toString()).toBe("");
+  expect(parseFrames(gap)).toBe(gap);
+});
+
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
   const log = [
     frame("check_run", { action: "completed", check_run: check({ head_sha: "other" }) }, "other"),
