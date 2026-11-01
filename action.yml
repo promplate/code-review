@@ -74,6 +74,9 @@ runs:
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
+        # A session belongs to the model that recorded it; resuming it elsewhere is rejected, so each model keeps its own snapshots.
+        MODEL=$(printf '%s\n' "${{ inputs.codex-config }}" | sed -n 's/^model *= *"\([^"]*\)".*/\1/p' | head -1)
+        printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
         # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
         rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json"
 
@@ -86,8 +89,8 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: "code-review-${{ env.SESSION_KEY }}:"
+        key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: "code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:"
 
     - name: Skip activity another review already handled
       shell: bash
@@ -187,7 +190,7 @@ runs:
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
-        key: "code-review-${{ steps.check.outputs.fork-key }}:"
+        key: "code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:"
 
     - name: Reuse the runner's Bun
       id: bun
@@ -351,7 +354,7 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Drop older session snapshots
       if: steps.save-session.outcome == 'success'
@@ -359,10 +362,10 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        KEY: code-review-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$SESSION_KEY:&per_page=100" \
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&per_page=100" \
           --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
           | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
 

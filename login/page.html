@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to Codex for code-review</title>
+<style>
+  :root { --bg: #fff; --fg: #111; --muted: #666; --line: #e5e5e5; --accent: #111; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #999; --line: #2a2a2a; --accent: #eee; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 12vh auto; padding: 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 24px; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); cursor: pointer; }
+  button[disabled] { opacity: .5; cursor: default; }
+  code, textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .code { font-size: 24px; letter-spacing: .08em; margin: 24px 0; }
+  textarea { width: 100%; height: 180px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--fg); resize: vertical; }
+  .step { margin: 20px 0; }
+  .hint { color: var(--muted); font-size: 13px; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sign in with ChatGPT</h1>
+  <p>Get the <code>auth.json</code> the code-review action uses. Nothing is stored on this server: the token goes straight to your browser.</p>
+
+  <div id="start">
+    <button id="begin">Continue</button>
+  </div>
+
+  <div id="pending" hidden>
+    <div class="step">Open <a id="verify" target="_blank" rel="noreferrer"></a> and enter this code:</div>
+    <div class="code"><code id="usercode"></code></div>
+    <div class="step hint" id="status">Waiting for approval…</div>
+  </div>
+
+  <div id="done" hidden>
+    <div class="step">Save it as the repository secret:</div>
+    <textarea id="auth" readonly spellcheck="false"></textarea>
+    <div class="step"><button id="copy">Copy</button> <span class="hint" id="copied"></span></div>
+    <div class="hint">Then add <code>codex-auth: ${{ secrets.CODEX_AUTH }}</code> to the action's <code>with:</code> block.</div>
+  </div>
+
+  <div id="failed" hidden><p id="error"></p><button id="retry">Start again</button></div>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+let pollTimer;
+const show = (id) => { for (const s of ["start", "pending", "done", "failed"]) $(s).hidden = s !== id; };
+
+async function begin() {
+  clearTimeout(pollTimer);
+  $("begin").disabled = true;
+  try {
+    const started = await (await fetch("/api/start", { method: "POST" })).json();
+    if (started.error) throw new Error(started.error);
+    $("verify").href = started.verifyUrl;
+    $("verify").textContent = started.verifyUrl;
+    $("usercode").textContent = started.userCode;
+    show("pending");
+    poll(started.session, started.interval);
+  } catch (e) {
+    $("error").textContent = e.message;
+    show("failed");
+  } finally { $("begin").disabled = false; }
+}
+
+async function poll(session, interval) {
+  const tick = async () => {
+    const r = await (await fetch("/api/poll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session }) })).json();
+    if (r.status === "ok") { $("auth").value = r.auth; show("done"); return; }
+    if (r.error) { $("error").textContent = r.error; show("failed"); return; }
+    pollTimer = setTimeout(tick, Math.max(interval, 5) * 1000);
+  };
+  pollTimer = setTimeout(tick, Math.max(interval, 5) * 1000);
+}
+
+$("begin").onclick = begin;
+$("retry").onclick = begin;
+$("copy").onclick = async () => { await navigator.clipboard.writeText($("auth").value); $("copied").textContent = "Copied"; setTimeout(() => ($("copied").textContent = ""), 2000); };
+</script>
+</body>
+</html>
