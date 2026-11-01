@@ -320,9 +320,18 @@ runs:
             --output-last-message "$RUNNER_TEMP/review.json" \
             "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
         fi < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
-        # A turn can end without a verdict, such as when the model provider drops the stream; say so here instead of failing later inside jq.
-        jq -e '.summary and (.commits | type == "array")' "$RUNNER_TEMP/review.json" > /dev/null 2>&1 \
-          || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
+        # A turn can end without a verdict, such as when the model stops to report progress; ask once more and let it name what it still does not know.
+        verdict() { jq -e '.summary and (.commits | type == "array")' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
+        if ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; then
+          echo "::warning::Codex ended without a verdict; asking for the review object once."
+          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+            --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
+            --output-last-message "$RUNNER_TEMP/review.json" \
+            "$(cat "$CODEX_HOME/last-thread-id")" \
+            "Reply with the full review JSON for $SUBJECT now, running no further commands. Put whatever remains unknown into the summary and judge on what you verified." \
+            < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
+        fi
+        verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
