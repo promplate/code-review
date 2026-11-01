@@ -175,14 +175,7 @@ runs:
         [ ! -s "$CODEX_HOME/sessions/.github-cursor" ] || cursor=$(cat "$CODEX_HOME/sessions/.github-cursor")
         : > "$RUNNER_TEMP/sse.cursor"
         # The first connection resumes after the last consumed event, so anything posted between runs reaches this one too; later ones follow what arrived.
-        ( set +e
-          for i in $(seq 1 360); do
-            curl -sN --max-time 60 ${cursor:+-H "Last-Event-ID: $cursor"} "$EVENTS_URL&pr=$PR_NUMBER&sha=$HEAD_SHA&run=$GITHUB_RUN_ID" 2>>"$RUNNER_TEMP/sse.err" \
-              | bash "$GITHUB_ACTION_PATH/scripts/sse-frames.sh" >> "$RUNNER_TEMP/sse.jsonl"
-            # The local trigger is not a replay checkpoint; an empty connection must keep the last remote cursor.
-            [ ! -s "$RUNNER_TEMP/sse.cursor" ] || cursor=$(cat "$RUNNER_TEMP/sse.cursor")
-            sleep 1
-          done ) &
+        bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" "$cursor" &
         echo "SSE_PID=$!" >> "$GITHUB_ENV"
 
     # Paths are part of the cache version, so restore into the opening review's home; the review copies the session from there.

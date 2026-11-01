@@ -15,8 +15,9 @@ SEEN_FILE="$RUNNER_TEMP/injected-deliveries.json"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
-result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
-  [split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty] as $frames
+result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
+  ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
+    + (if $failure == "" then [] else [{event: "replay_gap", delivery: "gap:subscription-failed", body: ({reason: "subscription_failed", error: $failure} | tojson)}] end)) as $frames
   | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
