@@ -249,6 +249,8 @@ runs:
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
           curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.3.tgz | tar xz -C "$RUNNER_TEMP"
           printf '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "bun %s/package/dist/index.mjs"\ntimeout = 30\n' "$RUNNER_TEMP" >> "$CODEX_HOME/config.toml"
+          # The plugin is disabled by default and keys do not enable it; only the job's own keys are ours to switch on.
+          [ -z "$LANGFUSE_PUBLIC_KEY" ] || echo "TRACE_TO_LANGFUSE=true" >> "$GITHUB_ENV"
         fi
 
     - name: Run codex review
