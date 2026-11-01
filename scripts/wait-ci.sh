@@ -27,6 +27,7 @@ while true; do
     [ "$SECONDS" -lt "$deadline" ] || expired
     [ "$SECONDS" -lt "$recheck" ] || break
     remaining=$(((deadline < recheck ? deadline : recheck) - SECONDS))
+    [ "$remaining" -gt 0 ] || continue
     if IFS= read -r -t "$remaining" line <&3; then
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
       grep -qF -- "$SHA" <<< "$line" || continue
