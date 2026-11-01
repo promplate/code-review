@@ -72,7 +72,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
        cache-mode: write
        runs-on: ubuntu-latest
        steps:
-         - uses: promplate/code-review@v1
+         - uses: promplate/code-review@main
            with:
              codex-config: ${{ secrets.CODEX_CONFIG }}
              codex-auth: ${{ secrets.CODEX_AUTH }}
