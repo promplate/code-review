@@ -58,6 +58,7 @@ fi
 # A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
 mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
 # This comes from the exact snapshot above, including safely filtered events, never from the concurrently growing transport log.
-if jq -e '.cursor != null' <<< "$result" > /dev/null; then
-  jq -r .cursor <<< "$result" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
+cursor=$(jq -r '.cursor // empty' <<< "$result") || exit 1
+if [ -n "$cursor" ]; then
+  printf '%s\n' "$cursor" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
 fi
