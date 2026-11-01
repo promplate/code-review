@@ -31,7 +31,14 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    gh secret set CODEX_CONFIG < config.toml
    ```
 
-3. Add `.github/workflows/code-review.yml`:
+3. To review on a ChatGPT plan instead of a provider key, log in on any machine with a browser and save the credentials:
+
+   ```sh
+   codex login --device-auth
+   gh secret set CODEX_AUTH < ~/.codex/auth.json
+   ```
+
+4. Add `.github/workflows/code-review.yml`:
 
    ```yaml
    name: code-review
@@ -68,6 +75,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
          - uses: promplate/code-review@v1
            with:
              codex-config: ${{ secrets.CODEX_CONFIG }}
+             codex-auth: ${{ secrets.CODEX_AUTH }}
    ```
 
 Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers. They start runs only when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)), so a workflow added on a PR branch can review that PR but cannot take comments until it reaches the default branch.
@@ -115,3 +123,5 @@ The App needs **Contents**, **Pull requests** and **Checks** write access, plus 
 To review as your own GitHub App, deploy the broker with that App's credentials, point the `broker` input at it, and use the App's bot login in the job's `if:`.
 
 Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the job's `env` to trace reviews to Langfuse with [langfuse/codex-observability-plugin](https://github.com/langfuse/codex-observability-plugin "Langfuse observability plugin for Codex").
+
+`login/` serves the same device login in a browser, for whoever cannot install Codex themselves: `bun login/index.ts`, open the page, and copy the returned `auth.json` into the secret.
