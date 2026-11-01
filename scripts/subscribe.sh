@@ -43,7 +43,7 @@ while true; do
     jitter=$((retry_delay / 4)); delay=$((retry_delay - jitter + RANDOM % (jitter + 1)))
     retry_delay=$((retry_delay * 2)); [ "$retry_delay" -le 30 ] || retry_delay=30
     if [ "$warned" != "$cursor:failed" ]; then
-      jq -nr --arg delivery "gap:connection:$cursor" --arg status "$curl_status" \
+      jq -nr --arg delivery "gap:connection:$GITHUB_RUN_ID:${GITHUB_RUN_ATTEMPT:-1}:$cursor" --arg status "$curl_status" \
         '"event: replay_gap\ndata: \(({event: "replay_gap", delivery: $delivery, writer: false, body: ({reason: "connection_failed", status: $status} | tojson)} | tojson))\n"' >> "$RUNNER_TEMP/sse.jsonl"
       warned=$cursor:failed
     fi

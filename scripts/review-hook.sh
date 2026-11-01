@@ -17,7 +17,8 @@ seen='[]'
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
   ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
-    + (if $failure == "" then [] else [{event: "replay_gap", delivery: "gap:subscription-failed", body: ({reason: "subscription_failed", error: $failure} | tojson)}] end)) as $frames
+    # Receipts survive cached sessions; a local failure belongs to this execution, including retries of the same run.
+    + (if $failure == "" then [] else [{event: "replay_gap", delivery: "gap:subscription-failed:\(env.GITHUB_RUN_ID):\(env.GITHUB_RUN_ATTEMPT // "1")", body: ({reason: "subscription_failed", error: $failure} | tojson)}] end)) as $frames
   | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(

@@ -113,6 +113,17 @@ test("a stopped subscriber cannot silently leave the review on a stale snapshot"
   expect(result.stdout.toString()).toContain("subscription_failed");
 });
 
+test("a cached failure receipt cannot hide a stopped subscription in a later run", () => {
+  const { dir, env, run } = runHook("");
+  writeFileSync(join(dir, "sse.failed"), "The event stream writer failed.");
+  expect(run().stdout.toString()).toContain("subscription_failed");
+  expect(run().stdout.toString()).toBe("");
+  for (const [GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT] of [["13", "1"], ["13", "2"]]) {
+    const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: { ...env, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT }, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+    expect(retry.exitCode).toBe(0); expect(retry.stdout.toString()).toContain("subscription_failed");
+  }
+});
+
 test("gap control frames do not break CI waiting or publishing newer heads", () => {
   const gap = `event: replay_gap\ndata: ${JSON.stringify({ event: "replay_gap", delivery: "gap:head", writer: false, body: JSON.stringify({ reason: "expired" }) })}\n\n`;
   const ci = runCI([{ pages: [{ check_runs: [check({ status: "in_progress" })] }] }, { pages: [{ check_runs: [check()] }] }], gap + frame("status", { sha: "head", state: "success" }));
@@ -401,6 +412,21 @@ test("a failed stream writer records a visible terminal failure", () => {
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(1);
   expect(readFileSync(join(dir, "sse.failed"), "utf8")).toContain("status 1");
+});
+
+test("a cached outage receipt cannot hide a new run failing at the same cursor", () => {
+  const { dir, env } = fixture();
+  executable(dir, "curl", "#!/usr/bin/env bash\nexit 22\n");
+  executable(dir, "sleep", '#!/usr/bin/env bash\nkill -TERM "$PPID"\n');
+  for (const [GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT] of [["12", "1"], ["13", "1"], ["13", "2"]]) {
+    writeFileSync(join(dir, "sse.jsonl"), "");
+    const current = { ...env, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, EVENTS_URL: "https://example.test/?fixture=1" };
+    const subscription = Bun.spawnSync(["bash", join(scripts, "subscribe.sh"), "seq:epoch:4"], { env: current, timeout: 3000 });
+    expect(subscription.exitCode).toBe(143);
+    const run = () => Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: current, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+    const result = run(); expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toContain("connection_failed");
+    expect(run().stdout.toString()).toBe("");
+  }
 });
 
 test.each(["html", "wrong type with SSE bytes", "no headers", "empty SSE", "SSE rotation"])("the subscriber distinguishes %s from a failed response", async mode => {
