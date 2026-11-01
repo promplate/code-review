@@ -435,6 +435,16 @@ test("the action distinguishes commit statuses on the same SHA", async () => {
   expect(ids[0]).toBe(ids[2]);
 });
 
+test("the action distinguishes workflow attempts on the same SHA", () => {
+  const { dir, env } = fixture();
+  for (const attempt of [1, 2]) {
+    writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "completed", workflow_run: { id: 1, head_sha: "head", run_attempt: attempt } }));
+    const output = runGate(dir, { ...env, GITHUB_EVENT_NAME: "workflow_run", GITHUB_EVENT_PATH: join(dir, "event.json") });
+    const expected = new Bun.CryptoHasher("sha256").update(`workflow_run:completed:1:head:${attempt > 1 ? attempt : ""}`).digest("hex").slice(0, 40);
+    expect(output).toContain(`ACTIVITY_ID=${expected}`);
+  }
+});
+
 test("the action and the broker derive one id for a webhook, whatever it contains", () => {
   const { dir } = fixture();
   const payload = { action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 5, body: "del u007f: \u007f", updated_at: "2026-11-01T00:00:00Z" } };

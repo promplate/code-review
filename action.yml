@@ -98,7 +98,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # The webhook that started this run also reached any review running at the time, so a consumed event needs no second pass.
-        key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // ""), (.comment.updated_at // .review.submitted_at // "")] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
+        key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // ""), (.comment.updated_at // .review.submitted_at // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
         id=$(printf %s "$key" | sha256sum | cut -c1-40)
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
