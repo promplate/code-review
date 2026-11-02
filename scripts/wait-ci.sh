@@ -6,10 +6,11 @@ export SHA=$1 NAME=${2:-.}
 # The App token has no Actions access, so the Merge step hands over the job token for these two lookups.
 WORKFLOW_ID=
 [ -z "${ACTIONS_TOKEN:-}" ] || WORKFLOW_ID=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --paginate < /dev/null | jq -r .workflow_id) || WORKFLOW_ID=
+[ -n "$WORKFLOW_ID" ] || [ -z "${ACTIONS_TOKEN:-}" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."
 checks() {
   # Recomputed every poll: a run queued while this one waits must be excluded too.
   own='[]'
-  [ -z "$WORKFLOW_ID" ] || own=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100" --paginate < /dev/null | jq -sc "[.[].workflow_runs[] | select(.workflow_id == $WORKFLOW_ID) | .check_suite_id]") || own='[]'
+  [ -z "$WORKFLOW_ID" ] || own=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100" --paginate < /dev/null | jq -sc --argjson self "$GITHUB_RUN_ID" --argjson workflow "$WORKFLOW_ID" '[.[].workflow_runs[] | select(.workflow_id == $workflow and .id != $self) | .check_suite_id]') || own='[]'
   export OWN_CHECK_SUITES=$own
   gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?filter=latest&per_page=100" --paginate < /dev/null | jq -s -c '[.[].check_runs[] | select((.id | tostring) != (env.CHECK_ID // "") and (.id | tostring) != (env.JOB_CHECK_RUN_ID // ""))
     | select(.check_suite.id as $suite | (env.OWN_CHECK_SUITES | fromjson | index($suite)) | not)

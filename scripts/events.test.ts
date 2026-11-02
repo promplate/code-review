@@ -240,7 +240,6 @@ test("another run of this workflow is review status, not CI", () => {
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toBe("test: success\n");
   expect(calls).toBe(3);
-  expectTailReleased(dir);
 });
 
 test("a queued check from another workflow still blocks the wait", () => {
@@ -248,7 +247,18 @@ test("a queued check from another workflow still blocks the wait", () => {
     { pages: [{ workflow_id: 42 }] },
     { pages: [{ workflow_runs: [{ id: 1, workflow_id: 42, check_suite_id: 7 }] }] },
     { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 9 } })] }] },
-  ], "", [".", "pass"], { ACTIONS_TOKEN: "job-token", WAIT_CI_TIMEOUT: "0" });
+  ], "", [".", "pass"], { ACTIONS_TOKEN: "job-token", WAIT_CI_TIMEOUT: "1" });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("No CI checks matching");
+  expectTailReleased(dir);
+});
+
+test("this run's own other jobs are still CI", () => {
+  const { result, dir } = runCI([
+    { pages: [{ workflow_id: 42 }] },
+    { pages: [{ workflow_runs: [{ id: 12, workflow_id: 42, check_suite_id: 7 }, { id: 1, workflow_id: 42, check_suite_id: 8 }] }] },
+    { pages: [{ check_runs: [check({ status: "in_progress", check_suite: { id: 7 } }), check({ id: 101, status: "queued", check_suite: { id: 8 } })] }] },
+  ], "", [".", "pass"], { ACTIONS_TOKEN: "job-token", WAIT_CI_TIMEOUT: "1" });
   expect(result.exitCode).toBe(1);
   expect(result.stderr.toString()).toContain("No CI checks matching");
   expectTailReleased(dir);

@@ -86,6 +86,7 @@ Each run seeds the webhook that started it into its event stream in the same sha
 - A run started by the App's own comment or review skips, and sits in its own concurrency group, so it can never cancel a review that is waiting for a runner.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
+- Before merging, the review waits for the head's checks except its own and those of other runs of this workflow, whose queued jobs could never finish behind the waiting job. That lookup needs `actions: read` on the job token; without it the wait falls back to every check.
 
 The broker's SSE cursor includes its storage epoch and sequence; event identity is separate. The action saves a consumption checkpoint with the review session only after the Stop hook writes its context successfully. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Older sessions without sequence checkpoints replay the retained window and dedupe it locally.
 
