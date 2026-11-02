@@ -675,6 +675,12 @@ test("review thread context derives resolution from the webhook action", () => {
   }
 });
 
+test("a review comment carries the id its answer replies to", () => {
+  const { output } = runHook(frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { id: 4242, body: "how do I fix it", path: "file.ts", line: 8 } }));
+  expect(output).toContain('\\"comment_id\\":4242');
+  expect(output).toContain("how do I fix it");
+});
+
 test("the action and the broker derive one id for a webhook, whatever it contains", () => {
   const { dir } = fixture();
   const payload = { action: "created", sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 5, body: "del u007f: \u007f", updated_at: "2026-11-01T00:00:00Z" } };

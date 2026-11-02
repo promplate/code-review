@@ -43,7 +43,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         url: ($body.comment.html_url // $body.review.html_url // $body.thread.comments[0].html_url // $body.check_run.details_url // $body.workflow_run.html_url // $body.target_url),
         head: ($body.after // $body.check_run.head_sha // $body.workflow_run.head_sha // $body.sha), commit: $body.comment.commit_id,
         name: ($body.check_run.name // $body.workflow_run.name // $body.context), conclusion: ($body.check_run.conclusion // $body.workflow_run.conclusion), state: $body.state,
-        merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
+        merged: (if $body.action == "closed" then $body.pull_request.merged else null end), comment: $body.comment.body, comment_id: $body.comment.id, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
   # Cursor syntax belongs to the broker; consumers retain and return it unchanged.
@@ -54,7 +54,7 @@ context=$(jq -r .context <<< "$result") || exit 1
 jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
-  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, reply with regular comments where useful, and output the full updated JSON review.")}' || exit 1
+  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}' || exit 1
 fi
 # A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
 mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
