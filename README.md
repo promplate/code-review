@@ -35,7 +35,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 
    ```sh
    codex login --device-auth
-   gh secret set CODEX_AUTH < ~/.codex/auth.json
+   # Keep it on one line: the runner masks every line of a multi-line secret, so a lone "{" or "}" redacts every brace in the logs.
+   jq -c . ~/.codex/auth.json | gh secret set CODEX_AUTH
    ```
 
 4. Add `.github/workflows/code-review.yml`:
