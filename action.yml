@@ -361,6 +361,10 @@ runs:
             "Reply with the full review JSON for $SUBJECT now, running no further commands, with every field named as in $GITHUB_ACTION_PATH/review-schema.json. Put whatever remains unknown into the summary and judge on what you verified." \
             < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         fi
+        # Tokens spent on this run, summed over every turn the hooks and the extra ask started.
+        usage=$(jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] | "\(map(.input_tokens) | add // 0) input (\(map(.cached_input_tokens) | add // 0) cached), \(map(.output_tokens) | add // 0) output, \(map(.reasoning_output_tokens) | add // 0) reasoning"' \
+          < "$RUNNER_TEMP/codex.jsonl")
+        echo "::notice::ChatGPT usage: $usage"
         verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
         jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
         [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"

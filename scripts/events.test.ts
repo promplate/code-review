@@ -637,6 +637,18 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
   expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
 });
 
+test("each run reports the tokens every turn spent", () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "codex.jsonl"), [
+    { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 8, output_tokens: 2, reasoning_output_tokens: 1 } },
+    { type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0 } },
+  ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+  const commands = step("Run codex review").run.match(/usage=\$\(jq[\s\S]*?echo "::notice::ChatGPT usage: \$usage"/)![0];
+  const result = Bun.spawnSync(["bash", "-ec", commands], { env });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("ChatGPT usage: 15 input (8 cached), 5 output, 1 reasoning");
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
