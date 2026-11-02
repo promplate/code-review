@@ -622,6 +622,21 @@ test("forking a review copies its conversation but not another PRs consumption p
   expect(existsSync(join(target, "sessions/.github-deliveries.json"))).toBe(false);
 });
 
+test("a turn that fails after the verdict keeps the verdict it produced", () => {
+  const { dir, env } = fixture();
+  const verdict = { summary: "no must-fix issues", commits: [{ sha: "head", conclusion: "success" }] };
+  writeFileSync(join(dir, "codex.jsonl"), [
+    { type: "item.completed", item: { type: "agent_message", text: "I will look at the diff." } },
+    { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(verdict) } },
+    { type: "error", message: "Selected model is at capacity. Please try a different model." },
+    { type: "turn.failed", error: { message: "Selected model is at capacity. Please try a different model." } },
+  ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+  const commands = step("Run codex review").run.match(/\[ "\$ran" = 1 \] \|\| jq[\s\S]*?review\.json"/)![0];
+  const result = Bun.spawnSync(["bash", "-ec", commands], { env });
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }

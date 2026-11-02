@@ -341,7 +341,9 @@ runs:
           : > "$RUNNER_TEMP/codex.jsonl"
           fresh < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
         fi
-        [ "$ran" = 1 ] || exit 1
+        # A turn that fails after the review is complete, such as when the provider is at capacity for the next turn, still leaves the verdict it produced.
+        [ "$ran" = 1 ] || jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "item.completed" and .item.type == "agent_message") | .item.text] | last // empty' \
+          < "$RUNNER_TEMP/codex.jsonl" > "$RUNNER_TEMP/review.json"
         # Recorded before the verdict check, so a fresh review can resume the thread it just started.
         jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
@@ -349,6 +351,8 @@ runs:
         # A commit without a conclusion, or without the one being reviewed, would fail the publish step instead of this one.
         verdict() { jq -e '.summary and (.commits | type == "array" and length > 0) and all(.commits[]; .conclusion == "success" or .conclusion == "failure") and any(.commits[]; .sha == env.HEAD_SHA)' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
         if ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; then
+          # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
+          if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
           echo "::warning::Codex ended without a verdict; asking for the review object once."
           $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
