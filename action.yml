@@ -55,6 +55,7 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         DISPATCHED_PR: ${{ github.event.client_payload.pr }}
+        DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         SESSION_KEY: ${{ inputs.session-key }}
       run: |
         # Comments and dispatches name only the PR, so their PR is fetched fresh; other events carry it.
@@ -70,7 +71,8 @@ runs:
           # A deleted branch has no commit to check out, so a `push` trigger must not start a review for it.
           [ -z "${{ github.event.deleted }}" ] || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A deleted branch has nothing to review."; }
           # Pushes outside PRs review the pushed branch; fixes split into PRs then target the default branch.
-          printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
+          # A dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
+          printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "${DISPATCHED_SHA:-$GITHUB_SHA}" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
@@ -98,7 +100,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # The webhook that started this run also reached any review running at the time, so a consumed event needs no second pass.
-        key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // ""), (.comment.updated_at // .review.submitted_at // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
+        key=$(jq -r '[env.GITHUB_EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // .client_payload.sha // ""), (.comment.updated_at // .review.submitted_at // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
         id=$(printf %s "$key" | sha256sum | cut -c1-40)
         # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
         [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
@@ -284,8 +286,10 @@ runs:
           # Pending runs that newer pushes replace never start, so continue from the last head this session reviewed; new branches and force pushes may leave no such commit.
           RANGE="$(jq -rs 'map(.sha) | .[-2] // env.BEFORE' "$CODEX_HOME/check-runs.jsonl")..HEAD"
           git cat-file -e "${RANGE%..HEAD}^{commit}" 2>/dev/null || RANGE="origin/$BASE...HEAD"
-          MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: commit certain fixes as usual, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
-            Commits that landed through a reviewed PR need only a look at what merging could break. If commit-fix.sh is rejected, for example by branch protection, open a PR with the fix as above instead."
+          # Nobody owns a branch push, but the default branch is not ours to rewrite either; other branches accept fixes directly.
+          [ "$HEAD_BRANCH" != "$BASE" ] || FIX_POLICY="for certain fixes, open a PR as above rather than committing with commit-fix.sh"
+          MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: ${FIX_POLICY:-commit certain fixes as usual}, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
+            Commits that landed through a reviewed PR need only a look at what merging could break."
         fi
         INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
            Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
