@@ -56,6 +56,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         DISPATCHED_PR: ${{ github.event.client_payload.pr }}
         DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
+        DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
       run: |
         # Comments and dispatches name only the PR, so their PR is fetched fresh; other events carry it.
@@ -73,6 +74,8 @@ runs:
           # Pushes outside PRs review the pushed branch; fixes split into PRs then target the default branch.
           # A dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
           printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "${DISPATCHED_SHA:-$GITHUB_SHA}" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
+          # A dispatch may name an older commit, which the session's last head cannot bound.
+          [ -z "$DISPATCHED_SHA" ] || printf 'DISPATCHED_SHA=%s\nDISPATCHED_BASE=%s\n' "$DISPATCHED_SHA" "$DISPATCHED_BASE" >> "$GITHUB_ENV"
           SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}
         fi
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
@@ -283,9 +286,14 @@ runs:
           git merge-tree --write-tree "origin/$BASE" HEAD > /dev/null || CONFLICT="The PR conflicts with $BASE: if it is otherwise ready to merge, run git merge origin/$BASE, resolve the conflicts where the intent of both sides is clear, and commit the merge on its own with commit-fix.sh, passing the resolved paths and a subject like earlier merges in git log, then explain in a PR comment any resolution that is more than keeping both sides; otherwise point out the conflict. "
         else
           SUBJECT="branch $HEAD_BRANCH" MENTION=$HEAD_SHA COMMENT="gh api repos/$GITHUB_REPOSITORY/commits/<sha>/comments -F body=@-"
-          # Pending runs that newer pushes replace never start, so continue from the last head this session reviewed; new branches and force pushes may leave no such commit.
-          RANGE="$(jq -rs 'map(.sha) | .[-2] // env.BEFORE' "$CODEX_HOME/check-runs.jsonl")..HEAD"
-          git cat-file -e "${RANGE%..HEAD}^{commit}" 2>/dev/null || RANGE="origin/$BASE...HEAD"
+          # A dispatch names the commit to review, and reviews exactly what it brings: from the base it names, or from its parent.
+          if [ -n "$DISPATCHED_SHA" ]; then
+            RANGE="${DISPATCHED_BASE:-$(git rev-parse "$HEAD_SHA^")}..HEAD"
+          else
+            # Pending runs that newer pushes replace never start, so continue from the last head this session reviewed; new branches and force pushes may leave no such commit.
+            RANGE="$(jq -rs 'map(.sha) | .[-2] // env.BEFORE' "$CODEX_HOME/check-runs.jsonl")..HEAD"
+            git cat-file -e "${RANGE%..HEAD}^{commit}" 2>/dev/null || RANGE="origin/$BASE...HEAD"
+          fi
           # Nobody owns a branch push, but the default branch is not ours to rewrite either; other branches accept fixes directly.
           [ "$HEAD_BRANCH" != "$BASE" ] || FIX_POLICY="for certain fixes, open a PR as above rather than committing with commit-fix.sh"
           MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: ${FIX_POLICY:-commit certain fixes as usual}, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
