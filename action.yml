@@ -122,7 +122,8 @@ runs:
       if: env.SKIP != 'true'
       with:
         token: ${{ steps.app-token.outputs.token }}
-        ref: ${{ env.HEAD_BRANCH }}
+        # The commit under review, not its branch: a merged PR's branch is deleted, and a force push moves the name.
+        ref: ${{ env.HEAD_SHA }}
         fetch-depth: 0
         persist-credentials: false
 
