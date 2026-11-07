@@ -350,7 +350,8 @@ runs:
             Commits that landed through a reviewed PR need only a look at what merging could break."
         fi
         INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
-           Report real bugs, security issues and regressions only, one annotation per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level findings must use level=notice. \
+           Report confirmed defects in annotations only, one per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level confirmed findings must use level=notice. \
+           Report in potential_issues what you suspect but could not confirm from the code alone: the path, a line in the new file, what could go wrong, and the single check that would settle it. Never drop a suspicion that would change how a reader judges this change just because you cannot prove it; these are posted as one comment, so do not repeat them yourself. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
            summary: one short paragraph explaining the verdict only; it becomes the check run summary and, for must-fix issues, the change request body. \
            Everything that does not change the verdict, such as non-blocking findings and PRs opened for out-of-scope fixes, goes into regular comments you post yourself with $COMMENT. This run was triggered by $GITHUB_EVENT_NAME from $TRIGGER_SENDER ($TRIGGER_TYPE), which is context rather than a question: when that trigger is a bot and it leaves you nothing new to add, post no comment at all, and never repeat a status you already reported. Answer a review comment in the thread it was posted in with bash $GITHUB_ACTION_PATH/scripts/reply-thread.sh <id of a comment in it> '<reply>', which leaves the thread open; never open review threads otherwise, and resolve them only as below. \
@@ -570,6 +571,20 @@ runs:
           elif $author == env.BOT_LOGIN or $last == "APPROVED" then empty
           else {event: "APPROVE"} end' > "$RUNNER_TEMP/pr-review.json"
         [ ! -s "$RUNNER_TEMP/pr-review.json" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews --input "$RUNNER_TEMP/pr-review.json" </dev/null
+
+    - name: Publish potential issues
+      if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true'
+      shell: bash
+      env:
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
+      run: |
+        # Findings the review could not settle from the code alone; each carries the check that decides it.
+        jq -r 'if (.potential_issues | length) == 0 then empty
+          else (["Worth checking — I could not settle these from the diff alone:", ""]
+            + [.potential_issues[] | "- `\(.path):\(.line)` — \(.issue) Check: \(.check)"]) | join("\n") end' \
+          "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/potential-issues.md"
+        [ -s "$RUNNER_TEMP/potential-issues.md" ] || exit 0
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr comment $PR_NUMBER --body-file "$RUNNER_TEMP/potential-issues.md" </dev/null
 
     - name: Finish PR reactions
       if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true'

@@ -50,8 +50,22 @@
         "required": ["path", "line", "level", "message"],
         "additionalProperties": false
       }
+    },
+    "potential_issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "line": { "type": "integer" },
+          "issue": { "type": "string" },
+          "check": { "type": "string" }
+        },
+        "required": ["path", "line", "issue", "check"],
+        "additionalProperties": false
+      }
     }
   },
-  "required": ["conclusion", "summary", "reactions", "commits", "merge", "annotations"],
+  "required": ["conclusion", "summary", "reactions", "commits", "merge", "annotations", "potential_issues"],
   "additionalProperties": false
 }
