@@ -351,6 +351,7 @@ runs:
         fi
         INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
            Report confirmed defects in annotations only, one per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level confirmed findings must use level=notice. \
+           Reserve level=failure for a defect you can trigger: state the concrete input or execution path that reaches the bad line and the consequence it produces; when you cannot name that path from the code alone, report the same finding at warning level instead. \
            Report in potential_issues what you suspect but could not confirm from the code alone: the path, a line in the new file, what could go wrong, and the single check that would settle it. Never drop a suspicion that would change how a reader judges this change just because you cannot prove it; these are posted as one comment, so do not repeat them yourself. \
            conclusion=failure only if some annotation has level=failure (must-fix), otherwise success. \
            summary: one short paragraph explaining the verdict only; it becomes the check run summary and, for must-fix issues, the change request body. \
