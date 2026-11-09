@@ -21,6 +21,8 @@ inputs:
     default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
+  service-tier:
+    description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
 
 runs:
   using: composite
@@ -322,8 +324,14 @@ runs:
            Keep this review in scope: for a certain fix outside its scope, run git worktree add \"\$RUNNER_TEMP/<branch>\" origin/$BASE, apply the fix there, and run bash $GITHUB_ACTION_PATH/scripts/open-pr.sh '<branch>' '<title>' '<body>' <changed paths> from that worktree; open one PR per independent fix, mention $MENTION in its body, first check gh pr list to avoid duplicates, and link opened PRs in regular comments. \
            For an out-of-scope problem you are certain is real but cannot fix with certainty, open an issue with gh issue create instead, after checking gh issue list --search for duplicates, mention $MENTION in it, and link it in a regular comment. \
            $MODE_INSTRUCTIONS Reuse successful CI checks for the reviewed head as execution evidence; run additional focused tests for concrete risks those checks do not cover. For those tests, exercise what the change produces the way production consumes it, break the code that new or changed tests guard to confirm they fail, and test claimed invariants such as determinism by varying what should not matter."
+        # Production reviews may opt into a faster provider tier; workflows that do not ask for one keep the provider default.
+        tier=()
+        case "${{ inputs.service-tier }}" in
+          ''|default) ;;
+          *) tier=(--config "service_tier=\"${{ inputs.service-tier }}\"" --config features.ultrafast_mode=true) ;;
+        esac
         fresh() {
-          $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
@@ -335,14 +343,14 @@ runs:
           cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
           # The conversation transfers, but events filtered for the source PR were never consumed for this one.
           rm -f "$CODEX_HOME/sessions/.github-cursor" "$CODEX_HOME/sessions/.github-deliveries.json"
-          $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
             "You opened PR #$PR_NUMBER to keep that fix out of the change you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
              Run \`git diff $RANGE\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
         elif [ -f "$CODEX_HOME/last-thread-id" ]; then
-          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \
@@ -374,7 +382,7 @@ runs:
           # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
           if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
           echo "::warning::Codex ended without a verdict; asking for the review object once."
-          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust \
+          $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
             "$(cat "$CODEX_HOME/last-thread-id")" \

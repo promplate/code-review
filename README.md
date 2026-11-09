@@ -118,6 +118,8 @@ jobs:
 
 A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently.
 
+Set the `service-tier` input to `ultrafast` (or another tier the model advertises) to have the provider run reviews on its fastest queue; it is opt-in, so evaluation runs and cost-sensitive consumers keep the provider default.
+
 ## Runtime
 
 The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.
@@ -128,7 +130,7 @@ The App needs **Contents**, **Pull requests** and **Checks** write access, plus 
 
 `id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: write` lets it drop superseded session snapshots from the Actions cache.
 
-To review as your own GitHub App, deploy the broker with that App's credentials, point the `broker` input at it, and use the App's bot login in the job's `if:`.
+To review as your own GitHub App, deploy the broker with that App's credentials and point the `broker` input at it; the action learns which login it acts as from the token it mints, so workflows never name the App.
 
 Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the job's `env` to trace reviews to Langfuse with [langfuse/codex-observability-plugin](https://github.com/langfuse/codex-observability-plugin "Langfuse observability plugin for Codex").
 
