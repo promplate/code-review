@@ -78,8 +78,9 @@ runs:
           if [ "$GITHUB_EVENT_NAME" = pull_request_target ] && [ "$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")" = synchronize ]; then
             head=$(jq -r .head.sha <<< "$pr")
             # A check run another app happens to name the same is not a verdict; the slug keeps this to our own reviews.
+            # A run that died before judging leaves a neutral check, which is not a verdict either.
             reviewed=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$head/check-runs?check_name=code-review" </dev/null 2>/dev/null \
-              | jq -r --arg bot "$BOT_LOGIN" '[.check_runs[] | select(.status == "completed" and .app.slug == ($bot | rtrimstr("[bot]")))] | length') || reviewed=0
+              | jq -r --arg bot "$BOT_LOGIN" '[.check_runs[] | select(.status == "completed" and (.conclusion == "success" or .conclusion == "failure") and .app.slug == ($bot | rtrimstr("[bot]")))] | length') || reviewed=0
             if [ "${reviewed:-0}" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::This head was already reviewed."; fi
             # Only this workflow's runs count as reviews, and only the job token may read Actions; without that permission the lookup fails open.
             workflow=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id </dev/null 2>/dev/null) || workflow=
