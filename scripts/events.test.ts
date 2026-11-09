@@ -198,6 +198,13 @@ test("branch comments match HEAD_SHA, and pushes match HEAD_BRANCH for branches 
   }
 });
 
+test("head changes and draft transitions reach the review, while the events that start one are not replayed", () => {
+  const pull = (action: string) => frame("pull_request", { action, number: 7, pull_request: { number: 7, head: { sha: "next" } } });
+  for (const action of ["ready_for_review", "synchronize"]) expect(runHook(pull(action)).output).toContain(action);
+  expect(runHook(pull("synchronize")).output).toContain("next");
+  for (const action of ["opened", "reopened"]) expect(runHook(pull(action)).output).toBe("");
+});
+
 test("history plus pending replay is deduplicated within one Stop and across Stops", () => {
   const event = frame("issue_comment", { issue: { number: 7 }, comment: { body: "once-only" } }, "same-delivery");
   const { output, run, dir } = runHook(event + event);
