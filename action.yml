@@ -585,6 +585,10 @@ runs:
             + [.potential_issues[] | "- `\(.path):\(.line)` — \(.issue) Check: \(.check)"]) | join("\n") end' \
           "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/potential-issues.md"
         [ -s "$RUNNER_TEMP/potential-issues.md" ] || exit 0
+        # A resumed review rebuilds the whole list, so posting it again would repeat what a reader already saw.
+        last=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" </dev/null \
+          --jq --arg bot "$BOT_LOGIN" '[.[] | select(.user.login == $bot)] | last | .body // ""') || last=
+        [ "$(cat "$RUNNER_TEMP/potential-issues.md")" != "$last" ] || exit 0
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr comment $PR_NUMBER --body-file "$RUNNER_TEMP/potential-issues.md" </dev/null
 
     - name: Finish PR reactions
