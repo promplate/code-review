@@ -76,7 +76,8 @@ runs:
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
           # A deleted branch has no commit to check out, so a `push` trigger must not start a review for it.
-          [ -z "${{ github.event.deleted }}" ] || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A deleted branch has nothing to review."; }
+          # The expression renders as the string false, not empty, so an emptiness test would skip every push.
+          [ "${{ github.event.deleted }}" != "true" ] || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A deleted branch has nothing to review."; }
           # Pushes outside PRs review the pushed branch; fixes split into PRs then target the default branch.
           # A dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
           printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "${DISPATCHED_SHA:-$GITHUB_SHA}" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
