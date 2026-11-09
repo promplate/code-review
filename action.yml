@@ -67,6 +67,10 @@ runs:
         if [ -n "$pr" ]; then
           jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Fork PRs are not reviewed."; }
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
+          # The App's own PRs wait until they leave draft, so a half-written fix PR is not reviewed; no workflow has to name this App to get that.
+          if [ "$(jq -r .user.login <<< "$pr")" = "$BOT_LOGIN" ] && [ "$(jq -r '.draft // false' <<< "$pr")" = true ]; then
+            echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::The App's own PRs wait until they leave draft."
+          fi
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
           # A deleted branch has no commit to check out, so a `push` trigger must not start a review for it.
