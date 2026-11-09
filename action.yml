@@ -155,6 +155,24 @@ runs:
         fetch-depth: 0
         persist-credentials: false
 
+    - name: Skip pushes reviewed PRs already cover
+      if: github.event_name == 'push' && env.SKIP != 'true'
+      shell: bash
+      env:
+        BEFORE: ${{ github.event.before }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
+      run: |
+        # A squash or rebase merge lands the reviewed PR head's own tree, so matching trees mean the push brings nothing new.
+        base=$BEFORE
+        [ ! -f "$CODEX_HOME/check-runs.jsonl" ] || base=$(jq -rs 'map(.sha) | last // env.BEFORE' "$CODEX_HOME/check-runs.jsonl" 2>/dev/null) || base=$BEFORE
+        bash "$GITHUB_ACTION_PATH/scripts/covered-push.sh" "$base" "$HEAD_SHA" || exit 0
+        # The marker advances the session's reviewed head, so later ranges leave these commits out.
+        mkdir -p "$CODEX_HOME"
+        jq -cn --arg sha "$HEAD_SHA" '{sha: $sha, id: ""}' >> "$CODEX_HOME/check-runs.jsonl"
+        echo "SKIP=true" >> "$GITHUB_ENV"
+        echo "RECORDED_SKIP=true" >> "$GITHUB_ENV"
+        echo "::notice::Every commit in $base..$HEAD_SHA was already reviewed as a pull request head of the same tree."
+
     - name: Open check run
       id: check
       if: env.SKIP != 'true'
@@ -296,7 +314,8 @@ runs:
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
         jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
-        COMMITS=$(jq -rs 'map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
+        # Heads this session reviewed face the review; markers for pushes it skipped only bound the next range.
+        COMMITS=$(jq -rs 'map(select(.id != "")) | map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
         # Keep consumption receipts inside the existing cache paths without invalidating earlier session snapshots.
         if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then cp "$CODEX_HOME/sessions/.github-deliveries.json" "$RUNNER_TEMP/injected-deliveries.json"; else printf '[]\n' > "$RUNNER_TEMP/injected-deliveries.json"; fi
         rm -f "$RUNNER_TEMP/injected-cursor"
@@ -418,7 +437,7 @@ runs:
 
     - name: Save codex session
       id: save-session
-      if: env.SKIP != 'true'
+      if: env.SKIP != 'true' || env.RECORDED_SKIP == 'true'
       # A cache upload failure must not discard a completed review.
       continue-on-error: true
       uses: actions/cache/save@v6
