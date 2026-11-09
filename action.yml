@@ -162,16 +162,23 @@ runs:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # A squash or rebase merge lands the reviewed PR head's own tree, so matching trees mean the push brings nothing new.
+        # A squash or rebase merge lands the reviewed PR head's own tree, so a matching tree means the push brings nothing new.
         base=$BEFORE
         [ ! -f "$CODEX_HOME/check-runs.jsonl" ] || base=$(jq -rs 'map(.sha) | last // env.BEFORE' "$CODEX_HOME/check-runs.jsonl" 2>/dev/null) || base=$BEFORE
-        bash "$GITHUB_ACTION_PATH/scripts/covered-push.sh" "$base" "$HEAD_SHA" || exit 0
+        verdict=$(bash "$GITHUB_ACTION_PATH/scripts/covered-push.sh" "$base" "$HEAD_SHA") || exit 0
+        # The pushed head keeps a check of its own, borrowing the verdict of the review that covered the same tree.
+        conclusion=${verdict%% *} covered=${verdict#* }
+        title="No must-fix issue introduced"
+        [ "$conclusion" != failure ] || title="Must-fix issue introduced here"
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs -f name=code-review -f head_sha=$HEAD_SHA \
+          -f status=completed -f conclusion=$conclusion -f "output[title]=$title" \
+          -f "output[summary]=This push lands the tree reviewed at $covered; that review's verdict stands." </dev/null > /dev/null
         # The marker advances the session's reviewed head, so later ranges leave these commits out.
         mkdir -p "$CODEX_HOME"
         jq -cn --arg sha "$HEAD_SHA" '{sha: $sha, id: ""}' >> "$CODEX_HOME/check-runs.jsonl"
         echo "SKIP=true" >> "$GITHUB_ENV"
         echo "RECORDED_SKIP=true" >> "$GITHUB_ENV"
-        echo "::notice::Every commit in $base..$HEAD_SHA was already reviewed as a pull request head of the same tree."
+        echo "::notice::$HEAD_SHA lands the tree reviewed at $covered; skipping the review."
 
     - name: Open check run
       id: check
