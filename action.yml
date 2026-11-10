@@ -586,9 +586,15 @@ runs:
           "$RUNNER_TEMP/review.json")
         marker='<!-- code-review:potential-issues -->'
         api="repos/${{ github.repository }}"
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$api/issues/$PR_NUMBER/comments?per_page=100" </dev/null > "$RUNNER_TEMP/comments.json" || echo '[]' > "$RUNNER_TEMP/comments.json"
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$api/issues/$PR_NUMBER/comments?per_page=100" --paginate --jq '.[]' </dev/null \
+          | jq -s 'unique_by(.id) | sort_by(.id)' > "$RUNNER_TEMP/comments.json"
         # One comment carries the list: a rerun rewrites it instead of stacking a near-duplicate whose wording drifted, and a comment posted before the marker existed is adopted rather than joined by a second one.
-        tracked=$(jq -r --arg bot "$BOT_LOGIN" --arg m "$marker" '[.[] | select(.user.login == $bot) | select((.body | contains($m)) or (.body | startswith("Worth checking"))) | .id] | last // empty' "$RUNNER_TEMP/comments.json")
+        matches=$(jq -c --arg bot "$BOT_LOGIN" --arg m "$marker" '[.[] | select(.user.login == $bot) | select((.body | startswith($m)) or (.body | startswith("Worth checking — I could not settle these from the diff alone:"))) | .id]' "$RUNNER_TEMP/comments.json")
+        tracked=$(jq -r 'last // empty' <<< "$matches")
+        # Retire older copies left by previous runs, keeping only the comment this review updates.
+        jq -r '.[:-1][]' <<< "$matches" | while read -r id; do
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "$api/issues/comments/$id" </dev/null
+        done
         if [ -z "$issues" ]; then
           # The latest review settled or dropped them; a note that no longer applies would mislead.
           [ -z "$tracked" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "$api/issues/comments/$tracked" </dev/null
