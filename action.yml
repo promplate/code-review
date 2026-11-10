@@ -580,16 +580,29 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # Findings the review could not settle from the code alone; each carries the check that decides it.
-        jq -r 'if (.potential_issues | length) == 0 then empty
+        issues=$(jq -r 'if (.potential_issues | length) == 0 then empty
           else (["Worth checking — I could not settle these from the diff alone:", ""]
             + [.potential_issues[] | "- `\(.path):\(.line)` — \(.issue) Check: \(.check)"]) | join("\n") end' \
-          "$RUNNER_TEMP/review.json" > "$RUNNER_TEMP/potential-issues.md"
-        [ -s "$RUNNER_TEMP/potential-issues.md" ] || exit 0
-        # A resumed review rebuilds the whole list, so posting it again would repeat what a reader already saw.
-        last=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments?per_page=100" </dev/null \
-          --jq --arg bot "$BOT_LOGIN" '[.[] | select(.user.login == $bot)] | last | .body // ""') || last=
-        [ "$(cat "$RUNNER_TEMP/potential-issues.md")" != "$last" ] || exit 0
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr comment $PR_NUMBER --body-file "$RUNNER_TEMP/potential-issues.md" </dev/null
+          "$RUNNER_TEMP/review.json")
+        marker='<!-- code-review:potential-issues -->'
+        api="repos/${{ github.repository }}"
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$api/issues/$PR_NUMBER/comments?per_page=100" </dev/null > "$RUNNER_TEMP/comments.json" || echo '[]' > "$RUNNER_TEMP/comments.json"
+        # One comment carries the list: a rerun rewrites it instead of stacking a near-duplicate whose wording drifted, and a comment posted before the marker existed is adopted rather than joined by a second one.
+        tracked=$(jq -r --arg bot "$BOT_LOGIN" --arg m "$marker" '[.[] | select(.user.login == $bot) | select((.body | contains($m)) or (.body | startswith("Worth checking"))) | .id] | last // empty' "$RUNNER_TEMP/comments.json")
+        if [ -z "$issues" ]; then
+          # The latest review settled or dropped them; a note that no longer applies would mislead.
+          [ -z "$tracked" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "$api/issues/comments/$tracked" </dev/null
+          exit 0
+        fi
+        body=$(printf '%s\n\n%s' "$marker" "$issues")
+        if [ -n "$tracked" ]; then
+          [ "$(jq -r --argjson id "$tracked" '.[] | select(.id == $id) | .body' "$RUNNER_TEMP/comments.json")" != "$body" ] || exit 0
+          jq -n --arg body "$body" '{body: $body}' > "$RUNNER_TEMP/potential-issues.json"
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X PATCH "$api/issues/comments/$tracked" --input "$RUNNER_TEMP/potential-issues.json" </dev/null > /dev/null
+        else
+          jq -n --arg body "$body" '{body: $body}' > "$RUNNER_TEMP/potential-issues.json"
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$api/issues/$PR_NUMBER/comments" --input "$RUNNER_TEMP/potential-issues.json" </dev/null > /dev/null
+        fi
 
     - name: Finish PR reactions
       if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true'
