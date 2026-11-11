@@ -705,6 +705,20 @@ console.log("9");
   expect(run({ action: "submitted", review: { id: 5 } }, "pull_request_review").args).toContain("repos/owner/repo/issues/7/reactions");
 });
 
+test("a comment deleted before the reaction is posted falls back to the PR body", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", '#!/usr/bin/env bash\ncase "$2" in */comments/*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;; esac\necho 9\n');
+  executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
+  writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", comment: { id: 77 } }));
+  const commands = step("Mark PR as reviewing").run.replaceAll("${{ github.repository }}", "owner/repo");
+  for (const name of ["issue_comment", "pull_request_review_comment"]) {
+    writeFileSync(join(dir, "github-env"), "");
+    const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], { env: { ...env, GITHUB_EVENT_NAME: name, GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_ENV: join(dir, "github-env") } });
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(join(dir, "github-env"), "utf8")).toContain("EYES_REACTION_PATH=issues/7/reactions/9");
+  }
+});
+
 test("tool output is dimmed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
