@@ -15,7 +15,7 @@ fromjson? // {type: "error", message: .}
   # The runner also reads legacy `##[` commands anywhere in a line, so text that carries either form gets wrapped.
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
-    | ("::group::$ \(.item.command | script)"
+    | ("::group::" + ("$ \(.item.command | script)" | dim)
       + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")

@@ -775,6 +775,8 @@ test("tool output is greyed line by line", () => {
   const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
   for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[90m${line}\u001b[0m\n`);
+  // The group title is ours, and greying it keeps the whole call in the background.
+  expect(result.stdout.toString()).toContain(`::group::\u001b[90m$ x\u001b[0m\n`);
 });
 
 test("the verdict is coloured by its conclusion", () => {
