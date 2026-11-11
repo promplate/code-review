@@ -313,8 +313,10 @@ runs:
         bun -e '
           const path = process.argv[1], text = await Bun.file(path).text();
           if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
-          if (/^mcp_servers\s*=/m.test(text)) { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
-          await Bun.write(path, text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n");
+          const config = text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
+          try { Bun.TOML.parse(config); }
+          catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
+          await Bun.write(path, config);
         ' "$CODEX_HOME/config.toml"
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then

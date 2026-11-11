@@ -721,7 +721,10 @@ test("codex is configured with the gh MCP server and the token config dir", () =
     '[mcp_servers]\ngh = { command = "custom" }\n',
   ]) expect(run(config).mcp_servers.gh).toEqual({ command: "custom" });
   // An inline mcp_servers value cannot be extended by a table; the supplied config stays exactly as written.
-  expect(run('mcp_servers = { other = { command = "x" } }\n').mcp_servers).toEqual({ other: { command: "x" } });
+  for (const key of ["mcp_servers", "  mcp_servers", "\tmcp_servers", '"mcp_servers"', "'mcp_servers'", '"mcp_\\u0073ervers"']) {
+    expect(run(`${key} = { other = { command = "x" } }\n`).mcp_servers).toEqual({ other: { command: "x" } });
+  }
+  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] } });
 });
 
 test("each run reports the tokens every turn spent", () => {
