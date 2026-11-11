@@ -77,7 +77,7 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
   expect(step("Drop older session snapshots").if).toBe("steps.save-session.outcome == 'success'");
   // A failed publication skips the cache save, so drafts must still be released from the runner and the session copy.
-  expect(step("Mark forked PRs ready").if).toBe("always() && env.SKIP != 'true'");
+  expect(step("Mark forked PRs ready").if).toBe("always()");
 });
 
 for (const failed of ["Publish check run", "Publish other commit verdicts", "Publish PR review", ""]) {
@@ -188,4 +188,36 @@ test("a failed publication still releases the drafted fix PRs", () => {
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
   // The URL that could not be marked ready stays for the retry that restores this session.
   expect(readFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+});
+
+test.each(["", "forked-prs", "sessions/.github-pending-drafts"])("draft release accepts optional lists: %s", file => {
+  const setup = fixture(), url = "https://github.com/owner/repo/pull/8";
+  if (file) writeFileSync(join(setup.dir, file), `${url}\n`);
+  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  expect(run("Mark forked PRs ready", setup).exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "ready"))).toBe(!!file);
+  if (file) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+});
+
+test("new draft handoffs preserve pending drafts restored from the session", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
+  writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
+  const commands = step("Run codex review").run.slice(step("Run codex review").run.lastIndexOf('mkdir -p "$CODEX_HOME/sessions"'));
+  expect(Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], { env: { ...setup.env, AGENT: "true" } }).exitCode).toBe(0);
+  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  expect(run("Mark forked PRs ready", setup).exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\nhttps://github.com/owner/repo/pull/9\n");
+});
+
+test("a consumed retry still releases its cached pending drafts", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", '#!/bin/sh\ncase "$*" in\n  *collaborators*) printf "write\\n" ;;\n  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;\n  *) exit 1 ;;\nesac\n');
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([delivery]));
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
+  expect(gate(setup)).toContain("SKIP=true");
+  expect(step("Mark forked PRs ready").if).toBe("always()");
+  expect(run("Mark forked PRs ready", setup, { SKIP: "true" }).exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });

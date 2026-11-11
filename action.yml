@@ -493,7 +493,7 @@ runs:
         [ "$AGENT" != true ] || [ "$ran" = 1 ] || { echo "::error::Codex failed before completing the issue run."; exit 1; }
         # Draft fix PRs opened during the review outlive this runner; keep their URLs beside the session so a retry can still mark them ready.
         mkdir -p "$CODEX_HOME/sessions"
-        [ ! -s "$RUNNER_TEMP/forked-prs" ] || cp "$RUNNER_TEMP/forked-prs" "$CODEX_HOME/sessions/.github-pending-drafts"
+        [ ! -s "$RUNNER_TEMP/forked-prs" ] || cat "$RUNNER_TEMP/forked-prs" >> "$CODEX_HOME/sessions/.github-pending-drafts"
         [ "$AGENT" = true ] || verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
 
     - name: Publish check run
@@ -667,13 +667,16 @@ runs:
 
     - name: Mark forked PRs ready
       # A failed publication skips the cache save, so the pending list is kept beside the session until every draft is ready.
-      if: always() && env.SKIP != 'true'
+      # Consumed retries still need to release drafts restored from the session.
+      if: always()
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         [ -n "$CODEX_HOME" ] || exit 0
-        pending=$(cat "$RUNNER_TEMP/forked-prs" "$CODEX_HOME/sessions/.github-pending-drafts" 2>/dev/null | sort -u)
+        pending=$(for file in "$RUNNER_TEMP/forked-prs" "$CODEX_HOME/sessions/.github-pending-drafts"; do
+          if [ -f "$file" ]; then cat "$file" || exit 1; fi
+        done | sort -u)
         [ -n "$pending" ] || exit 0
         left=
         while read -r url; do
