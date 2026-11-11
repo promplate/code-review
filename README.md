@@ -62,6 +62,10 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      authorize:
        # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action
        # would skip must never take a slot there: it could push a new head's review out of the queue.
+       # External commenters cannot hold write access, so their events must not start a runner to find that out.
+       if: >
+         github.event_name != 'issue_comment' && github.event_name != 'pull_request_review' && github.event_name != 'pull_request_review_comment'
+         || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association)
        runs-on: ubuntu-latest
        outputs:
          writer: ${{ steps.check.outputs.writer }}
@@ -75,7 +79,10 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
            run: |
              case "$EVENT" in
                issue_comment|pull_request_review|pull_request_review_comment)
-                 permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null || echo none)
+                 # A 404 is a denial rather than a failure; one failure should not silently drop an authorized review.
+                 permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+                   || permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+                   || { echo "::warning::Could not read $SENDER's repository permission; skipping this trigger."; permission=none; }
                  case "$permission" in admin|write|maintain) echo writer=true ;; *) echo writer=false ;; esac ;;
                # A same-repository pull request already required write access.
                *) echo writer=true ;;
