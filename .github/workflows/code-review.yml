@@ -3,6 +3,9 @@ name: code-review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  issues:
+    # A labeled issue wakes the agent, which decides how to respond rather than reviewing anything.
+    types: [labeled]
   issue_comment:
     types: [created, edited, deleted]
   pull_request_review:
@@ -27,7 +30,7 @@ jobs:
     # Same-repository PRs, plus pushes to main so merged work is reviewed too; the App's own PRs wait until they leave draft.
     if: >
       github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-      || (github.event.issue.pull_request != null && github.event.issue.state == 'open')
+      || github.event.issue.state == 'open'
       || (github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
           && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot'))
     # Low-trust events such as pull_request_target cannot save caches by default, which would drop every session snapshot.
