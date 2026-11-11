@@ -31,7 +31,10 @@ jobs:
           case "$EVENT" in
             # Only these triggers are open to anyone; a same-repository push or pull request already required write access.
             issue_comment|issues|pull_request_review|pull_request_review_comment)
-              permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null || echo none)
+              # A 404 is a denial rather than a failure; a transient failure must not silently drop an authorized review.
+              permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+                || permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+                || { echo "::warning::Could not read $SENDER's repository permission; denying this trigger."; permission=none; }
               case "$permission" in admin|write|maintain) echo writer=true ;; *) echo writer=false ;; esac ;;
             *) echo writer=true ;;
           esac >> "$GITHUB_OUTPUT"
