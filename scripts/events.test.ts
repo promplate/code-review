@@ -688,12 +688,12 @@ test("MCP calls fold input and result into one block", () => {
   };
   const call = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { commit_sha: "39a2ec3", per_page: 2 }, result: { content: [{ type: "text", text: '[{"id":1}]' }] }, error: null, status: "completed" };
   // The call and its input name the block; the result stays dimmed like command output.
-  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n\u001b[2m[{"id":1}]\u001b[0m\n::endgroup::\n\n`);
+  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n\u001b[90m[{"id":1}]\u001b[0m\n::endgroup::\n\n`);
   // Long input keeps a full copy inside the block.
   const args = JSON.stringify({ q: "x".repeat(200) });
   const long = log({ ...call, arguments: { q: "x".repeat(200) } });
   expect(long).toContain(`\u001b[36m${args.slice(0, 160)}…\u001b[0m`);
-  expect(long).toContain(`\u001b[2m${args}\u001b[0m`);
+  expect(long).toContain(`\u001b[90m${args}\u001b[0m`);
   // A failed call reports its error in red instead of a result.
   expect(log({ ...call, result: null, error: { message: "boom" }, status: "failed" })).toContain("\u001b[31mboom\u001b[0m");
   // The call is shown once, when it finishes, like commands.
@@ -769,12 +769,12 @@ test("a comment deleted before the reaction is posted falls back to the PR body"
   }
 });
 
-test("tool output is dimmed line by line", () => {
+test("tool output is greyed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
   const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
-  for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[2m${line}\u001b[0m\n`);
+  for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[90m${line}\u001b[0m\n`);
 });
 
 test("the verdict is coloured by its conclusion", () => {
@@ -819,7 +819,7 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
-    const dimmed = expected.split("\n").map((line) => `\u001b[2m${line}\u001b[0m`).join("\n");
+    const dimmed = expected.split("\n").map((line) => `\u001b[90m${line}\u001b[0m`).join("\n");
     expect(result.stdout.toString()).toContain(`\n::stop-commands::s\n${dimmed}\n::s::\n`);
   }
 });
