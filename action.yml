@@ -369,7 +369,7 @@ runs:
           MODE_INSTRUCTIONS="This review covers pushes to $HEAD_BRANCH outside any PR, so nobody awaits replies: ${FIX_POLICY:-commit certain fixes as usual}, and otherwise stay silent unless a human must act, which should be rare, and then comment on the relevant commit. \
             Commits that landed through a reviewed PR need only a look at what merging could break."
         fi
-        INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. A gh MCP server offers github_graphql and code search: read GitHub through those, and keep the gh CLI for the writes spelled out below. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
+        INSTRUCTIONS="Available review tooling: $RUNTIME_INFO. A gh MCP server offers github_graphql and code search: read GitHub through those, falling back to gh CLI reads when the supplied config leaves the server out, and keep the gh CLI for the writes and the duplicate-issue search spelled out below. Prefer Bun for JavaScript tooling where the repository supports it; inspect the repository's runtime requirements before choosing commands. \
            Report confirmed defects in annotations only, one per independent root cause; after confirming one, keep reviewing the rest of the diff. Nit-level confirmed findings must use level=notice. \
            Reserve level=failure for a defect you can trigger: state the concrete input or execution path that reaches the bad line and the consequence it produces; when you cannot name that path from the code alone, report the same finding at warning level instead. \
            Keep what you suspect but could not confirm from the code alone in one comment of your own, with the path, a line in the new file, what could go wrong, and the single check that would settle it; never drop a suspicion that would change how a reader judges this change just because you cannot prove it. Comments authored by $BOT_LOGIN are yours: that list is a document rather than a chat reply, so keep it in one comment, fold in any older \"Worth checking\" comment from earlier runs and delete it, edit the list with gh api -X PATCH even when newer comments follow, read your comments just before writing, and update the list once the verdict is settled, deleting it when the latest review settles everything. \
@@ -404,8 +404,9 @@ runs:
         }
         log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
         # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
+        # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
         : > "$RUNNER_TEMP/injected.log"
-        tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
+        tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
         INJECTED_TAIL=$!
         trap 'kill "$INJECTED_TAIL" 2> /dev/null || true' EXIT
         review() {

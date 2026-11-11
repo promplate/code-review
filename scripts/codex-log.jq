@@ -8,10 +8,11 @@ fromjson? // {type: "error", message: .}
   elif .type == "turn.failed" then .error.message
   elif .type == "item.completed" and (.item.type | IN("agent_message", "error")) then .item.text // .item.message
   # Parallel commands overlap, so each is printed once it finishes, titled by its first line; only output a reporter could parse as a workflow command needs stop-commands around it.
+  # The runner also reads legacy `##[` commands anywhere in a line, so text that carries either form gets wrapped.
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
     | ("::group::$ \(.item.command | script)"
-      + (if $out | test("(?m)^ *::") then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
+      + (if ($out | test("##\\[")) or ($out | test("(?m)^ *::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type

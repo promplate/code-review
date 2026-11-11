@@ -5,7 +5,11 @@ def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action 
   + (if .actor then " " + .actor else "" end) + (if .name then " " + .name else "" end)
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
   + (if .url then " " + .url else "" end);
+# Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading space, and legacy `##[` anywhere.
+# A zero-width space inside the marker keeps the parser from matching it while the log reads the same; a suppression token would have to be shared with the tool log, which writes to this log at the same time.
+def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub("(?m)^(?<indent> *)::"; "​\(.indent)::");
 (fromjson? // null) as $event
 | (if $event == null then . else ($event | event_line) end)
-# Event text comes from GitHub payloads, so a field carrying `::error::` on its own line would run as a workflow command.
-| if test("(?m)^ *::") then "::stop-commands::\($stop)\n\(.)\n::\($stop)::" else . end
+| escape_commands
+# The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
+| gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"

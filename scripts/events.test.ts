@@ -696,11 +696,17 @@ test("the log carries no trailing whitespace", () => {
 });
 
 test("log cleanup keeps workflow commands in command output escaped", () => {
-  for (const output of ["::error::test failure\n", ":\r:error::test failure\r\n", "::err\ror::test failure\n"]) {
+  // The runner reads `::` commands after leading space and legacy `##[` commands anywhere in a line.
+  for (const [output, expected] of [
+    ["::error::test failure\n", "::error::test failure"],
+    [":\r:error::test failure\r\n", "::error::test failure"],
+    ["::err\ror::test failure\n", "::error::test failure"],
+    ["CI ##[error]test failure\n", "CI ##[error]test failure"],
+  ]) {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n\u001b[2m::error::test failure\u001b[0m\n::s::\n");
+    expect(result.stdout.toString()).toContain(`\n::stop-commands::s\n\u001b[2m${expected}\u001b[0m\n::s::\n`);
   }
 });
 
@@ -711,7 +717,7 @@ test("injected GitHub activity is logged with a colour per event kind", () => {
     JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
   ].join("\n") + "\n";
   const log = (input: string) => {
-    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
     return result.stdout.toString();
   };
@@ -719,12 +725,17 @@ test("injected GitHub activity is logged with a colour per event kind", () => {
   expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
   expect(output).toContain("\u001b[93mcheck_run\u001b[0m CI:failure https://example.test/r/2");
   expect(output).toContain("\u001b[91mreplay_gap\u001b[0m");
-  expect(output).not.toContain("::stop-commands::");
-  // A payload field that carries a workflow command on its own line must not run as one.
-  const crafted = log(JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }) + "\n");
-  expect(crafted).toContain("::stop-commands::s\n");
-  expect(crafted).toContain("::error::forged");
-  expect(crafted).toContain("\n::s::");
+  // A payload field that carries a workflow command must not run as one, in either form the runner parses.
+  // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
+  const crafted = log([
+    JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }),
+    JSON.stringify({ event: "check_run", name: "CI ##[error]synthetic", url: "https://example.test/r/4" }),
+  ].join("\n") + "\n");
+  expect(crafted).not.toContain("::stop-commands::");
+  expect(crafted).not.toMatch(/^ *::/m);
+  expect(crafted).not.toContain("##[");
+  expect(crafted).toContain("​::error::forged");
+  expect(crafted).toContain("#​#[error]synthetic");
 });
 
 test("hook deliveries are published for the live log", () => {
