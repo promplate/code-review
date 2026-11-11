@@ -13,6 +13,15 @@ def json: def hstr: tojson | "\u001b[32m\(.)\u001b[0m";
   elif type == "number" then "\u001b[33m\(tostring)\u001b[0m"
   elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
   else "\u001b[90mnull\u001b[0m" end;
+# An input preview is cut mid-string, so colour the text itself rather than a parsed value; an unterminated string stays green up to the cut.
+def jsontext: gsub(
+  "(?<key>\"(?:[^\"\\\\]|\\\\.)*\")(?=\\s*:)|(?<str>\"(?:[^\"\\\\]|\\\\.)*\")|(?<open>\"(?:[^\"\\\\]|\\\\.)*$)|(?<bool>\\b(?:true|false)\\b)|(?<null>\\bnull\\b)|(?<num>-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)";
+  if .key then "\u001b[36m\(.key)\u001b[0m"
+  elif .str then "\u001b[32m\(.str)\u001b[0m"
+  elif .open then "\u001b[32m\(.open)\u001b[0m"
+  elif .bool then "\u001b[35m\(.bool)\u001b[0m"
+  elif .null then "\u001b[90m\(.null)\u001b[0m"
+  else "\u001b[33m\(.num)\u001b[0m" end);
 # A result that is JSON gets the same colouring; anything else stays grey.
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
 # Item titles are data too; break command markers there and suppress commands while printing their bodies.
@@ -49,8 +58,8 @@ fromjson? // {type: "error", message: .}
       + (if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | body_render) end)
       + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
-    | ("::group::\($call.server).\($call.tool)"
-      + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
+    | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
+      + (if $args == "" then "" else " " + ($args | if length > 160 then .[0:160] else . end | jsontext) + (if ($args | length) > 160 then "\u001b[90m…\u001b[0m" else "" end) end)
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
       + "\n::endgroup::")
