@@ -702,6 +702,34 @@ test("MCP calls fold input and result into one block", () => {
   expect(started.stdout.toString()).toBe("");
 });
 
+test("MCP output cannot run workflow commands", () => {
+  for (const payload of ["CI ##[error]forged", "CI #\r#[error]forged", "first\n::error::forged"]) {
+    for (const fields of [
+      { result: { content: [{ type: "text", text: payload }] } },
+      { result: { structured_content: { message: payload } } },
+      { error: { message: payload } },
+    ]) {
+      const item = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { q: payload.repeat(20) }, ...fields };
+      const result = Bun.spawnSync(["jq", "--unbuffered", "-rR", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
+      expect(result.exitCode).toBe(0);
+      // Match the runner's command parsing: modern commands start after whitespace;
+      // legacy commands can appear anywhere, even after ANSI colour escapes.
+      const commands: string[] = [];
+      let stopped = false;
+      for (const line of result.stdout.toString().split("\n")) {
+        const command = line.replace(/^[\s\u0085]+/, "").match(/^::([^ :]+).*?::/)?.[1]
+          ?? line.match(/##\[([^ \]]+)[^\]]*\]/)?.[1];
+        if (stopped) {
+          if (command === "s") stopped = false;
+        } else if (command === "stop-commands") stopped = true;
+        else if (command) commands.push(command);
+      }
+      expect(commands).toEqual(["group", "endgroup"]);
+      expect(stopped).toBe(false);
+    }
+  }
+});
+
 test("tool output is dimmed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });

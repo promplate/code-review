@@ -25,11 +25,14 @@ fromjson? // {type: "error", message: .}
     | ($call.arguments | if . == null then "" else tojson | gsub("##\\["; "#​#[") end) as $args
     | ([$call.result.content[]? | select(.type == "text") | .text] | join("\n")) as $text
     | (if $text != "" then $text elif $call.result.structured_content != null then ($call.result.structured_content | tojson) else "" end) as $body
+    | ((if $body == "" then "" else "\n" + ($body | dim) end)
+      + (if $call.error then "\n\u001b[31m\($call.error.message)\u001b[0m" else "" end)
+      | gsub("\r"; "")) as $out
     | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
       + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
       + (if ($args | length) > 160 then "\n" + ($args | dim) else "" end)
-      + (if $body == "" then "" else "\n" + ($body | dim) end)
-      + (if $call.error then "\n\u001b[31m\($call.error.message)\u001b[0m" else "" end)
+      # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
+      + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call") | not) then .item.tool // .item.type
   else empty end
