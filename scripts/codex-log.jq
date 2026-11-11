@@ -58,7 +58,7 @@ fromjson? // {type: "error", message: .}
       + (if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | body_render) end)
       + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
-    | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
+    | ("::group::\($call.server).\($call.tool)"
       + (if $args == "" then "" else " " + ($args | if length > 160 then .[0:160] else . end | jsontext) + (if ($args | length) > 160 then "\u001b[90m…\u001b[0m" else "" end) end)
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
