@@ -796,7 +796,7 @@ test("the verdict is coloured by its conclusion", () => {
 test("the log carries no trailing whitespace", () => {
   const input = [
     JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first line  \n\n   \nsecond line\t" } }),
-    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "out  \r\n\n  \n" } }),
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x  \r\n   \nnext\t'", aggregated_output: "out  \r\n\n  \n" } }),
     "raw stderr line with trailing spaces   ",
   ].join("\n") + "\n";
   const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
@@ -805,6 +805,7 @@ test("the log carries no trailing whitespace", () => {
   expect(output).toContain("first line\n\n\nsecond line");
   expect(output).toContain("raw stderr line with trailing spaces\n");
   expect(output).not.toMatch(/[ \t]+\n/);
+  expect(output.replace(/\u001b\[[0-9;]*m/g, "")).not.toMatch(/[ \t]+\n/);
   expect(output).not.toContain("\r");
 });
 
