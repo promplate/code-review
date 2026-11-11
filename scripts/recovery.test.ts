@@ -75,6 +75,7 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
   expect(step("Drop older session snapshots").if).toBe("steps.save-session.outcome == 'success'");
+  expect(step("Mark forked PRs ready").if).toContain("steps.save-session.outcome == 'success'");
 });
 
 for (const failed of ["Publish check run", "Publish other commit verdicts", "Publish PR review", ""]) {
@@ -150,8 +151,26 @@ esac
     writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ summary: "Reviewed", commits: [{ sha: "head", conclusion: "success" }], annotations: [] }));
     const result = run("Publish check run", setup);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("A subsequent review run is needed for that head.");
+    expect(result.stdout.toString().includes("A subsequent review run is needed for that head.")).toBe(!hasRun);
     expect(readFileSync(join(setup.dir, "github-env"), "utf8").includes("SUPERSEDED=true")).toBe(hasRun);
     expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe(hasRun ? "neutral" : "success");
   }
+});
+
+test("a failed final head refresh preserves the verdict and reports the missing reconciliation", () => {
+  const setup = fixture();
+  executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *'/pulls/7 --jq .head.sha') exit 1 ;;
+  *'/check-runs/10 -X PATCH'*) cat > "$RUNNER_TEMP/published.json" ;;
+  *) exit 1 ;;
+esac
+`);
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ summary: "Reviewed", commits: [{ sha: "head", conclusion: "success" }], annotations: [] }));
+  const result = run("Publish check run", setup);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("Could not refresh PR #7 before publication.");
+  expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe("success");
 });
