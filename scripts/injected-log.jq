@@ -5,4 +5,7 @@ def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action 
   + (if .actor then " " + .actor else "" end) + (if .name then " " + .name else "" end)
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
   + (if .url then " " + .url else "" end);
-(fromjson? // null) as $event | if $event == null then . else ($event | event_line) end
+(fromjson? // null) as $event
+| (if $event == null then . else ($event | event_line) end)
+# Event text comes from GitHub payloads, so a field carrying `::error::` on its own line would run as a workflow command.
+| if test("(?m)^ *::") then "::stop-commands::\($stop)\n\(.)\n::\($stop)::" else . end

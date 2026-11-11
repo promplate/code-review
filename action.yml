@@ -405,7 +405,7 @@ runs:
         log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
         # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
         : > "$RUNNER_TEMP/injected.log"
-        tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
+        tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
         INJECTED_TAIL=$!
         trap 'kill "$INJECTED_TAIL" 2> /dev/null || true' EXIT
         review() {

@@ -710,12 +710,21 @@ test("injected GitHub activity is logged with a colour per event kind", () => {
     JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
     JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
   ].join("\n") + "\n";
-  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
-  expect(result.exitCode).toBe(0);
-  const output = result.stdout.toString();
+  const log = (input: string) => {
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const output = log(input);
   expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
   expect(output).toContain("\u001b[93mcheck_run\u001b[0m CI:failure https://example.test/r/2");
   expect(output).toContain("\u001b[91mreplay_gap\u001b[0m");
+  expect(output).not.toContain("::stop-commands::");
+  // A payload field that carries a workflow command on its own line must not run as one.
+  const crafted = log(JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }) + "\n");
+  expect(crafted).toContain("::stop-commands::s\n");
+  expect(crafted).toContain("::error::forged");
+  expect(crafted).toContain("\n::s::");
 });
 
 test("hook deliveries are published for the live log", () => {
