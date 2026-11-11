@@ -39,10 +39,10 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    jq -c . ~/.codex/auth.json | gh secret set CODEX_AUTH
    ```
 
-4. Add `.github/workflows/code-review.yml`:
+4. Add `.github/workflows/agent.yml`:
 
    ```yaml
-   name: code-review
+   name: agent invoke
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, ready_for_review]
@@ -58,18 +58,25 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      actions: write
      id-token: write
 
-   concurrency:
-     # Keep active reviews consuming SSE and preserve every queued trigger.
-     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
-     queue: max
-
    jobs:
+     authorize:
+       # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action
+       # would skip must never take a slot there: it could push a new head's review out of the queue.
+       uses: promplate/code-review/.github/workflows/authorize.yml@main
+       with:
+         runs-on: ubuntu-latest
      review:
        # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
+       needs: authorize
        if: >
+         needs.authorize.outputs.writer == 'true' && (
          (github.event.issue.pull_request != null && github.event.issue.state == 'open')
          || (github.event.issue.pull_request == null && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
-             && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot'))
+             && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')))
+       concurrency:
+         # Keep the active review consuming SSE while later events wait to reconcile its saved session.
+         group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
+         queue: max
        # Low-trust events such as pull_request_target and issue_comment cannot save caches by default, which would drop every session snapshot.
        cache-mode: write
        runs-on: ubuntu-latest
@@ -87,7 +94,7 @@ Every run sharing a session must use the same serialized concurrency group.
 Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
-- All triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates. The action skips its own activity and unauthorized commenters.
+- All authorized triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates; unauthorized discussion events never take a queue slot, so they cannot cancel a new head's review. A run still authorizing or waiting for the group has consumed no head, so it does not make a newer run skip.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 - Before merging, the review waits for the head's checks except its own and those of other runs of this workflow, whose queued jobs could never finish behind the waiting job. That lookup needs `actions: read` on the job token; without it the wait falls back to every check.
@@ -113,13 +120,12 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
-concurrency:
-  group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
-  queue: max
-
 jobs:
   review:
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository && (...)
+    concurrency:
+      group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
+      queue: max
     cache-mode: write
 ```
 

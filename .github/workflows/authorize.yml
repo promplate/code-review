@@ -1,0 +1,44 @@
+name: authorize
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner for the permission lookup.
+        type: string
+        required: false
+        default: ubuntu-latest
+    outputs:
+      writer:
+        description: Whether the triggering activity came from someone with write access.
+        value: ${{ jobs.authorize.outputs.writer }}
+
+jobs:
+  authorize:
+    # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action would
+    # skip must never take a slot there: it could push a new head's review out of the queue.
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      writer: ${{ steps.check.outputs.writer }}
+    steps:
+      - id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SENDER: ${{ github.event.sender.login }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          case "$EVENT" in
+            # Only these triggers are open to anyone; a same-repository push or pull request already required write access.
+            issue_comment|issues|pull_request_review|pull_request_review_comment) check=true ;;
+            # A fork author can close and reopen their own pull request, so only a maintainer's reopen schedules another review.
+            pull_request_target) [ "$ACTION" != reopened ] || check=true ;;
+          esac
+          if [ -n "$check" ]; then
+            # A 404 is a denial rather than a failure; a transient failure must not silently drop an authorized review.
+            permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+              || permission=$(gh api "repos/${{ github.repository }}/collaborators/$SENDER/permission" --jq .permission 2>/dev/null) \
+              || { echo "::warning::Could not read $SENDER's repository permission; denying this trigger." >&2; permission=none; }
+            case "$permission" in admin|write|maintain) echo writer=true ;; *) echo writer=false ;; esac
+          else echo writer=true; fi >> "$GITHUB_OUTPUT"

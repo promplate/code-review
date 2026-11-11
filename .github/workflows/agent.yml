@@ -1,4 +1,4 @@
-name: code-review
+name: agent invoke
 
 on:
   pull_request_target:
@@ -20,19 +20,25 @@ permissions:
   actions: write
   id-token: write
 
-concurrency:
-  # Keep active reviews consuming SSE and preserve every queued trigger.
-  group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
-  queue: max
-
 jobs:
+  authorize:
+    # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action would
+    # skip must never take a slot there: it could push a new head's review out of the queue.
+    uses: ./.github/workflows/authorize.yml
+
   review:
+    needs: authorize
     # Same-repository PRs, plus pushes to main so merged work is reviewed too; the App's own PRs wait until they leave draft.
     if: >
+      needs.authorize.outputs.writer == 'true' && (
       github.event_name == 'push' || github.event_name == 'workflow_dispatch'
       || github.event.issue.state == 'open'
       || (github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
-          && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot'))
+          && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')))
+    concurrency:
+      # Keep the active review consuming SSE while later events wait to reconcile its saved session.
+      group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+      queue: max
     # Low-trust events such as pull_request_target cannot save caches by default, which would drop every session snapshot.
     cache-mode: write
     runs-on: ubuntu-latest
