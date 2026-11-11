@@ -71,6 +71,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
        if: >
          needs.authorize.outputs.writer == 'true' && (
          (github.event.issue.pull_request != null && github.event.issue.state == 'open')
+         || (github.event_name == 'repository_dispatch' && github.event.client_payload.pr)
          || (github.event.issue.pull_request == null && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
              && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')))
        concurrency:
@@ -107,7 +108,7 @@ History is bounded. When continuity cannot be established, a `replay_gap` notifi
 
 A head pushed after Codex exits is handled by a subsequent workflow run. Publication checks the current PR head and warns when the verdict omits it. Pushes that start no workflow still need an external wake-up trigger to guarantee a follow-up review.
 
-Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting.
+Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting. The dispatch identifies the PR in `client_payload.pr`.
 
 ## Pushes
 
