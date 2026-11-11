@@ -15,7 +15,7 @@ def json: def hstr: tojson | "\u001b[32m\(.)\u001b[0m";
   else "\u001b[90mnull\u001b[0m" end;
 # An input preview is cut mid-string, so colour the text itself rather than a parsed value; an unterminated string stays green up to the cut.
 def jsontext: gsub(
-  "(?<key>\"(?:[^\"\\\\]|\\\\.)*\")(?=\\s*:)|(?<str>\"(?:[^\"\\\\]|\\\\.)*\")|(?<open>\"(?:[^\"\\\\]|\\\\.)*$)|(?<bool>\\b(?:true|false)\\b)|(?<null>\\bnull\\b)|(?<num>-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)";
+  "(?<key>\"(?:[^\"\\\\]|\\\\.)*\")(?=\\s*:)|(?<str>\"(?:[^\"\\\\]|\\\\.)*\")|(?<open>\"(?:[^\"\\\\]|\\\\.)*\\\\?$)|(?<bool>\\b(?:true|false)\\b)|(?<null>\\bnull\\b)|(?<num>-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)";
   if .key then "\u001b[36m\(.key)\u001b[0m"
   elif .str then "\u001b[32m\(.str)\u001b[0m"
   elif .open then "\u001b[32m\(.open)\u001b[0m"

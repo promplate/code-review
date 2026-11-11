@@ -730,6 +730,11 @@ test("MCP calls fold input and result into one block", () => {
   const long = log({ ...call, arguments: { q: "x".repeat(200) } });
   expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(154)}\u001b[0m\u001b[90m…\u001b[0m`);
   expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(200)}"\u001b[0m}`);
+  // A cut inside an escape still leaves the whole string green, including text that looks like other JSON tokens.
+  for (const suffix of ["\\tail", '"tail', "\ntail"]) {
+    const q = "true false null 123".padEnd(153, "x") + suffix;
+    expect(log({ ...call, arguments: { q } })).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m${JSON.stringify(q).slice(0, 155)}\u001b[0m\u001b[90m…\u001b[0m`);
+  }
   // A result that is not JSON stays grey, since it is tool text rather than a record.
   expect(log({ ...call, result: { content: [{ type: "text", text: "plain result" }] } })).toContain("\u001b[90mplain result\u001b[0m");
   // A false JSON value is still a parsed result.
