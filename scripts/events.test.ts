@@ -696,6 +696,8 @@ test("MCP calls fold input and result into one block", () => {
   expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(200)}"\u001b[0m}`);
   // A result that is not JSON stays grey, since it is tool text rather than a record.
   expect(log({ ...call, result: { content: [{ type: "text", text: "plain result" }] } })).toContain("\u001b[90mplain result\u001b[0m");
+  // A false JSON value is still a parsed result.
+  expect(log({ ...call, result: { content: [{ type: "text", text: "false" }] } })).toContain("\u001b[35mfalse\u001b[0m");
   // A failed call reports its error in red instead of a result.
   expect(log({ ...call, result: null, error: { message: "boom" }, status: "failed" })).toContain("\u001b[31mboom\u001b[0m");
   // The call is shown once, when it finishes, like commands.

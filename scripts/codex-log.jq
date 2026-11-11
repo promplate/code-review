@@ -14,7 +14,7 @@ def json: def hstr: tojson | "\u001b[32m\(.)\u001b[0m";
   elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
   else "\u001b[90mnull\u001b[0m" end;
 # A result that is JSON gets the same colouring; anything else stays grey.
-def body_render: (fromjson? // null) as $j | if $j == null then dim else $j | json end;
+def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
 # The settled verdict is one JSON record, marked by its conclusion so it does not read as more prose.
 def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else . end;
 fromjson? // {type: "error", message: .}
