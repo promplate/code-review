@@ -212,8 +212,23 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/reactions -f content=eyes --jq .id </dev/null)
+        # The eyes marks the message this run answers: a comment gets its own reaction, while reviews have no reactions endpoint and a deleted comment has nothing to mark.
+        subject="issues/$PR_NUMBER/reactions"
+        if [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" != deleted ]; then
+          comment=$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")
+          case "$GITHUB_EVENT_NAME" in
+            issue_comment) [ -z "$comment" ] || subject="issues/comments/$comment/reactions" ;;
+            pull_request_review_comment) [ -z "$comment" ] || subject="pulls/comments/$comment/reactions" ;;
+          esac
+        fi
+        id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$subject" -f content=eyes --jq .id </dev/null) || {
+          # A comment can disappear after its webhook was queued; the PR body remains a usable target.
+          [ "$subject" != "issues/$PR_NUMBER/reactions" ] || exit 1
+          subject="issues/$PR_NUMBER/reactions"
+          id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$subject" -f content=eyes --jq .id </dev/null)
+        }
         [ -n "$id" ] || exit 1
+        echo "EYES_REACTION_PATH=$subject/$id" >> "$GITHUB_ENV"
         echo "EYES_REACTION_ID=$id" >> "$GITHUB_ENV"
 
     - name: Subscribe PR updates via SSE
@@ -535,7 +550,7 @@ runs:
             summary: "A newer commit was pushed during this review, so no verdict is posted for this commit."}}' \
             | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
           # The run that continues on the newer commit keeps its own reaction; this one is done waiting.
-          [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
+          [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
           exit 0
         fi
         jq -n --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
@@ -610,6 +625,9 @@ runs:
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/reactions?per_page=100" --paginate </dev/null \
           | jq -r --slurpfile review "$RUNNER_TEMP/review.json" '.[] | select(.user.login == env.BOT_LOGIN) | select(.content as $content | $review[0].reactions | index($content) | not) | .id' \
           | while read -r id; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$id -X DELETE </dev/null; done
+        # A comment's eyes is not part of the verdict reactions replaced below.
+        [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
+        echo "EYES_REACTION_PATH=" >> "$GITHUB_ENV"
         echo "EYES_REACTION_ID=" >> "$GITHUB_ENV"
         jq -r '.reactions | unique[]' "$RUNNER_TEMP/review.json" | while read -r reaction; do
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions -f content="$reaction" </dev/null
@@ -664,7 +682,7 @@ runs:
           jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
         fi \
           | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
-        [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/issues/$PR_NUMBER/reactions/$EYES_REACTION_ID -X DELETE </dev/null
+        [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
 
     - name: Stop the SSE subscription
       if: always()
