@@ -680,6 +680,28 @@ test("a session saved under another provider starts a fresh thread", () => {
   expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
+test("tool output is dimmed line by line", () => {
+  // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
+  const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
+  const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+  expect(result.exitCode).toBe(0);
+  for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[2m${line}\u001b[0m\n`);
+});
+
+test("the verdict is coloured by its conclusion", () => {
+  const log = (text: string) => {
+    const input = JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const verdict = (conclusion: string) => JSON.stringify({ conclusion, summary: "s", commits: [] });
+  expect(log(verdict("success"))).toContain(`\u001b[1;32m${verdict("success")}\u001b[0m`);
+  expect(log(verdict("failure"))).toContain(`\u001b[1;31m${verdict("failure")}\u001b[0m`);
+  // Prose and JSON that is not a verdict stay as written.
+  for (const text of ["Working through the diff.", '{"hello":"world"}']) expect(log(text)).toContain(`${text}\n`);
+});
+
 test("the log carries no trailing whitespace", () => {
   const input = [
     JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first line  \n\n   \nsecond line\t" } }),
@@ -708,7 +730,8 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain(`\n::stop-commands::s\n\u001b[2m${expected}\u001b[0m\n::s::\n`);
+    const dimmed = expected.split("\n").map((line) => `\u001b[2m${line}\u001b[0m`).join("\n");
+    expect(result.stdout.toString()).toContain(`\n::stop-commands::s\n${dimmed}\n::s::\n`);
   }
 });
 
