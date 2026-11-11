@@ -186,8 +186,8 @@ runs:
           --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "") \((.details_url // "") | capture("/actions/runs/(?<run>[0-9]+)").run // "")"' </dev/null)
         if [ -n "$unfinished" ]; then
           id=${unfinished%% *}; rest=${unfinished#* }; fork_key=${rest%% *}; owner=${rest#* }
-          # Without a handoff key, the check's details URL names the run that opened it; a review still running there would have its verdict overwritten.
-          if [ -z "$fork_key" ] && [ -n "$owner" ] && [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" = in_progress ]; then
+          # A claimed handoff keeps its key, but its details URL now names its owner. Reuse it only after that run completes; an unreadable owner may still be running.
+          if [ -n "$owner" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" != completed ]; then
             unfinished=
           fi
         fi
