@@ -666,7 +666,7 @@ test("issue runs propagate Codex failures without requiring a verdict", () => {
 test("forking a review copies its conversation but not another PRs consumption position", () => {
   const { dir, env } = fixture(), source = join(dir, "code-review-homes/owner/repo/source"), target = join(dir, "target");
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
-  for (const name of [".github-cursor", ".github-deliveries.json", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
+  for (const name of [".github-cursor", ".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
   const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
@@ -674,6 +674,7 @@ test("forking a review copies its conversation but not another PRs consumption p
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
   expect(existsSync(join(target, "sessions/.github-cursor"))).toBe(false);
   expect(existsSync(join(target, "sessions/.github-deliveries.json"))).toBe(false);
+  expect(existsSync(join(target, "sessions/.github-published-head"))).toBe(false);
 });
 
 test("a turn that fails after the verdict keeps the verdict it produced", () => {
@@ -1109,7 +1110,10 @@ test("a run skips activity another review consumed, and strangers, but never a n
   expect(first).not.toContain("SKIP=true");
   const id = /ACTIVITY_ID=(.*)/.exec(first)![1];
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([id]));
-  expect(runGate(setup.dir, env)).toContain("SKIP=true");
+  expect(runGate(setup.dir, env)).not.toContain("SKIP=true");
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  expect(runGate(setup.dir, { ...env, HEAD_SHA: "head" })).toContain("SKIP=true");
+  expect(runGate(setup.dir, { ...env, HEAD_SHA: "new" })).not.toContain("SKIP=true");
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
   executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'read\\n'\n");
   expect(runGate(setup.dir, env)).toContain("SKIP=true");
