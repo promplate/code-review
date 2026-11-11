@@ -679,6 +679,21 @@ test("a session saved under another provider starts a fresh thread", () => {
   expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
+test("the log carries no trailing whitespace", () => {
+  const input = [
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first line  \n\n   \nsecond line\t" } }),
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "out  \r\n\n  \n" } }),
+    "raw stderr line with trailing spaces   ",
+  ].join("\n") + "\n";
+  const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString();
+  expect(output).toContain("first line\n\n\nsecond line");
+  expect(output).toContain("raw stderr line with trailing spaces\n");
+  expect(output).not.toMatch(/[ \t]+\n/);
+  expect(output).not.toContain("\r");
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [

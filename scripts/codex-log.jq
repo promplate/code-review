@@ -14,5 +14,5 @@ fromjson? // {type: "error", message: .}
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type
   else empty end
-# The live log view hides empty lines; keep them empty rather than filling them with a space that shows up in copied logs.
-| . + "\n"
+# The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
+| gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"
