@@ -61,38 +61,21 @@ runs:
         DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
       run: |
-        # Comments and dispatches name only the PR, so their PR is fetched fresh; other events carry it.
+        # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
         [ -z "$DISPATCHED_PR" ] || number=$DISPATCHED_PR
         # An event on a plain issue is not a review: the agent works on the default branch and decides what, if anything, to do about it.
         agent=$(jq -r 'if .issue and .issue.pull_request == null then "true" else "false" end' "$GITHUB_EVENT_PATH")
         [ "$agent" != true ] || printf 'AGENT=true\nISSUE_NUMBER=%s\n' "$number" >> "$GITHUB_ENV"
+        # A queued webhook can name an old head; only its PR number remains authoritative.
         pr=
-        [ "$agent" = true ] || pr=$(jq -c '.pull_request // empty' "$GITHUB_EVENT_PATH")
-        [ -n "$pr" ] || [ -z "$number" ] || [ "$agent" = true ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
+        [ "$agent" = true ] || [ -z "$number" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
         if [ -n "$pr" ]; then
           jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Fork PRs are not reviewed."; }
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
           # The App's own PRs wait until they leave draft, so a half-written fix PR is not reviewed; no workflow has to name this App to get that.
           if [ "$(jq -r .user.login <<< "$pr")" = "$BOT_LOGIN" ] && [ "$(jq -r '.draft // false' <<< "$pr")" = true ]; then
             echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::The App's own PRs wait until they leave draft."
-          fi
-          # A `synchronize` run carries the head change the running review was already told about: a verdict on this head
-          # means the commits were reviewed, and a review still in progress will take the change itself.
-          if [ "$GITHUB_EVENT_NAME" = pull_request_target ] && [ "$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")" = synchronize ]; then
-            head=$(jq -r .head.sha <<< "$pr")
-            # A check run another app happens to name the same is not a verdict; the slug keeps this to our own reviews.
-            # A run that died before judging leaves a neutral check, which is not a verdict either.
-            reviewed=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$head/check-runs?check_name=code-review" </dev/null 2>/dev/null \
-              | jq -r --arg bot "$BOT_LOGIN" '[.check_runs[] | select(.status == "completed" and (.conclusion == "success" or .conclusion == "failure") and .app.slug == ($bot | rtrimstr("[bot]")))] | length') || reviewed=0
-            if [ "${reviewed:-0}" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::This head was already reviewed."; fi
-            # Only this workflow's runs count as reviews, and only the job token may read Actions; without that permission the lookup fails open.
-            workflow=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id </dev/null 2>/dev/null) || workflow=
-            branch=$(jq -r .head.ref <<< "$pr")
-            running=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs?event=pull_request_target&per_page=100" </dev/null 2>/dev/null \
-              | jq -r --arg wf "${workflow:-0}" --arg run "$GITHUB_RUN_ID" --arg branch "$branch" \
-                '[.workflow_runs[] | select((.id | tostring) != $run and .status == "in_progress" and (.workflow_id | tostring) == $wf and .head_branch == $branch)] | length') || running=0
-            if [ "${running:-0}" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Another review of this branch is still running."; fi
           fi
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
@@ -112,7 +95,7 @@ runs:
         MODEL=$(printf '%s\n' "${{ inputs.codex-config }}" | sed -n 's/^model *= *"\([^"]*\)".*/\1/p' | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
         # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
-        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-cursor"
+        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-cursor" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-published-head"
 
     - name: Restore codex session
       id: session-cache
@@ -137,11 +120,16 @@ runs:
         # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
         [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
+        # A completed check alone can precede failed PR publication. Only a saved publication checkpoint closes this head.
+        published=$(cat "$CODEX_HOME/sessions/.github-published-head" 2>/dev/null || true)
+        if [ "$GITHUB_EVENT_NAME" = pull_request_target ] && [ "$(jq -r '.action // empty' "$GITHUB_EVENT_PATH")" = synchronize ] && [ -n "$published" ] && [ "$published" = "$HEAD_SHA" ]; then
+          echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::This head was already published."
+        fi
         receipts=$CODEX_HOME/sessions/.github-deliveries.json
-        # Only activity is skippable: a queued run for a new head still has code to review.
+        # A consumed comment cannot suppress review of a head whose publication never completed.
         case $GITHUB_EVENT_NAME in
           issue_comment|issues|pull_request_review|pull_request_review_comment|pull_request_review_thread)
-            if [ -n "$PR_NUMBER" ] && [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
+            if [ -n "$PR_NUMBER" ] && [ -n "$published" ] && [ "$published" = "$HEAD_SHA" ] && [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
             # Plain issues reach the agent without a running review, so their activity is authorized here too.
             sender=$(jq -r .sender.login "$GITHUB_EVENT_PATH")
             if [ "$sender" = "$BOT_LOGIN" ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Ignoring the App's own activity."
@@ -453,7 +441,7 @@ runs:
           fork=${{ runner.temp }}/code-review-homes/${{ github.repository }}/$FORK_KEY
           cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
           # The conversation transfers, but events filtered for the source PR were never consumed for this one.
-          rm -f "$CODEX_HOME/sessions/.github-cursor" "$CODEX_HOME/sessions/.github-deliveries.json"
+          rm -f "$CODEX_HOME/sessions/.github-cursor" "$CODEX_HOME/sessions/.github-deliveries.json" "$CODEX_HOME/sessions/.github-published-head"
           $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
             --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
             --output-last-message "$RUNNER_TEMP/review.json" \
@@ -504,44 +492,6 @@ runs:
         echo "::notice::ChatGPT usage: $usage"
         [ "$AGENT" != true ] || [ "$ran" = 1 ] || { echo "::error::Codex failed before completing the issue run."; exit 1; }
         [ "$AGENT" = true ] || verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
-        jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
-        [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"
-        [ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
-          -f "output[title]=Saving the Codex session…" -f "output[summary]=The verdict is posted once the session is cached for the next review." </dev/null > /dev/null
-
-    - name: Save codex session
-      id: save-session
-      if: env.SKIP != 'true' || env.RECORDED_SKIP == 'true'
-      # A cache upload failure must not discard a completed review.
-      continue-on-error: true
-      uses: actions/cache/save@v6
-      with:
-        path: |
-          ${{ env.CODEX_HOME }}/sessions
-          ${{ env.CODEX_HOME }}/last-thread-id
-          ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-
-    - name: Drop older session snapshots
-      if: steps.save-session.outcome == 'success'
-      continue-on-error: true
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-      run: |
-        # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&per_page=100" \
-          --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
-          | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
-
-    - name: Mark forked PRs ready
-      if: always() && env.FORKED_PRS && env.SKIP != 'true'
-      shell: bash
-      env:
-        GH_CONFIG_DIR: ${{ runner.temp }}/gh
-      run: |
-        while read -r url; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null; done < "$RUNNER_TEMP/forked-prs"
 
     - name: Publish check run
       id: publish
@@ -554,6 +504,14 @@ runs:
           | select(if env.PR_NUMBER then $event == "pull_request" and .number == (env.PR_NUMBER | tonumber) and .action == "synchronize" and .after != null else $event == "push" and .ref == env.GITHUB_REF end)
           | .after] | .[]' < "$RUNNER_TEMP/sse.jsonl")
         # Pushes made with GITHUB_TOKEN, such as CI autofixes, start no workflow, so this review covers them instead of leaving them to a newer run.
+        # The branch may move after the last Stop hook, before the SSE writer catches up.
+        if [ -n "$PR_NUMBER" ]; then
+          current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq .head.sha </dev/null)
+          PUSHED="$PUSHED $current"
+          if ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
+            echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
+          fi
+        fi
         # CI may push before this run subscribes, so whether a run exists tells them apart, not the push sender.
         for sha in $(git rev-parse HEAD) $PUSHED; do
           if [ "$sha" = "$HEAD_SHA" ]; then continue; fi
@@ -599,7 +557,10 @@ runs:
           if [ "$SUPERSEDED" = true ]; then [ -z "$id" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha" \
             --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" != true ] || continue; fi
           # A superseded review may have already posted verdicts for commits CI pushed during it.
-          [ -n "$id" ] || [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$sha/check-runs?check_name=code-review" --jq .total_count </dev/null)" = 0 ] || continue
+          if [ -z "$id" ]; then
+            count=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$sha/check-runs?check_name=code-review" --jq .total_count </dev/null) || exit 1
+            [ "$count" = 0 ] || continue
+          fi
           # Commits CI pushed during the review have no check run yet.
           jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
@@ -660,6 +621,51 @@ runs:
       shell: bash
       run: |
         jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Checkpoint published review
+      if: env.SKIP != 'true'
+      shell: bash
+      run: |
+        # Persist consumption only after every required publication succeeds, so a retry can replay failed delivery.
+        jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
+        [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"
+        # A successor still needs its own annotated review even if this run published an intermediate commit verdict.
+        rm -f "$CODEX_HOME/sessions/.github-published-head"
+        [ "$SUPERSEDED" = true ] || printf '%s\n' "$HEAD_SHA" > "$CODEX_HOME/sessions/.github-published-head"
+
+    - name: Save codex session
+      id: save-session
+      if: env.SKIP != 'true' || env.RECORDED_SKIP == 'true'
+      # A cache upload failure must not discard a completed review.
+      continue-on-error: true
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ${{ env.CODEX_HOME }}/sessions
+          ${{ env.CODEX_HOME }}/last-thread-id
+          ${{ env.CODEX_HOME }}/check-runs.jsonl
+        key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Drop older session snapshots
+      if: steps.save-session.outcome == 'success'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+      run: |
+        # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&per_page=100" \
+          --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
+          | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
+
+    - name: Mark forked PRs ready
+      if: always() && env.FORKED_PRS && env.SKIP != 'true'
+      shell: bash
+      env:
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
+      run: |
+        while read -r url; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null; done < "$RUNNER_TEMP/forked-prs"
 
     - name: Merge PR
       if: env.SUPERSEDED != 'true' && env.PR_NUMBER && env.PR_AUTHOR != env.BOT_LOGIN && env.SKIP != 'true'
