@@ -652,17 +652,17 @@ runs:
         KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         [ -n "$CODEX_HOME" ] || exit 0
-        pending=$(for file in "$RUNNER_TEMP/forked-prs" "$CODEX_HOME/sessions/.github-pending-drafts"; do
-          if [ -f "$file" ]; then cat "$file" || exit 1; fi
-        done | sort -u)
+        opened=$(if [ -f "$RUNNER_TEMP/forked-prs" ]; then cat "$RUNNER_TEMP/forked-prs"; fi) || exit 1
+        restored=$(if [ -f "$CODEX_HOME/sessions/.github-pending-drafts" ]; then cat "$CODEX_HOME/sessions/.github-pending-drafts"; fi) || exit 1
+        pending=$(printf '%s\n%s\n' "$opened" "$restored" | sed '/^$/d' | sort -u)
         [ -n "$pending" ] || exit 0
-        # actions/cache/save exits zero even when its upload fails, so a draft released without the saved session would resume from an older conversation or none.
-        if [ "$SAVE_OUTCOME" = success ]; then
-          listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches" \
+        # A draft this run opened can only fork the session it was written into; drafts an earlier run left pending were already waiting after a save.
+        if [ -n "$(printf '%s' "$opened" | sed '/^$/d')" ]; then
+          listed=false
+          [ "$SAVE_OUTCOME" != success ] || listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches" \
             --method GET -f "key=$KEY" -f "ref=$GITHUB_REF" -f per_page=100 \
-            --jq 'any(.actions_caches[]; .key == env.KEY)' </dev/null) || exit 0
-          [ "$listed" = true ] || { echo "::warning::The session snapshot $KEY is not listed, so dependent drafts stay draft."; exit 0; }
-        elif [ "$SAVE_OUTCOME" != skipped ]; then exit 0
+            --jq 'any(.actions_caches[]; .key == env.KEY)' </dev/null) || listed=false
+          [ "$listed" = true ] || { echo "::warning::The session snapshot $KEY is not listed, so drafts this run opened stay draft."; pending=$(comm -23 <(printf '%s\n' "$pending") <(printf '%s\n' "$opened" | sed '/^$/d' | sort -u)); [ -n "$pending" ] || exit 0; }
         fi
         left=
         while read -r url; do

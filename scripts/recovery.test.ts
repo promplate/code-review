@@ -177,26 +177,35 @@ esac
   expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe("success");
 });
 
-test("a failed publication still releases the drafted fix PRs", () => {
+test("a failed publication releases only drafts an earlier run left pending", () => {
   const setup = fixture();
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
-  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\n[ "$3" != "https://github.com/owner/repo/pull/9" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
   const result = run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "skipped" });
   expect(result.exitCode).toBe(0);
-  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
-  // The URL that could not be marked ready stays for the retry that restores this session.
-  expect(readFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+  expect(result.stdout.toString()).toContain("stay draft");
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+  // The draft this run opened has no saved source session, so it stays draft for a manual release.
+  expect(existsSync(join(setup.dir, "sessions/.github-pending-drafts"))).toBe(false);
 });
 
-test.each(["", "forked-prs", "sessions/.github-pending-drafts"])("draft release accepts optional lists: %s", file => {
+test.each([
+  ["", { SAVE_OUTCOME: "skipped" }, false],
+  ["forked-prs", { SAVE_OUTCOME: "success" }, true],
+  ["sessions/.github-pending-drafts", { SAVE_OUTCOME: "skipped" }, true],
+])("draft release accepts optional lists: %s", (file, extra, released) => {
   const setup = fixture(), url = "https://github.com/owner/repo/pull/8";
   if (file) writeFileSync(join(setup.dir, file), `${url}\n`);
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "skipped" }).exitCode).toBe(0);
-  expect(existsSync(join(setup.dir, "ready"))).toBe(!!file);
-  if (file) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/caches*) echo true ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, extra as Record<string, string>).exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "ready"))).toBe(released);
 });
 
 test("new draft handoffs preserve pending drafts restored from the session", () => {
@@ -205,8 +214,14 @@ test("new draft handoffs preserve pending drafts restored from the session", () 
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
   const commands = step("Run codex review").run.slice(step("Run codex review").run.lastIndexOf('mkdir -p "$CODEX_HOME/sessions"'));
   expect(Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], { env: { ...setup.env, AGENT: "true" } }).exitCode).toBe(0);
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "skipped" }).exitCode).toBe(0);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/caches*) echo true ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\nhttps://github.com/owner/repo/pull/9\n");
 });
 
