@@ -12,7 +12,7 @@ fromjson? // {type: "error", message: .}
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
     | ("::group::$ \(.item.command | script)"
-      + (if ($out | test("##\\[")) or ($out | test("(?m)^ *::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
+      + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type

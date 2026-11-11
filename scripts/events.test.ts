@@ -702,6 +702,8 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
     [":\r:error::test failure\r\n", "::error::test failure"],
     ["::err\ror::test failure\n", "::error::test failure"],
     ["CI ##[error]test failure\n", "CI ##[error]test failure"],
+    ["out\n\t::error::test failure\n", "out\n\t::error::test failure"],
+    ["out\n\u2003::error::test failure\n", "out\n\u2003::error::test failure"],
   ]) {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
@@ -742,6 +744,18 @@ test("hook deliveries are published for the live log", () => {
   const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
   expect(JSON.parse(output).decision).toBe("block");
   expect(readFileSync(join(dir, "injected.log"), "utf8")).toContain('"event":"issue_comment"');
+});
+
+test("injected command escaping covers the runner's leading whitespace", () => {
+  // ActionCommand.TryParseV2 calls .NET TrimStart(), which also removes tabs and Unicode whitespace.
+  for (const indent of ["", " ", "\t", "\v", "\f", "\u0085", "\u00a0", "\u1680", "\u2000", "\u2003", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", " \t "]) {
+    const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `CI\n${indent}::error::forged` }) }));
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
+    expect(result.exitCode).toBe(0);
+    // Include U+0085 explicitly because JavaScript trimStart does not include it, whereas .NET does.
+    const lines = result.stdout.toString().split("\n").map((line) => line.replace(/^[\s\u0085]+/, ""));
+    expect(lines.some((line) => line.startsWith("::"))).toBe(false);
+  }
 });
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
