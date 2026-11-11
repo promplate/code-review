@@ -703,6 +703,15 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
   }
 });
 
+test("codex is configured with the gh MCP server and the token config dir", () => {
+  const { env } = fixture();
+  const body = step("Configure codex").run.match(/<<EOF\n([\s\S]*?)\nEOF/)![1];
+  const result = Bun.spawnSync(["bash", "-ec", `cat <<EOF\n${body}\nEOF`], { env: { ...env, GITHUB_ACTION_PATH: root } });
+  expect(result.exitCode).toBe(0);
+  const config = Bun.TOML.parse(result.stdout.toString()) as any;
+  expect(config.mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [

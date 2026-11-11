@@ -259,6 +259,16 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
+    - name: Install gh-mcp
+      if: env.SKIP != 'true'
+      shell: bash
+      run: |
+        # Codex starts the MCP server while it initializes, too early for uvx to resolve the package there.
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+        uv tool install --force gh-mcp==0.3.9
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
     - name: Configure codex
       if: env.SKIP != 'true'
       shell: bash
@@ -297,6 +307,10 @@ runs:
         [[hooks.Stop.hooks]]
         type = "command"
         command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
+        # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
+        [mcp_servers.gh]
+        command = "gh-mcp"
+        env_vars = ["GH_CONFIG_DIR"]
         EOF
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
