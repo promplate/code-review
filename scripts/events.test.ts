@@ -715,6 +715,11 @@ test("codex is configured with the gh MCP server and the token config dir", () =
   // A supplied config that already names the server keeps its own definition instead of a duplicate table.
   expect(run('[mcp_servers.gh]\ncommand = "custom"\n').mcp_servers.gh).toEqual({ command: "custom" });
   expect(run('mcp_servers.gh = { command = "custom" }\n').mcp_servers.gh).toEqual({ command: "custom" });
+  for (const config of [
+    '  [mcp_servers.gh]\ncommand = "custom"\n',
+    '[mcp_servers."gh"]\ncommand = "custom"\n',
+    '[mcp_servers]\ngh = { command = "custom" }\n',
+  ]) expect(run(config).mcp_servers.gh).toEqual({ command: "custom" });
 });
 
 test("each run reports the tokens every turn spent", () => {

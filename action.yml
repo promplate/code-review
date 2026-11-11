@@ -310,7 +310,7 @@ runs:
         EOF
         # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
         # A codex-config that already defines this server would turn a second table into a parse error that stops codex from starting.
-        if ! grep -Eq '^\[mcp_servers\.gh\]|^mcp_servers\.gh *[.=]' "$CODEX_HOME/config.toml"; then
+        if ! bun -e 'process.exit(Bun.TOML.parse(await Bun.file(process.argv[1]).text()).mcp_servers?.gh ? 0 : 1)' "$CODEX_HOME/config.toml"; then
           printf '\n[mcp_servers.gh]\ncommand = "gh-mcp"\nenv_vars = ["GH_CONFIG_DIR"]\n' >> "$CODEX_HOME/config.toml"
         fi
         # Trace to Langfuse when the runner or the job provides its keys.
