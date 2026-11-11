@@ -76,6 +76,8 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
   expect(step("Drop older session snapshots").if).toBe("steps.save-session.outcome == 'success'");
+  // A cache belongs to the ref that saved it, and another ref's snapshot cannot restore this trigger's session.
+  expect(step("Drop older session snapshots").run).toContain("&ref=$GITHUB_REF&");
   // A failed publication skips the cache save, so drafts must still be released from the runner and the session copy.
   expect(step("Mark forked PRs ready").if).toBe("always()");
 });
