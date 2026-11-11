@@ -95,7 +95,8 @@ runs:
                   '.workflow_runs[] | select((.id | tostring) != $run and .status == "in_progress" and (.workflow_id | tostring) == $wf and .head_branch == $branch) | .id'); do
               # Under job-level concurrency the other run may still be authorizing or waiting for the group, which takes no head;
               # only its review job already executing will consume this one, and a workflow that renames its jobs only risks a second review.
-              status=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$id/jobs" --jq --arg job "$GITHUB_JOB" 'first(.jobs[] | select(.name == $job) | .status) // "missing"' </dev/null 2>/dev/null) || status=missing
+              status=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$id/jobs" </dev/null 2>/dev/null \
+                | jq -r --arg job "$GITHUB_JOB" 'first(.jobs[] | select(.name == $job) | .status) // "missing"') || status=missing
               [ "$status" != in_progress ] || running=1
             done
             if [ "$running" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Another review of this branch is still running."; fi
