@@ -6,8 +6,9 @@ def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action 
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
   + (if .url then " " + .url else "" end);
 # Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading whitespace, and legacy `##[` anywhere.
-# A zero-width space inside the marker keeps the parser from matching it while the log reads the same; a suppression token would have to be shared with the tool log, which writes to this log at the same time.
-def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub("(?m)^(?<indent>[^\\S\\n]*)::"; "​\(.indent)::");
+# Break every marker, including overlapping colons: concurrent tool output can insert a newline inside a long event record.
+# A zero-width space keeps the log readable without sharing the tool logger's suppression token.
+def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​");
 (fromjson? // null) as $event
 | (if $event == null then . else ($event | event_line) end)
 | escape_commands

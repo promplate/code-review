@@ -736,7 +736,7 @@ test("injected GitHub activity is logged with a colour per event kind", () => {
   expect(crafted).not.toContain("::stop-commands::");
   expect(crafted).not.toMatch(/^ *::/m);
   expect(crafted).not.toContain("##[");
-  expect(crafted).toContain("​::error::forged");
+  expect(crafted).toContain(":​:error:​:forged");
   expect(crafted).toContain("#​#[error]synthetic");
 });
 
@@ -744,6 +744,14 @@ test("hook deliveries are published for the live log", () => {
   const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
   expect(JSON.parse(output).decision).toBe("block");
   expect(readFileSync(join(dir, "injected.log"), "utf8")).toContain('"event":"issue_comment"');
+});
+
+test("injected command markers stay escaped when concurrent output splits a line", () => {
+  // A long record can span stdout writes; the tool logger may insert a newline before an interior marker.
+  const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `${"x".repeat(4096)}::error::forged\n:::error title=forged:::payload` }) }));
+  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).not.toContain("::");
 });
 
 test("injected command escaping covers the runner's leading whitespace", () => {
