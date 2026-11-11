@@ -7,7 +7,7 @@ fromjson? // {type: "error", message: .}
   elif .type == "item.completed" and (.item.type | IN("agent_message", "error")) then .item.text // .item.message
   # Parallel commands overlap, so each is printed once it finishes, titled by its first line; only output a reporter could parse as a workflow command needs stop-commands around it.
   elif .type == "item.completed" and .item.type == "command_execution" then
-    (.item.aggregated_output | rtrimstr("\n")) as $out
+    (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n")) as $out
     | ("::group::$ \(.item.command | script)"
       + (if $out | test("(?m)^ *::") then "\n::stop-commands::\($stop)\n" + $out + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + $out end)

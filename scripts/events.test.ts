@@ -694,6 +694,15 @@ test("the log carries no trailing whitespace", () => {
   expect(output).not.toContain("\r");
 });
 
+test("log cleanup keeps workflow commands in command output escaped", () => {
+  for (const output of ["::error::test failure\n", ":\r:error::test failure\r\n", "::err\ror::test failure\n"]) {
+    const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n::error::test failure\n::s::\n");
+  }
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [
