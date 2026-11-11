@@ -616,6 +616,16 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
 
 const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
 
+test("review instructions reach the prompt as one shell string", () => {
+  const { env } = fixture();
+  const commands = step("Run codex review").run.match(/^INSTRUCTIONS=[\s\S]*?(?=^# Production reviews)/m)![0];
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands + '\nprintf "%s" "$INSTRUCTIONS"'], { env });
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.stdout.toString()).toContain('fold in any older "Worth checking" comment');
+  expect(result.stdout.toString()).toContain(`Comments authored by ${env.BOT_LOGIN} are yours`);
+});
+
 test("forking a review copies its conversation but not another PRs consumption position", () => {
   const { dir, env } = fixture(), source = join(dir, "code-review-homes/owner/repo/source"), target = join(dir, "target");
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
