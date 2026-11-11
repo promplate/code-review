@@ -705,7 +705,7 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
   const { env } = fixture();
-  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\nfi\n/)![0];
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
   const run = (config: string) => {
     const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, GITHUB_ACTION_PATH: root } });
     expect(result.exitCode).toBe(0);
@@ -720,6 +720,8 @@ test("codex is configured with the gh MCP server and the token config dir", () =
     '[mcp_servers."gh"]\ncommand = "custom"\n',
     '[mcp_servers]\ngh = { command = "custom" }\n',
   ]) expect(run(config).mcp_servers.gh).toEqual({ command: "custom" });
+  // An inline mcp_servers value cannot be extended by a table; the supplied config stays exactly as written.
+  expect(run('mcp_servers = { other = { command = "x" } }\n').mcp_servers).toEqual({ other: { command: "x" } });
 });
 
 test("each run reports the tokens every turn spent", () => {

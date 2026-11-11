@@ -309,10 +309,13 @@ runs:
         command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
         EOF
         # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
-        # A codex-config that already defines this server would turn a second table into a parse error that stops codex from starting.
-        if ! bun -e 'process.exit(Bun.TOML.parse(await Bun.file(process.argv[1]).text()).mcp_servers?.gh ? 0 : 1)' "$CODEX_HOME/config.toml"; then
-          printf '\n[mcp_servers.gh]\ncommand = "gh-mcp"\nenv_vars = ["GH_CONFIG_DIR"]\n' >> "$CODEX_HOME/config.toml"
-        fi
+        # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
+        bun -e '
+          const path = process.argv[1], text = await Bun.file(path).text();
+          if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
+          if (/^mcp_servers\s*=/m.test(text)) { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
+          await Bun.write(path, text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n");
+        ' "$CODEX_HOME/config.toml"
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
           curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.3.tgz | tar xz -C "$RUNNER_TEMP"
