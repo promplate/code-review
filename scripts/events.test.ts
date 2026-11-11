@@ -680,6 +680,28 @@ test("a session saved under another provider starts a fresh thread", () => {
   expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
+test("MCP calls fold input and result into one block", () => {
+  const log = (item: object) => {
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const call = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { commit_sha: "39a2ec3", per_page: 2 }, result: { content: [{ type: "text", text: '[{"id":1}]' }] }, error: null, status: "completed" };
+  // The call and its input name the block; the result stays dimmed like command output.
+  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n\u001b[2m[{"id":1}]\u001b[0m\n::endgroup::\n\n`);
+  // Long input keeps a full copy inside the block.
+  const args = JSON.stringify({ q: "x".repeat(200) });
+  const long = log({ ...call, arguments: { q: "x".repeat(200) } });
+  expect(long).toContain(`\u001b[36m${args.slice(0, 160)}…\u001b[0m`);
+  expect(long).toContain(`\u001b[2m${args}\u001b[0m`);
+  // A failed call reports its error in red instead of a result.
+  expect(log({ ...call, result: null, error: { message: "boom" }, status: "failed" })).toContain("\u001b[31mboom\u001b[0m");
+  // The call is shown once, when it finishes, like commands.
+  const started = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.started", item: { ...call, status: "in_progress" } }) + "\n") });
+  expect(started.exitCode).toBe(0);
+  expect(started.stdout.toString()).toBe("");
+});
+
 test("tool output is dimmed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
