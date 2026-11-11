@@ -89,10 +89,16 @@ runs:
             # Only this workflow's runs count as reviews, and only the job token may read Actions; without that permission the lookup fails open.
             workflow=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id </dev/null 2>/dev/null) || workflow=
             branch=$(jq -r .head.ref <<< "$pr")
-            running=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs?event=pull_request_target&per_page=100" </dev/null 2>/dev/null \
-              | jq -r --arg wf "${workflow:-0}" --arg run "$GITHUB_RUN_ID" --arg branch "$branch" \
-                '[.workflow_runs[] | select((.id | tostring) != $run and .status == "in_progress" and (.workflow_id | tostring) == $wf and .head_branch == $branch)] | length') || running=0
-            if [ "${running:-0}" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Another review of this branch is still running."; fi
+            running=0
+            for id in $(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs?event=pull_request_target&per_page=100" </dev/null 2>/dev/null \
+                | jq -r --arg wf "${workflow:-0}" --arg run "$GITHUB_RUN_ID" --arg branch "$branch" \
+                  '.workflow_runs[] | select((.id | tostring) != $run and .status == "in_progress" and (.workflow_id | tostring) == $wf and .head_branch == $branch) | .id'); do
+              # Under job-level concurrency the other run may still be authorizing or waiting for the group, which takes no head;
+              # only its review job already executing will consume this one, and a workflow that renames its jobs only risks a second review.
+              status=$(GH_TOKEN=${{ github.token }} gh api "repos/${{ github.repository }}/actions/runs/$id/jobs" --jq --arg job "$GITHUB_JOB" 'first(.jobs[] | select(.name == $job) | .status) // "missing"' </dev/null 2>/dev/null) || status=missing
+              [ "$status" != in_progress ] || running=1
+            done
+            if [ "$running" != 0 ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Another review of this branch is still running."; fi
           fi
           SESSION_KEY=${SESSION_KEY:-pr-$(jq .number <<< "$pr")}
         else
