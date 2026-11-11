@@ -1,9 +1,9 @@
 # Turns `codex exec --json` output into a readable log: shell commands folded with their output, other tool names, and Codex's messages.
 # Exec reports shell commands as `<shell> -c <script>` or `-lc`, with the script quoted as a single shell word.
 def script: sub("^\\S+ -l?c "; "") | if startswith("'") then .[1:-1] elif startswith("\"") then .[1:-1] | gsub("\\\\(?<c>[\\s\\S])"; .c) else . end;
-# Tool output is dimmed, so what the reviewer said stands out from what its commands printed.
-# The log viewer styles each line on its own, so a block needs its own escape per line.
-def dim: split("\n") | map("\u001b[2m\(.)\u001b[0m") | join("\n");
+# Tool output is greyed, so what the reviewer said stands out from what its commands printed.
+# The viewer ignores the faint attribute, so this uses bright black; it styles each line on its own, so every line carries its own escape.
+def dim: split("\n") | map("\u001b[90m\(.)\u001b[0m") | join("\n");
 # The settled verdict is one JSON record, coloured by its conclusion so it does not read as more prose.
 def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(.)\u001b[0m" else . end;
 fromjson? // {type: "error", message: .}
@@ -15,7 +15,7 @@ fromjson? // {type: "error", message: .}
   # The runner also reads legacy `##[` commands anywhere in a line, so text that carries either form gets wrapped.
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
-    | ("::group::$ \(.item.command | script)"
+    | ("::group::" + ("$ \(.item.command | script)" | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | dim)
       + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
