@@ -7,12 +7,12 @@ fromjson? // {type: "error", message: .}
   elif .type == "item.completed" and (.item.type | IN("agent_message", "error")) then .item.text // .item.message
   # Parallel commands overlap, so each is printed once it finishes, titled by its first line; only output a reporter could parse as a workflow command needs stop-commands around it.
   elif .type == "item.completed" and .item.type == "command_execution" then
-    (.item.aggregated_output | rtrimstr("\n")) as $out
+    (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n")) as $out
     | ("::group::$ \(.item.command | script)"
       + (if $out | test("(?m)^ *::") then "\n::stop-commands::\($stop)\n" + $out + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + $out end)
       + "\n::endgroup::")
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type
   else empty end
-# The live log view hides empty lines; keep them empty rather than filling them with a space that shows up in copied logs.
-| . + "\n"
+# The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
+| gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"

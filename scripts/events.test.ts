@@ -654,6 +654,79 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
   expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
 });
 
+test("a session saved under another provider starts a fresh thread", () => {
+  const { dir, env } = fixture();
+  const block = step("Run codex review").run.match(/\nif grep -Eq[\s\S]*?\nfi\n/)![0];
+  const run = () => Bun.spawnSync(["bash", "-ec", `ran=0\nfresh() { echo fresh-ran; }\nlog() { cat; }\n${block}\necho "ran=$ran"`], { env });
+  for (const line of [
+    'Error: thread/resume: thread/resume failed: This chat uses openai, but your current provider is review. (code -32600), data: {"type":"modelProviderMismatch","modelProvider":"openai"}',
+    JSON.stringify({ type: "error", message: "item type is not supported: unsupported_persisted_item_context" }),
+  ]) {
+    writeFileSync(join(dir, "codex.jsonl"), line + "\n");
+    writeFileSync(join(dir, "last-thread-id"), "thread");
+    const result = run();
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("fresh-ran");
+    expect(result.stdout.toString()).toContain("ran=1");
+    expect(existsSync(join(dir, "last-thread-id"))).toBe(false);
+  }
+  // The reviewer reading action.yml puts these words in its own output; that is not a failed resume.
+  writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "if grep -Eq 'unsupported_persisted_item_context|modelProviderMismatch' file; then" } }) + "\n");
+  writeFileSync(join(dir, "last-thread-id"), "thread");
+  const result = run();
+  expect(result.stdout.toString()).not.toContain("fresh-ran");
+  expect(result.stdout.toString()).toContain("ran=0");
+  expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
+});
+
+test("the log carries no trailing whitespace", () => {
+  const input = [
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "first line  \n\n   \nsecond line\t" } }),
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "out  \r\n\n  \n" } }),
+    "raw stderr line with trailing spaces   ",
+  ].join("\n") + "\n";
+  const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString();
+  expect(output).toContain("first line\n\n\nsecond line");
+  expect(output).toContain("raw stderr line with trailing spaces\n");
+  expect(output).not.toMatch(/[ \t]+\n/);
+  expect(output).not.toContain("\r");
+});
+
+test("log cleanup keeps workflow commands in command output escaped", () => {
+  for (const output of ["::error::test failure\n", ":\r:error::test failure\r\n", "::err\ror::test failure\n"]) {
+    const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n::error::test failure\n::s::\n");
+  }
+});
+
+test("codex is configured with the gh MCP server and the token config dir", () => {
+  const { env } = fixture();
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
+  const run = (config: string) => {
+    const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, GITHUB_ACTION_PATH: root } });
+    expect(result.exitCode).toBe(0);
+    return Bun.TOML.parse(readFileSync(join(env.CODEX_HOME, "config.toml"), "utf8")) as any;
+  };
+  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+  // A supplied config that already names the server keeps its own definition instead of a duplicate table.
+  expect(run('[mcp_servers.gh]\ncommand = "custom"\n').mcp_servers.gh).toEqual({ command: "custom" });
+  expect(run('mcp_servers.gh = { command = "custom" }\n').mcp_servers.gh).toEqual({ command: "custom" });
+  for (const config of [
+    '  [mcp_servers.gh]\ncommand = "custom"\n',
+    '[mcp_servers."gh"]\ncommand = "custom"\n',
+    '[mcp_servers]\ngh = { command = "custom" }\n',
+  ]) expect(run(config).mcp_servers.gh).toEqual({ command: "custom" });
+  // An inline mcp_servers value cannot be extended by a table; the supplied config stays exactly as written.
+  for (const key of ["mcp_servers", "  mcp_servers", "\tmcp_servers", '"mcp_servers"', "'mcp_servers'", '"mcp_\\u0073ervers"']) {
+    expect(run(`${key} = { other = { command = "x" } }\n`).mcp_servers).toEqual({ other: { command: "x" } });
+  }
+  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] } });
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [

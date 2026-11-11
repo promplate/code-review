@@ -259,6 +259,16 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
+    - name: Install gh-mcp
+      if: env.SKIP != 'true'
+      shell: bash
+      run: |
+        # Codex starts the MCP server while it initializes, too early for uvx to resolve the package there.
+        export PATH="$HOME/.local/bin:$PATH"
+        command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
+        uv tool install --force gh-mcp==0.3.9
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
     - name: Configure codex
       if: env.SKIP != 'true'
       shell: bash
@@ -298,6 +308,16 @@ runs:
         type = "command"
         command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
         EOF
+        # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
+        # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
+        bun -e '
+          const path = process.argv[1], text = await Bun.file(path).text();
+          if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
+          const config = text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
+          try { Bun.TOML.parse(config); }
+          catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
+          await Bun.write(path, config);
+        ' "$CODEX_HOME/config.toml"
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
           curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.3.tgz | tar xz -C "$RUNNER_TEMP"
@@ -408,8 +428,9 @@ runs:
         }
         ran=0
         review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
-        # A thread recorded under another model or provider keeps hidden state that cannot be replayed; its work is lost, the review is not.
-        if grep -q unsupported_persisted_item_context "$RUNNER_TEMP/codex.jsonl"; then
+        # A thread recorded under another model or provider cannot be replayed or resumed; its work is lost, the review is not.
+        # Only a failed resume itself counts: the same words inside agent output are not a reason to start over.
+        if grep -Eq '^(Error: .*|.*"type":"(error|turn\.failed)".*)(unsupported_persisted_item_context|modelProviderMismatch)' "$RUNNER_TEMP/codex.jsonl"; then
           echo "::warning::The saved session cannot continue here; reviewing from a new thread."
           rm -f "$CODEX_HOME/last-thread-id"
           : > "$RUNNER_TEMP/codex.jsonl"
