@@ -680,6 +680,31 @@ test("a session saved under another provider starts a fresh thread", () => {
   expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
+test("the eyes reaction marks the message that triggered the review", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+appendFileSync(process.env.RUNNER_TEMP + "/gh-args", process.argv.slice(2).join(" ") + "\\n");
+console.log("9");
+`);
+  const commands = step("Mark PR as reviewing").run.replaceAll("${{ github.repository }}", "owner/repo").replace(/\$\{\{[^}]*\}\}/g, "");
+  const run = (event: object, name: string) => {
+    writeFileSync(join(dir, "event.json"), JSON.stringify(event));
+    writeFileSync(join(dir, "github-env"), "");
+    writeFileSync(join(dir, "gh-args"), "");
+    const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, GITHUB_EVENT_NAME: name, GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_ENV: join(dir, "github-env"), PR_NUMBER: "7" } });
+    expect(result.exitCode).toBe(0);
+    return { args: readFileSync(join(dir, "gh-args"), "utf8"), env: readFileSync(join(dir, "github-env"), "utf8") };
+  };
+  const comment = run({ action: "created", comment: { id: 77 } }, "issue_comment");
+  expect(comment.args).toContain("repos/owner/repo/issues/comments/77/reactions");
+  expect(comment.env).toContain("EYES_REACTION_PATH=issues/comments/77/reactions/9");
+  expect(run({ action: "created", comment: { id: 77 } }, "pull_request_review_comment").args).toContain("pulls/comments/77/reactions");
+  // A deleted comment has nothing to mark, and a review has no reactions endpoint of its own.
+  expect(run({ action: "deleted", comment: { id: 77 } }, "issue_comment").args).toContain("repos/owner/repo/issues/7/reactions");
+  expect(run({ action: "submitted", review: { id: 5 } }, "pull_request_review").args).toContain("repos/owner/repo/issues/7/reactions");
+});
+
 test("tool output is dimmed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
