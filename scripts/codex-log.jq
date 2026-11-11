@@ -19,7 +19,22 @@ fromjson? // {type: "error", message: .}
       + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
-  elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution") | not) then .item.tool // .item.type
+  # MCP calls fold like commands do: the title names the call and its input, the block holds the result.
+  elif .type == "item.completed" and .item.type == "mcp_tool_call" then
+    .item as $call
+    | ($call.arguments | if . == null then "" else tojson | gsub("##\\["; "#​#[") end) as $args
+    | ([$call.result.content[]? | select(.type == "text") | .text] | join("\n")) as $text
+    | (if $text != "" then $text elif $call.result.structured_content != null then ($call.result.structured_content | tojson) else "" end) as $body
+    | ((if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | dim) end)
+      + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
+      | gsub("\r"; "")) as $out
+    | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
+      + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
+      + (if ($args | length) > 160 then "\n" + ($args | dim) else "" end)
+      # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
+      + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
+      + "\n::endgroup::")
+  elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
 | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"
