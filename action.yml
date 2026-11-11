@@ -502,6 +502,7 @@ runs:
         usage=$(jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] | "\(map(.input_tokens) | add // 0) input (\(map(.cached_input_tokens) | add // 0) cached), \(map(.output_tokens) | add // 0) output, \(map(.reasoning_output_tokens) | add // 0) reasoning"' \
           < "$RUNNER_TEMP/codex.jsonl")
         echo "::notice::ChatGPT usage: $usage"
+        [ "$AGENT" != true ] || [ "$ran" = 1 ] || { echo "::error::Codex failed before completing the issue run."; exit 1; }
         [ "$AGENT" = true ] || verdict || { echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"; exit 1; }
         jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
         [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"
