@@ -2,11 +2,15 @@
 # Exec reports shell commands as `<shell> -c <script>` or `-lc`, with the script quoted as a single shell word.
 def script: sub("^\\S+ -l?c "; "") | if startswith("'") then .[1:-1] elif startswith("\"") then .[1:-1] | gsub("\\\\(?<c>[\\s\\S])"; .c) else . end;
 # Tool output is dimmed, so what the reviewer said stands out from what its commands printed.
-def dim: "\u001b[2m\(.)\u001b[0m";
+# The log viewer styles each line on its own, so a block needs its own escape per line.
+def dim: split("\n") | map("\u001b[2m\(.)\u001b[0m") | join("\n");
+# The settled verdict is one JSON record, coloured by its conclusion so it does not read as more prose.
+def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(.)\u001b[0m" else . end;
 fromjson? // {type: "error", message: .}
 | if .type == "error" then .message
   elif .type == "turn.failed" then .error.message
-  elif .type == "item.completed" and (.item.type | IN("agent_message", "error")) then .item.text // .item.message
+  elif .type == "item.completed" and .item.type == "agent_message" then (.item.text // "" | verdict)
+  elif .type == "item.completed" and .item.type == "error" then .item.text // .item.message
   # Parallel commands overlap, so each is printed once it finishes, titled by its first line; only output a reporter could parse as a workflow command needs stop-commands around it.
   # The runner also reads legacy `##[` commands anywhere in a line, so text that carries either form gets wrapped.
   elif .type == "item.completed" and .item.type == "command_execution" then
