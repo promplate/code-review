@@ -39,10 +39,10 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    jq -c . ~/.codex/auth.json | gh secret set CODEX_AUTH
    ```
 
-4. Add `.github/workflows/code-review.yml`:
+4. Add `.github/workflows/agent.yml`:
 
    ```yaml
-   name: code-review
+   name: agent invoke
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, ready_for_review]
