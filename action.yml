@@ -648,12 +648,21 @@ runs:
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
+        SAVE_OUTCOME: ${{ steps.save-session.outcome }}
+        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         [ -n "$CODEX_HOME" ] || exit 0
         pending=$(for file in "$RUNNER_TEMP/forked-prs" "$CODEX_HOME/sessions/.github-pending-drafts"; do
           if [ -f "$file" ]; then cat "$file" || exit 1; fi
         done | sort -u)
         [ -n "$pending" ] || exit 0
+        # actions/cache/save exits zero even when its upload fails, so a draft released without the saved session would resume from an older conversation or none.
+        if [ "$SAVE_OUTCOME" = success ]; then
+          listed=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&ref=$GITHUB_REF&per_page=100" \
+            --jq 'any(.actions_caches[]; .key == env.KEY)' </dev/null) || exit 0
+          [ "$listed" = true ] || { echo "::warning::The session snapshot $KEY is not listed, so dependent drafts stay draft."; exit 0; }
+        elif [ "$SAVE_OUTCOME" != skipped ]; then exit 0
+        fi
         left=
         while read -r url; do
           [ -z "$url" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null || left="$left$url"$'\n'
