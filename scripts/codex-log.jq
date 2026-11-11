@@ -25,8 +25,8 @@ fromjson? // {type: "error", message: .}
     | ($call.arguments | if . == null then "" else tojson | gsub("##\\["; "#​#[") end) as $args
     | ([$call.result.content[]? | select(.type == "text") | .text] | join("\n")) as $text
     | (if $text != "" then $text elif $call.result.structured_content != null then ($call.result.structured_content | tojson) else "" end) as $body
-    | ((if $body == "" then "" else "\n" + ($body | dim) end)
-      + (if $call.error then "\n\u001b[31m\($call.error.message)\u001b[0m" else "" end)
+    | ((if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | dim) end)
+      + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
     | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
       + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
