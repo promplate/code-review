@@ -26,7 +26,7 @@ fromjson? // {type: "error", message: .}
   # The runner also reads legacy `##[` commands anywhere in a line, so text that carries either form gets wrapped.
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
-    | ("::group::" + ("$ \(.item.command | script)" | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | dim)
+    | ("::group::\u001b[90m$\u001b[0m \(.item.command | script | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))"
       + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
@@ -40,7 +40,7 @@ fromjson? // {type: "error", message: .}
       + (if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | body_render) end)
       + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
-    | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
+    | ("::group::\($call.server).\($call.tool)"
       + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)

@@ -688,7 +688,7 @@ test("MCP calls fold input and result into one block", () => {
   };
   const call = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { commit_sha: "39a2ec3", per_page: 2 }, result: { content: [{ type: "text", text: '[{"id":1}]' }] }, error: null, status: "completed" };
   // The call and its input name the block; a JSON result is highlighted like jq prints it.
-  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n[{\u001b[36m"id"\u001b[0m:\u001b[33m1\u001b[0m}]\n::endgroup::\n\n`);
+  expect(log(call)).toBe(`::group::github.fetch_runs \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n[{\u001b[36m"id"\u001b[0m:\u001b[33m1\u001b[0m}]\n::endgroup::\n\n`);
   // Long input keeps a full, highlighted copy inside the block.
   const args = JSON.stringify({ q: "x".repeat(200) });
   const long = log({ ...call, arguments: { q: "x".repeat(200) } });
@@ -780,7 +780,7 @@ test("tool output is greyed line by line", () => {
   expect(result.exitCode).toBe(0);
   for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[90m${line}\u001b[0m\n`);
   // The group title is ours, and greying it keeps the whole call in the background.
-  expect(result.stdout.toString()).toContain(`::group::\u001b[90m$ x\u001b[0m\n`);
+  expect(result.stdout.toString()).toContain(`::group::\u001b[90m$\u001b[0m x\n`);
 });
 
 test("the verdict is coloured by its conclusion", () => {
