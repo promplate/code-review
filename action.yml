@@ -179,15 +179,16 @@ runs:
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ env.PR_NUMBER }}
+        DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ env.PR_NUMBER }}&attempt=${{ github.run_attempt }}
       run: |
         # Reuse an unfinished check run on this head: scripts/open-pr.sh leaves a queued one whose external_id is the session key of the review that opened this PR, and abandoned jobs leave in_progress ones.
         unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=code-review" \
-          --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "") \((.details_url // "") | capture("/actions/runs/(?<run>[0-9]+)").run // "")"' </dev/null)
+          --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "") \((.details_url // "") | capture("/actions/runs/(?<run>[0-9]+)").run // "") \((.details_url // "") | capture("[?&]attempt=(?<attempt>[0-9]+)").attempt // "")"' </dev/null)
         if [ -n "$unfinished" ]; then
-          id=${unfinished%% *}; rest=${unfinished#* }; fork_key=${rest%% *}; owner=${rest#* }
-          # A claimed handoff keeps its key, but its details URL now names its owner. Reuse it only after that run completes; an unreadable owner may still be running.
-          if [ -n "$owner" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" != completed ]; then
+          id=${unfinished%% *}; rest=${unfinished#* }; fork_key=${rest%% *}; rest=${rest#* }; owner=${rest%% *}; owner_attempt=${rest#* }
+          # A completed owner left the check behind, and an earlier attempt of this run was interrupted before it could finish; any other live owner still has to be respected.
+          if [ -n "$owner" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" != completed ] \
+            && ! { [ "$owner" = "$GITHUB_RUN_ID" ] && [ -n "$owner_attempt" ] && [ "$owner_attempt" != "$GITHUB_RUN_ATTEMPT" ]; }; then
             unfinished=
           fi
         fi

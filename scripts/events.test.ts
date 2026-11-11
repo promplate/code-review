@@ -873,17 +873,17 @@ else if (args.includes("/actions/runs/333")) { console.error("Owner unavailable"
 else if (args.includes("/actions/runs/444")) console.log("queued");
 else if (args.includes("check-runs?check_name=code-review")) {
   const first = JSON.parse(process.env.CHECKS).find((run: any) => run.status !== "completed");
-  if (first) console.log([first.id, first.external_id ?? "", (first.details_url || "").match(/\\/actions\\/runs\\/(\\d+)/)?.[1] ?? ""].join(" "));
+  if (first) console.log([first.id, first.external_id ?? "", (first.details_url || "").match(/\\/actions\\/runs\\/(\\d+)/)?.[1] ?? "", (first.details_url || "").match(/[?&]attempt=(\\d+)/)?.[1] ?? ""].join(" "));
 } else if (args.includes("-X PATCH")) console.log("{}");
 else console.log("303");
 `);
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
   const commands = step("Open check run").run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ env.HEAD_SHA }}", "head").replaceAll("${{ github.token }}", "job-token");
-  const run = (checks: object[]) => {
+  const run = (checks: object[], extra: Record<string, string> = {}) => {
     writeFileSync(join(dir, "gh-args"), "");
     writeFileSync(join(dir, "github-env"), "");
     writeFileSync(join(dir, "github-output"), "");
-    const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, GH_TOKEN: "", CHECKS: JSON.stringify(checks), GITHUB_OUTPUT: join(dir, "github-output") } });
+    const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, ...extra, GH_TOKEN: "", CHECKS: JSON.stringify(checks), GITHUB_OUTPUT: join(dir, "github-output") } });
     expect(result.exitCode).toBe(0);
     return { args: readFileSync(join(dir, "gh-args"), "utf8"), env: readFileSync(join(dir, "github-env"), "utf8"), out: readFileSync(join(dir, "github-output"), "utf8"), err: result.stderr.toString() };
   };
@@ -910,6 +910,14 @@ else console.log("303");
   const abandoned = run([{ id: 103, status: "in_progress", external_id: "", details_url: "https://github.com/owner/repo/actions/runs/111/job/9" }]);
   expect(abandoned.env).toContain("CHECK_ID=103");
   expect(abandoned.args).toContain("check-runs/103 -X PATCH");
+  // A rerun of an interrupted attempt continues the check its previous attempt left behind, keeping the handoff key.
+  const rerun = run([{ id: 106, status: "in_progress", external_id: "pr-7", details_url: "https://github.com/owner/repo/actions/runs/222/job/9?pr=7&attempt=1" }], { GITHUB_RUN_ID: "222", GITHUB_RUN_ATTEMPT: "2" });
+  expect(rerun.env).toContain("CHECK_ID=106");
+  expect(rerun.out).toContain("fork-key=pr-7");
+  // Another review job in this attempt is still live.
+  const sameAttempt = run([{ id: 107, status: "in_progress", external_id: "pr-7", details_url: "https://github.com/owner/repo/actions/runs/222/job/9?pr=7&attempt=2" }], { GITHUB_RUN_ID: "222", GITHUB_RUN_ATTEMPT: "2" });
+  expect(sameAttempt.env).toContain("CHECK_ID=303");
+  expect(sameAttempt.args).not.toContain("check-runs/107 -X PATCH");
 });
 
 test("tool output is greyed line by line", () => {
