@@ -619,7 +619,7 @@ const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.y
 
 test("review instructions reach the prompt as one shell string", () => {
   const { env } = fixture();
-  const commands = step("Run codex review").run.match(/^REVIEW_INSTRUCTIONS=[\s\S]*?(?=^# Production reviews)/m)![0] + '\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"';
+  const commands = `. "${join(root, "scripts/instructions.sh")}"\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"`;
   const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands + '\nprintf "%s" "$INSTRUCTIONS"'], { env });
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).toBe("");
