@@ -408,8 +408,8 @@ runs:
         }
         ran=0
         review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
-        # A thread recorded under another model or provider keeps hidden state that cannot be replayed; its work is lost, the review is not.
-        if grep -q unsupported_persisted_item_context "$RUNNER_TEMP/codex.jsonl"; then
+        # A thread recorded under another model or provider cannot be replayed or resumed; its work is lost, the review is not.
+        if grep -Eq 'unsupported_persisted_item_context|modelProviderMismatch' "$RUNNER_TEMP/codex.jsonl"; then
           echo "::warning::The saved session cannot continue here; reviewing from a new thread."
           rm -f "$CODEX_HOME/last-thread-id"
           : > "$RUNNER_TEMP/codex.jsonl"

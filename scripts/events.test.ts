@@ -654,6 +654,23 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
   expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
 });
 
+test("a session saved under another provider starts a fresh thread", () => {
+  const { dir, env } = fixture();
+  const block = step("Run codex review").run.match(/\nif grep -Eq[\s\S]*?\nfi\n/)![0];
+  for (const message of [
+    "thread/resume failed: This chat uses openai, but your current provider is review. (code -32600), data: {\"type\":\"modelProviderMismatch\",\"modelProvider\":\"openai\"}",
+    "thread/resume failed: item type is not supported (code -32600), data: {\"type\":\"unsupported_persisted_item_context\"}",
+  ]) {
+    writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "error", message }) + "\n");
+    writeFileSync(join(dir, "last-thread-id"), "thread");
+    const result = Bun.spawnSync(["bash", "-ec", `ran=0\nfresh() { echo fresh-ran; }\nlog() { cat; }\n${block}\necho "ran=$ran"`], { env });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("fresh-ran");
+    expect(result.stdout.toString()).toContain("ran=1");
+    expect(existsSync(join(dir, "last-thread-id"))).toBe(false);
+  }
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [
