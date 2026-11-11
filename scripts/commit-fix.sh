@@ -19,6 +19,8 @@ done | jq -s --arg base "$(git rev-parse 'HEAD^{tree}')" '{base_tree: $base, tre
 commit=$(git rev-parse HEAD $(git rev-parse -q --verify MERGE_HEAD) | jq -R . | jq -s --arg message "$1" --arg tree "$tree" '{message: $message, tree: $tree, parents: .}' | api git/commits)
 # Without force GitHub only fast-forwards, so a branch that moved past HEAD rejects the commit.
 jq -n --arg sha "$commit" '{sha: $sha}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$HEAD_BRANCH" --input - > /dev/null
+# The push starts a workflow run on this commit; publishing its verdict here is what lets that run find the head reviewed.
+echo "$commit" >> "$RUNNER_TEMP/pushed-fixes"
 echo "$commit"
 bash "$GITHUB_ACTION_PATH/scripts/retry.sh" git fetch -q origin "$HEAD_BRANCH" < /dev/null
 git reset -q --hard FETCH_HEAD

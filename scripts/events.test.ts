@@ -739,6 +739,31 @@ test("each run reports the tokens every turn spent", () => {
   expect(result.stdout.toString()).toContain("ChatGPT usage: 15 input (8 cached), 5 output, 1 reasoning");
 });
 
+test("a fix this run pushed is published for the run its push started", () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "check-runs.jsonl"), JSON.stringify({ sha: "head", id: "10" }) + "\n");
+  writeFileSync(join(dir, "review.json"), JSON.stringify({ summary: "no must-fix issues",
+    commits: [{ sha: "head", conclusion: "success" }, { sha: "fix", conclusion: "success" }, { sha: "ci", conclusion: "success" }, { sha: "other", conclusion: "success" }] }));
+  writeFileSync(join(dir, "pushed-fixes"), "fix\n");
+  executable(dir, "gh", `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const dir = process.env.RUNNER_TEMP, argv = process.argv.slice(2), args = argv.join(" ");
+const sha = /head_sha=([^& ]+)/.exec(args)?.[1];
+const body = args.includes("actions/runs?head_sha=") ? JSON.stringify({ workflow_runs: ["fix", "other"].includes(sha) ? [{ name: "Code Review" }] : [] })
+  : args.includes("check-runs?check_name=") ? JSON.stringify({ total_count: 0 })
+  : null;
+const jq = argv.indexOf("--jq");
+if (body && jq >= 0) console.log(Bun.spawnSync(["jq", "-r", argv[jq + 1]], { stdin: Buffer.from(body), env: process.env }).stdout.toString().trimEnd());
+else if (body) console.log(body);
+else appendFileSync(dir + "/published", JSON.parse(await Bun.stdin.text()).head_sha + "\\n");
+`);
+  const commands = step("Publish other commit verdicts").run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ github.token }}", "token").replace(/\$\{\{[^}]*\}\}/g, "");
+  const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, SUPERSEDED: "true", GITHUB_WORKFLOW: "Code Review", GITHUB_ENV: join(dir, "github-env") } });
+  expect(result.exitCode).toBe(0);
+  // The fix and the CI push have no verdict yet; the commit another run owns keeps to that run.
+  expect(readFileSync(join(dir, "published"), "utf8")).toBe("fix\nci\n");
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
