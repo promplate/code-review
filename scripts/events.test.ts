@@ -687,13 +687,17 @@ test("MCP calls fold input and result into one block", () => {
     return result.stdout.toString();
   };
   const call = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { commit_sha: "39a2ec3", per_page: 2 }, result: { content: [{ type: "text", text: '[{"id":1}]' }] }, error: null, status: "completed" };
-  // The call and its input name the block; the result stays dimmed like command output.
-  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n\u001b[90m[{"id":1}]\u001b[0m\n::endgroup::\n\n`);
-  // Long input keeps a full copy inside the block.
+  // The call and its input name the block; a JSON result is highlighted like jq prints it.
+  expect(log(call)).toBe(`::group::$ \u001b[1mgithub.fetch_runs\u001b[0m \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n[{\u001b[36m"id"\u001b[0m:\u001b[33m1\u001b[0m}]\n::endgroup::\n\n`);
+  // Long input keeps a full, highlighted copy inside the block.
   const args = JSON.stringify({ q: "x".repeat(200) });
   const long = log({ ...call, arguments: { q: "x".repeat(200) } });
   expect(long).toContain(`\u001b[36m${args.slice(0, 160)}…\u001b[0m`);
-  expect(long).toContain(`\u001b[90m${args}\u001b[0m`);
+  expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(200)}"\u001b[0m}`);
+  // A result that is not JSON stays grey, since it is tool text rather than a record.
+  expect(log({ ...call, result: { content: [{ type: "text", text: "plain result" }] } })).toContain("\u001b[90mplain result\u001b[0m");
+  // A false JSON value is still a parsed result.
+  expect(log({ ...call, result: { content: [{ type: "text", text: "false" }] } })).toContain("\u001b[35mfalse\u001b[0m");
   // A failed call reports its error in red instead of a result.
   expect(log({ ...call, result: null, error: { message: "boom" }, status: "failed" })).toContain("\u001b[31mboom\u001b[0m");
   // The call is shown once, when it finishes, like commands.
@@ -787,8 +791,8 @@ test("the verdict is coloured by its conclusion", () => {
     return result.stdout.toString();
   };
   const verdict = (conclusion: string) => JSON.stringify({ conclusion, summary: "s", commits: [] });
-  expect(log(verdict("success"))).toContain(`\u001b[1;32m${verdict("success")}\u001b[0m`);
-  expect(log(verdict("failure"))).toContain(`\u001b[1;31m${verdict("failure")}\u001b[0m`);
+  expect(log(verdict("success"))).toContain(`\u001b[1;32m✓\u001b[0m {\u001b[36m"conclusion"\u001b[0m:\u001b[32m"success"\u001b[0m`);
+  expect(log(verdict("failure"))).toContain(`\u001b[1;31m✗\u001b[0m {\u001b[36m"conclusion"\u001b[0m:\u001b[32m"failure"\u001b[0m`);
   // Prose and JSON that is not a verdict stay as written.
   for (const text of ["Working through the diff.", '{"hello":"world"}']) expect(log(text)).toContain(`${text}\n`);
 });

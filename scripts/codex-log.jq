@@ -4,8 +4,19 @@ def script: sub("^\\S+ -l?c "; "") | if startswith("'") then .[1:-1] elif starts
 # Tool output is greyed, so what the reviewer said stands out from what its commands printed.
 # The viewer ignores the faint attribute, so this uses bright black; it styles each line on its own, so every line carries its own escape.
 def dim: split("\n") | map("\u001b[90m\(.)\u001b[0m") | join("\n");
-# The settled verdict is one JSON record, coloured by its conclusion so it does not read as more prose.
-def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(.)\u001b[0m" else . end;
+# JSON reads best with the colouring jq gives it in a terminal: keys, strings, numbers and literals each get a colour.
+def json: def hstr: tojson | "\u001b[32m\(.)\u001b[0m";
+  def hkey: tojson | "\u001b[36m\(.)\u001b[0m";
+  if type == "object" then "{" + (to_entries | map("\(.key | hkey):\(.value | json)") | join(",")) + "}"
+  elif type == "array" then "[" + (map(json) | join(",")) + "]"
+  elif type == "string" then hstr
+  elif type == "number" then "\u001b[33m\(tostring)\u001b[0m"
+  elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
+  else "\u001b[90mnull\u001b[0m" end;
+# A result that is JSON gets the same colouring; anything else stays grey.
+def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
+# The settled verdict is one JSON record, marked by its conclusion so it does not read as more prose.
+def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else . end;
 fromjson? // {type: "error", message: .}
 | if .type == "error" then .message
   elif .type == "turn.failed" then .error.message
@@ -25,12 +36,12 @@ fromjson? // {type: "error", message: .}
     | ($call.arguments | if . == null then "" else tojson | gsub("##\\["; "#​#[") end) as $args
     | ([$call.result.content[]? | select(.type == "text") | .text] | join("\n")) as $text
     | (if $text != "" then $text elif $call.result.structured_content != null then ($call.result.structured_content | tojson) else "" end) as $body
-    | ((if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | dim) end)
+    | ((if $args == "" or ($args | length) <= 160 then "" else "\n" + ($call.arguments | json) end)
+      + (if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | body_render) end)
       + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
     | ("::group::$ \u001b[1m\($call.server).\($call.tool)\u001b[0m"
       + (if $args == "" then "" else " \u001b[36m\($args | if length > 160 then .[0:160] + "…" else . end)\u001b[0m" end)
-      + (if ($args | length) > 160 then "\n" + ($args | dim) else "" end)
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
       + "\n::endgroup::")
