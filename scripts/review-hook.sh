@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 input=$(cat)
 if jq -e '.hook_event_name == "PreToolUse"' <<< "$input" > /dev/null; then
+  # Agent runs post no check run, and a missing id would retry a 404 on every tool call.
+  [ -n "$CHECK_ID" ] || exit 0
   # Four backticks keep fences inside commands and patches from closing the block early.
   jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
     | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
