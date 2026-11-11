@@ -19,7 +19,8 @@ function fixture(event: object = comment) {
   writeFileSync(join(dir, "event.json"), JSON.stringify(event));
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
     GITHUB_REPOSITORY: "owner/repo", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: "issue_comment",
-    PR_NUMBER: "7", HEAD_SHA: "head", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com" };
+    PR_NUMBER: "7", HEAD_SHA: "head", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
+    EYES_REACTION_ID: "", EYES_REACTION_PATH: "" };
   return { dir, env };
 }
 
