@@ -123,6 +123,22 @@ A push gets a `code-review` check run on its head commit. Certain fixes are comm
 
 Set the `service-tier` input to `ultrafast` (or another tier the model advertises) to have the provider run reviews on its fastest queue; it is opt-in, so evaluation runs and cost-sensitive consumers keep the provider default.
 
+## Issues
+
+Add an `issues` trigger, and let plain-issue activity pass the job's `if:`, to have the same session act on issues instead of reviewing them:
+
+```yaml
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  review:
+    if: github.event.issue.state == 'open' || github.event.pull_request.state == 'open' && (...)
+```
+
+A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone. Such a run posts no check run and no verdict; the trigger only delivers the context. `labeled` rather than `opened` keeps every new issue from waking it before someone asks.
+
 ## Runtime
 
 The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.

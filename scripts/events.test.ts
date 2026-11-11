@@ -619,12 +619,48 @@ const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.y
 
 test("review instructions reach the prompt as one shell string", () => {
   const { env } = fixture();
-  const commands = step("Run codex review").run.match(/^INSTRUCTIONS=[\s\S]*?(?=^# Production reviews)/m)![0];
+  const commands = step("Run codex review").run.match(/^REVIEW_INSTRUCTIONS=[\s\S]*?(?=^# Production reviews)/m)![0] + '\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"';
   const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands + '\nprintf "%s" "$INSTRUCTIONS"'], { env });
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).toBe("");
   expect(result.stdout.toString()).toContain('fold in any older "Worth checking" comment');
   expect(result.stdout.toString()).toContain(`Comments authored by ${env.BOT_LOGIN} are yours`);
+});
+
+test("an issue wakes the agent without a verdict schema", () => {
+  const { dir, env } = fixture(), run = step("Run codex review").run;
+  writeFileSync(join(dir, "issue.json"), JSON.stringify({ action: "labeled", sender: human, issue: { number: 7, html_url: "https://github.com/owner/repo/issues/7" } }));
+  const block = run.slice(run.indexOf('if [ "$AGENT" = true ]; then'), run.indexOf("fresh() {")).replaceAll("${{ inputs.service-tier }}", "default");
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", block + '\nprintf "%s\\n--schema:%s" "$OPEN" "${#SCHEMA[@]}"'], {
+    env: { ...env, AGENT: "true", ISSUE_NUMBER: "7", BASE: "main", HEAD_SHA: "abc123", RUNTIME_INFO: "Bun 1.3", GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(dir, "issue.json") },
+  });
+  expect(result.exitCode).toBe(0);
+  const out = result.stdout.toString();
+  expect(out).toContain("New GitHub activity on issue #7:");
+  expect(out).toContain('"event":"issues"');
+  expect(out).toContain("gh issue view 7 --comments");
+  expect(out).toContain("never invent work");
+  expect(out).not.toContain("JSON review");
+  expect(out.endsWith("--schema:0")).toBe(true);
+});
+
+test("issue runs propagate Codex failures without requiring a verdict", () => {
+  const { dir, env } = fixture();
+  mkdirSync(join(dir, "sessions"));
+  writeFileSync(join(dir, "issue.json"), JSON.stringify({ action: "labeled", sender: human, issue: { number: 7 } }));
+  executable(dir, "codex", '#!/usr/bin/env bash\nprintf \'{"type":"thread.started","thread_id":"thread"}\\n\'\nexit "$CODEX_EXIT"\n');
+  executable(dir, "gh", '#!/usr/bin/env bash\necho "Unexpected GitHub call" >&2\nexit 1\n');
+  // The log follower is unrelated to the process status and would keep the test's output pipe open.
+  executable(dir, "tail", "#!/usr/bin/env bash\nexit 0\n");
+  const commands = step("Run codex review").run.replaceAll("${{ inputs.service-tier }}", "default").replace(/\$\{\{[^}]*\}\}/g, "");
+  for (const code of ["0", "1"]) {
+    const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], {
+      env: { ...env, AGENT: "true", PR_NUMBER: "", CHECK_ID: "", ISSUE_NUMBER: "7", BASE: "main", FORK_KEY: "", CODEX_BIN: join(dir, "codex"), CODEX_RUNTIME: "", CODEX_EXIT: code,
+        GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(dir, "issue.json") }, timeout: 3000,
+    });
+    expect(result.exitCode).toBe(Number(code));
+    expect(existsSync(join(dir, "review.json"))).toBe(false);
+  }
 });
 
 test("forking a review copies its conversation but not another PRs consumption position", () => {
