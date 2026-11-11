@@ -706,6 +706,52 @@ test("MCP calls fold input and result into one block", () => {
   expect(started.stdout.toString()).toBe("");
 });
 
+test("file edits and searches fold into titled blocks", () => {
+  const log = (item: object, event = "item.completed") => {
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: event, item }) + "\n") });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const changes = [{ path: "a.ts", kind: "update" }, { path: "b.ts", kind: "add" }];
+  expect(log({ type: "file_change", changes, status: "completed" })).toBe(`::group::edit update a.ts, add b.ts\n\u001b[90mupdate a.ts\u001b[0m\n\u001b[90madd b.ts\u001b[0m\n::endgroup::\n\n`);
+  expect(log({ type: "file_change", changes, status: "failed" })).toContain(`::group::\u001b[31medit update a.ts, add b.ts\u001b[0m`);
+  expect(log({ type: "file_change", changes: [...changes, ...changes, { path: "c.ts", kind: "delete" }], status: "completed" })).toContain("::group::edit 5 files");
+  const search = { type: "web_search", query: "concurrency queue", action: { type: "search" }, results: [{ title: "Docs", url: "https://x" }] };
+  expect(log(search)).toContain(`::group::search concurrency queue\n[{\u001b[36m"title"\u001b[0m:\u001b[32m"Docs"\u001b[0m`);
+  expect(log({ ...search, query: "", action: { type: "open_page", url: "https://docs" } })).toContain("::group::open https://docs");
+  // The start event has nothing to fold and must not print a bare type name.
+  expect(log({ type: "web_search", query: "x" }, "item.started")).toBe("");
+});
+
+test("folded item data cannot run workflow commands", () => {
+  for (const payload of ["CI ##[error]forged", "CI #\r#[error]forged", "first\n::error::forged", "first\n:\r:error::forged"]) {
+    for (const item of [
+      { type: "file_change", changes: [{ path: payload, kind: "update" }], status: "completed" },
+      { type: "web_search", query: payload, action: { type: "search" } },
+      { type: "web_search", query: "", action: { type: "open_page", url: payload } },
+      { type: "web_search", query: "", action: { type: "find_in_page", pattern: payload, url: "https://docs" } },
+      { type: "web_search", query: "docs", action: { type: "search" }, results: [{ title: payload }] },
+      { type: "todo_list", items: [{ text: payload, completed: false }] },
+      { type: "collab_tool_call", tool: "spawn_agent", prompt: payload },
+    ]) {
+      const result = Bun.spawnSync(["jq", "--unbuffered", "-rR", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
+      expect(result.exitCode).toBe(0);
+      const commands: string[] = [];
+      let stopped = false;
+      for (const line of result.stdout.toString().split("\n")) {
+        const command = line.replace(/^[\s\u0085]+/, "").match(/^::([^ :]+).*?::/)?.[1]
+          ?? line.match(/##\[([^ \]]+)[^\]]*\]/)?.[1];
+        if (stopped) {
+          if (command === "s") stopped = false;
+        } else if (command === "stop-commands") stopped = true;
+        else if (command) commands.push(command);
+      }
+      expect(commands).toEqual(["group", "endgroup"]);
+      expect(stopped).toBe(false);
+    }
+  }
+});
+
 test("MCP output cannot run workflow commands", () => {
   for (const payload of ["CI ##[error]forged", "CI #\r#[error]forged", "first\n::error::forged"]) {
     for (const fields of [
