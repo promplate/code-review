@@ -725,12 +725,16 @@ test("MCP calls fold input and result into one block", () => {
   };
   const call = { type: "mcp_tool_call", server: "github", tool: "fetch_runs", arguments: { commit_sha: "39a2ec3", per_page: 2 }, result: { content: [{ type: "text", text: '[{"id":1}]' }] }, error: null, status: "completed" };
   // The call and its input name the block; a JSON result is highlighted like jq prints it.
-  expect(log(call)).toBe(`::group::github.fetch_runs \u001b[36m{"commit_sha":"39a2ec3","per_page":2}\u001b[0m\n[{\u001b[36m"id"\u001b[0m:\u001b[33m1\u001b[0m}]\n::endgroup::\n\n`);
-  // Long input keeps a full, highlighted copy inside the block.
-  const args = JSON.stringify({ q: "x".repeat(200) });
+  expect(log(call)).toBe(`::group::github.fetch_runs {\u001b[36m"commit_sha"\u001b[0m:\u001b[32m"39a2ec3"\u001b[0m,\u001b[36m"per_page"\u001b[0m:\u001b[33m2\u001b[0m}\n[{\u001b[36m"id"\u001b[0m:\u001b[33m1\u001b[0m}]\n::endgroup::\n\n`);
+  // Long input keeps a full, highlighted copy inside the block, while the title highlight stops at the cut.
   const long = log({ ...call, arguments: { q: "x".repeat(200) } });
-  expect(long).toContain(`\u001b[36m${args.slice(0, 160)}…\u001b[0m`);
+  expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(154)}\u001b[0m\u001b[90m…\u001b[0m`);
   expect(long).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m"${"x".repeat(200)}"\u001b[0m}`);
+  // A cut inside an escape still leaves the whole string green, including text that looks like other JSON tokens.
+  for (const suffix of ["\\tail", '"tail', "\ntail"]) {
+    const q = "true false null 123".padEnd(153, "x") + suffix;
+    expect(log({ ...call, arguments: { q } })).toContain(`{\u001b[36m"q"\u001b[0m:\u001b[32m${JSON.stringify(q).slice(0, 155)}\u001b[0m\u001b[90m…\u001b[0m`);
+  }
   // A result that is not JSON stays grey, since it is tool text rather than a record.
   expect(log({ ...call, result: { content: [{ type: "text", text: "plain result" }] } })).toContain("\u001b[90mplain result\u001b[0m");
   // A false JSON value is still a parsed result.
