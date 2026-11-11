@@ -779,8 +779,32 @@ test("tool output is greyed line by line", () => {
   const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
   for (const line of ["one", "", "three"]) expect(result.stdout.toString()).toContain(`\n\u001b[90m${line}\u001b[0m\n`);
-  // The group title is ours, and greying it keeps the whole call in the background.
+  // Only the shell prompt is grey; the command keeps its normal brightness.
   expect(result.stdout.toString()).toContain(`::group::\u001b[90m$\u001b[0m x\n`);
+});
+
+test("shell command titles cannot run workflow commands", () => {
+  for (const payload of ["::error::forged", "\t::error::forged", "\u2003::error::forged", ":\r:error::forged", "CI ##[error]forged", "CI #\r#[error]forged"]) {
+    // A heredoc can carry workflow commands without executing or printing them.
+    const command = `bash -lc 'cat > /dev/null <<EOF\n${payload}\nEOF'`;
+    for (const aggregated_output of ["", "done\n", "::warning::output\n"]) {
+      const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command, aggregated_output } });
+      const result = Bun.spawnSync(["jq", "--unbuffered", "-rR", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
+      expect(result.exitCode).toBe(0);
+      const commands: string[] = [];
+      let stopped = false;
+      for (const line of result.stdout.toString().split("\n")) {
+        const command = line.replace(/^[\s\u0085]+/, "").match(/^::([^ :]+).*?::/)?.[1]
+          ?? line.match(/##\[([^ \]]+)[^\]]*\]/)?.[1];
+        if (stopped) {
+          if (command === "s") stopped = false;
+        } else if (command === "stop-commands") stopped = true;
+        else if (command) commands.push(command);
+      }
+      expect(commands).toEqual(["group", "endgroup"]);
+      expect(stopped).toBe(false);
+    }
+  }
 });
 
 test("the verdict is coloured by its conclusion", () => {
