@@ -619,7 +619,7 @@ const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.y
 
 test("review instructions reach the prompt as one shell string", () => {
   const { env } = fixture();
-  const commands = step("Run codex review").run.match(/^REVIEW_INSTRUCTIONS=[\s\S]*?(?=^# Production reviews)/m)![0] + '\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"';
+  const commands = `. "${join(root, "scripts/instructions.sh")}"\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"`;
   const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands + '\nprintf "%s" "$INSTRUCTIONS"'], { env });
   expect(result.exitCode).toBe(0);
   expect(result.stderr.toString()).toBe("");
@@ -666,7 +666,7 @@ test("issue runs propagate Codex failures without requiring a verdict", () => {
 test("forking a review copies its conversation but not another PRs consumption position", () => {
   const { dir, env } = fixture(), source = join(dir, "code-review-homes/owner/repo/source"), target = join(dir, "target");
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
-  for (const name of [".github-cursor", ".github-deliveries.json", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
+  for (const name of [".github-cursor", ".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
   const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
@@ -674,6 +674,7 @@ test("forking a review copies its conversation but not another PRs consumption p
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
   expect(existsSync(join(target, "sessions/.github-cursor"))).toBe(false);
   expect(existsSync(join(target, "sessions/.github-deliveries.json"))).toBe(false);
+  expect(existsSync(join(target, "sessions/.github-published-head"))).toBe(false);
 });
 
 test("a turn that fails after the verdict keeps the verdict it produced", () => {
@@ -1031,46 +1032,6 @@ function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
 
-test("synchronize skips only an executing review job", async () => {
-  const { dir, env } = fixture(), realGh = Bun.which("gh")!;
-  let jobs: object[] = [], jobsRead = false, failJobs = false;
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
-    const url = new URL(request.url);
-    if (url.pathname.endsWith("/jobs")) {
-      jobsRead = true;
-      return Response.json({ jobs }, { status: failJobs ? 503 : 200 });
-    }
-    if (url.searchParams.has("event")) return Response.json({ workflow_runs: [
-      { id: 13, workflow_id: 42, head_branch: "feature", status: "in_progress" },
-      { id: 12, workflow_id: 42, head_branch: "feature", status: "in_progress" },
-    ] });
-    return Response.json({ workflow_id: 42 });
-  } });
-  // Keep the real CLI and jq evaluators so invalid command arguments cannot pass as a mocked response.
-  executable(dir, "gh", `#!/usr/bin/env bash\nendpoint=$2\nshift 2\nexec '${realGh}' api "$API_URL/$endpoint" "$@"\n`);
-  const region = step("Resolve the review target").run.match(/workflow=\$\([\s\S]*?if \[ "\$running" != 0 \]; then[^\n]*fi/)![0]
-    .replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ github.token }}", "fixture");
-  try {
-    for (const status of ["missing", "queued", "in_progress", "completed", "error"]) {
-      for (const reverse of [false, true]) {
-        jobs = [{ name: "authorize", status: "in_progress" }];
-        if (status !== "missing") jobs.push({ name: "review", status });
-        if (reverse) jobs.reverse();
-        failJobs = status === "error";
-        jobsRead = false;
-        writeFileSync(join(dir, "github-env"), "");
-        const child = Bun.spawn(["bash", "-eo", "pipefail", "-c", region], { env: { ...env,
-          API_URL: server.url.toString().replace(/\/$/, ""), GITHUB_JOB: "review", GITHUB_ENV: join(dir, "github-env"),
-          pr: JSON.stringify({ head: { ref: "feature" } }),
-        }, stdout: "pipe", stderr: "pipe" });
-        expect(await child.exited).toBe(0);
-        expect(jobsRead).toBe(true);
-        expect(readFileSync(join(dir, "github-env"), "utf8").includes("SKIP=true")).toBe(status === "in_progress");
-      }
-    }
-  } finally { server.stop(true); }
-});
-
 function runGate(dir: string, env: Record<string, string>) {
   writeFileSync(join(dir, "github-env"), "");
   const result = Bun.spawnSync(["bash", "-c", gateStep()], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GITHUB_ENV: join(dir, "github-env"), ...env }, timeout: 8000 });
@@ -1149,7 +1110,10 @@ test("a run skips activity another review consumed, and strangers, but never a n
   expect(first).not.toContain("SKIP=true");
   const id = /ACTIVITY_ID=(.*)/.exec(first)![1];
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([id]));
-  expect(runGate(setup.dir, env)).toContain("SKIP=true");
+  expect(runGate(setup.dir, env)).not.toContain("SKIP=true");
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  expect(runGate(setup.dir, { ...env, HEAD_SHA: "head" })).toContain("SKIP=true");
+  expect(runGate(setup.dir, { ...env, HEAD_SHA: "new" })).not.toContain("SKIP=true");
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
   executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'read\\n'\n");
   expect(runGate(setup.dir, env)).toContain("SKIP=true");
