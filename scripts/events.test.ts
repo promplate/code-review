@@ -19,6 +19,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "review-events-"));
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
+  writeFileSync(join(dir, "injected.log"), "");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
     GITHUB_REPOSITORY: "owner/repo", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12" };
@@ -699,8 +700,28 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n::error::test failure\n::s::\n");
+    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n\u001b[2m::error::test failure\u001b[0m\n::s::\n");
   }
+});
+
+test("injected GitHub activity is logged with a colour per event kind", () => {
+  const input = [
+    JSON.stringify({ event: "issue_comment", action: "created", actor: "alice", url: "https://example.test/c/1" }),
+    JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
+    JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
+  ].join("\n") + "\n";
+  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString();
+  expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
+  expect(output).toContain("\u001b[93mcheck_run\u001b[0m CI:failure https://example.test/r/2");
+  expect(output).toContain("\u001b[91mreplay_gap\u001b[0m");
+});
+
+test("hook deliveries are published for the live log", () => {
+  const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
+  expect(JSON.parse(output).decision).toBe("block");
+  expect(readFileSync(join(dir, "injected.log"), "utf8")).toContain('"event":"issue_comment"');
 });
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
