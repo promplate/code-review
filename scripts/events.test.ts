@@ -860,6 +860,58 @@ test("a comment deleted before the reaction is posted falls back to the PR body"
   }
 });
 
+test("an unfinished check is reused only when no live review owns it", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2).join(" ");
+appendFileSync(process.env.RUNNER_TEMP + "/gh-args", args + "\\n");
+if (process.argv[3]?.includes("/actions/runs/") && process.env.GH_TOKEN !== "job-token") { console.error("Actions lookup requires the job token"); process.exit(1); }
+if (args.includes("/actions/runs/222")) console.log("in_progress");
+else if (args.includes("/actions/runs/111")) console.log("completed");
+else if (args.includes("/actions/runs/333")) { console.error("Owner unavailable"); process.exit(1); }
+else if (args.includes("/actions/runs/444")) console.log("queued");
+else if (args.includes("check-runs?check_name=code-review")) {
+  const first = JSON.parse(process.env.CHECKS).find((run: any) => run.status !== "completed");
+  if (first) console.log([first.id, first.external_id ?? "", (first.details_url || "").match(/\\/actions\\/runs\\/(\\d+)/)?.[1] ?? ""].join(" "));
+} else if (args.includes("-X PATCH")) console.log("{}");
+else console.log("303");
+`);
+  executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
+  const commands = step("Open check run").run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ env.HEAD_SHA }}", "head").replaceAll("${{ github.token }}", "job-token");
+  const run = (checks: object[]) => {
+    writeFileSync(join(dir, "gh-args"), "");
+    writeFileSync(join(dir, "github-env"), "");
+    writeFileSync(join(dir, "github-output"), "");
+    const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, GH_TOKEN: "", CHECKS: JSON.stringify(checks), GITHUB_OUTPUT: join(dir, "github-output") } });
+    expect(result.exitCode).toBe(0);
+    return { args: readFileSync(join(dir, "gh-args"), "utf8"), env: readFileSync(join(dir, "github-env"), "utf8"), out: readFileSync(join(dir, "github-output"), "utf8"), err: result.stderr.toString() };
+  };
+  const handoff = run([{ id: 101, status: "queued", external_id: "pr-7", details_url: "" }]);
+  expect(handoff.env).toContain("CHECK_ID=101");
+  expect(handoff.out).toContain("fork-key=pr-7");
+  expect(handoff.args).not.toContain("api repos/owner/repo/check-runs -f");
+  // A review in another session still running on the same head keeps its check; publishing through it would overwrite its verdict.
+  const live = run([{ id: 102, status: "in_progress", external_id: "", details_url: "https://github.com/owner/repo/actions/runs/222/job/9" }]);
+  expect(live.env).toContain("CHECK_ID=303");
+  expect(live.args).toContain("api repos/owner/repo/check-runs -f name=code-review");
+  expect(live.err).toBe("");
+  // Claiming a handoff preserves its external_id, but its new details URL identifies the live owner.
+  const claimed = run([{ id: 104, status: "in_progress", external_id: "pr-7", details_url: "https://github.com/owner/repo/actions/runs/222/job/9" }]);
+  expect(claimed.env).toContain("CHECK_ID=303");
+  expect(claimed.out).not.toContain("fork-key=");
+  // An unreadable owner or a queued rerun cannot establish that the check was abandoned.
+  for (const owner of [333, 444]) {
+    const pending = run([{ id: 105, status: "in_progress", external_id: "", details_url: `https://github.com/owner/repo/actions/runs/${owner}/job/9` }]);
+    expect(pending.env).toContain("CHECK_ID=303");
+    expect(pending.args).not.toContain("check-runs/105 -X PATCH");
+  }
+  // An abandoned job left its check behind, and the next review for that head continues it.
+  const abandoned = run([{ id: 103, status: "in_progress", external_id: "", details_url: "https://github.com/owner/repo/actions/runs/111/job/9" }]);
+  expect(abandoned.env).toContain("CHECK_ID=103");
+  expect(abandoned.args).toContain("check-runs/103 -X PATCH");
+});
+
 test("tool output is greyed line by line", () => {
   // The log viewer styles each line on its own, so one escape around a block would leave every later line undimmed.
   const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'x'", aggregated_output: "one\ntwo\n\nthree\n" } });
