@@ -409,7 +409,8 @@ runs:
         ran=0
         review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
         # A thread recorded under another model or provider cannot be replayed or resumed; its work is lost, the review is not.
-        if grep -Eq 'unsupported_persisted_item_context|modelProviderMismatch' "$RUNNER_TEMP/codex.jsonl"; then
+        # Only a failed resume itself counts: the same words inside agent output are not a reason to start over.
+        if grep -Eq '^(Error: .*|.*"type":"(error|turn\.failed)".*)(unsupported_persisted_item_context|modelProviderMismatch)' "$RUNNER_TEMP/codex.jsonl"; then
           echo "::warning::The saved session cannot continue here; reviewing from a new thread."
           rm -f "$CODEX_HOME/last-thread-id"
           : > "$RUNNER_TEMP/codex.jsonl"

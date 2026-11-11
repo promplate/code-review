@@ -657,18 +657,26 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
 test("a session saved under another provider starts a fresh thread", () => {
   const { dir, env } = fixture();
   const block = step("Run codex review").run.match(/\nif grep -Eq[\s\S]*?\nfi\n/)![0];
-  for (const message of [
-    "thread/resume failed: This chat uses openai, but your current provider is review. (code -32600), data: {\"type\":\"modelProviderMismatch\",\"modelProvider\":\"openai\"}",
-    "thread/resume failed: item type is not supported (code -32600), data: {\"type\":\"unsupported_persisted_item_context\"}",
+  const run = () => Bun.spawnSync(["bash", "-ec", `ran=0\nfresh() { echo fresh-ran; }\nlog() { cat; }\n${block}\necho "ran=$ran"`], { env });
+  for (const line of [
+    'Error: thread/resume: thread/resume failed: This chat uses openai, but your current provider is review. (code -32600), data: {"type":"modelProviderMismatch","modelProvider":"openai"}',
+    JSON.stringify({ type: "error", message: "item type is not supported: unsupported_persisted_item_context" }),
   ]) {
-    writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "error", message }) + "\n");
+    writeFileSync(join(dir, "codex.jsonl"), line + "\n");
     writeFileSync(join(dir, "last-thread-id"), "thread");
-    const result = Bun.spawnSync(["bash", "-ec", `ran=0\nfresh() { echo fresh-ran; }\nlog() { cat; }\n${block}\necho "ran=$ran"`], { env });
+    const result = run();
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain("fresh-ran");
     expect(result.stdout.toString()).toContain("ran=1");
     expect(existsSync(join(dir, "last-thread-id"))).toBe(false);
   }
+  // The reviewer reading action.yml puts these words in its own output; that is not a failed resume.
+  writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "if grep -Eq 'unsupported_persisted_item_context|modelProviderMismatch' file; then" } }) + "\n");
+  writeFileSync(join(dir, "last-thread-id"), "thread");
+  const result = run();
+  expect(result.stdout.toString()).not.toContain("fresh-ran");
+  expect(result.stdout.toString()).toContain("ran=0");
+  expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
 test("each run reports the tokens every turn spent", () => {
