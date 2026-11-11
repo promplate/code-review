@@ -202,26 +202,35 @@ esac
   expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe("success");
 });
 
-test("a failed publication still releases the drafted fix PRs", () => {
+test("a failed publication releases only drafts an earlier run left pending", () => {
   const setup = fixture();
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
-  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\n[ "$3" != "https://github.com/owner/repo/pull/9" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  const result = run("Mark forked PRs ready", setup);
+  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  const result = run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "skipped" });
   expect(result.exitCode).toBe(0);
-  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
-  // The URL that could not be marked ready stays for the retry that restores this session.
-  expect(readFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+  expect(result.stdout.toString()).toContain("stay draft");
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+  // The draft this run opened has no saved source session, so it stays draft for a manual release.
+  expect(existsSync(join(setup.dir, "sessions/.github-pending-drafts"))).toBe(false);
 });
 
-test.each(["", "forked-prs", "sessions/.github-pending-drafts"])("draft release accepts optional lists: %s", file => {
+test.each([
+  ["", { SAVE_OUTCOME: "skipped" }, false],
+  ["forked-prs", { SAVE_OUTCOME: "success" }, true],
+  ["sessions/.github-pending-drafts", { SAVE_OUTCOME: "skipped" }, true],
+])("draft release accepts optional lists: %s", (file, extra, released) => {
   const setup = fixture(), url = "https://github.com/owner/repo/pull/8";
   if (file) writeFileSync(join(setup.dir, file), `${url}\n`);
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  expect(run("Mark forked PRs ready", setup).exitCode).toBe(0);
-  expect(existsSync(join(setup.dir, "ready"))).toBe(!!file);
-  if (file) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/caches*) echo true ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, extra as Record<string, string>).exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "ready"))).toBe(released);
 });
 
 test("new draft handoffs preserve pending drafts restored from the session", () => {
@@ -230,8 +239,14 @@ test("new draft handoffs preserve pending drafts restored from the session", () 
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
   const commands = step("Run codex review").run.slice(step("Run codex review").run.lastIndexOf('mkdir -p "$CODEX_HOME/sessions"'));
   expect(Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], { env: { ...setup.env, AGENT: "true" } }).exitCode).toBe(0);
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  expect(run("Mark forked PRs ready", setup).exitCode).toBe(0);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/caches*) echo true ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\nhttps://github.com/owner/repo/pull/9\n");
 });
 
@@ -243,6 +258,53 @@ test("a consumed retry still releases its cached pending drafts", () => {
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
   expect(gate(setup)).toContain("SKIP=true");
   expect(step("Mark forked PRs ready").if).toBe("always()");
-  expect(run("Mark forked PRs ready", setup, { SKIP: "true" }).exitCode).toBe(0);
+  expect(run("Mark forked PRs ready", setup, { SKIP: "true", SAVE_OUTCOME: "skipped" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
+});
+
+test("a draft stays draft when the saved session is not listed", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/caches*) echo false ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success" }).exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "ready"))).toBe(false);
+  expect(readFileSync(join(setup.dir, "forked-prs"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
+});
+
+test("draft release checks the exact snapshot with the job token and keeps the App token for readiness", () => {
+  for (const ref of ["refs/heads/main", "refs/heads/release+next", "refs/heads/release&next", "refs/heads/release#next"]) {
+    for (const visible of [true, false]) {
+      const setup = fixture(), key = `code-review-default-ref-${ref}:12-1`, url = "https://github.com/owner/repo/pull/8";
+      writeFileSync(join(setup.dir, "forked-prs"), `${url}\n`);
+      executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+      executable(setup.dir, "gh", `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === "api") {
+  if (process.env.GH_TOKEN !== "token") process.exit(1);
+  const url = new URL(args[1], "https://api.github.com/");
+  for (let i = 0; i < args.length; i++) if (args[i] === "-f") {
+    const field = args[++i], split = field.indexOf("=");
+    url.searchParams.append(field.slice(0, split), field.slice(split + 1));
+  }
+  const matches = url.searchParams.get("ref") === process.env.GITHUB_REF && url.searchParams.get("key") === process.env.KEY;
+  const actions_caches = matches && ${visible} ? [{ key: process.env.KEY }] : [{ key: process.env.KEY + "-other" }];
+  const result = Bun.spawnSync(["jq", "-r", args[args.indexOf("--jq") + 1]], { stdin: Buffer.from(JSON.stringify({ actions_caches })) });
+  process.stdout.write(result.stdout);
+  process.exit(result.exitCode);
+} else if (args[0] === "pr" && args[1] === "ready") {
+  if (process.env.GH_TOKEN) process.exit(1);
+  await Bun.write(process.env.RUNNER_TEMP + "/ready", args[2] + "\\n");
+} else process.exit(1);
+`);
+      expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success", GH_TOKEN: "", KEY: key, GITHUB_REF: ref }).exitCode).toBe(0);
+      expect(existsSync(join(setup.dir, "ready"))).toBe(visible);
+      if (visible) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+    }
+  }
 });
