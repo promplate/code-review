@@ -76,7 +76,8 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
   expect(step("Drop older session snapshots").if).toBe("steps.save-session.outcome == 'success'");
-  expect(step("Mark forked PRs ready").if).toContain("steps.save-session.outcome == 'success'");
+  // A failed publication skips the cache save, so drafts must still be released from the runner and the session copy.
+  expect(step("Mark forked PRs ready").if).toBe("always() && env.SKIP != 'true'");
 });
 
 for (const failed of ["Publish check run", "Publish other commit verdicts", "Publish PR review", ""]) {
@@ -174,4 +175,17 @@ esac
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("Could not refresh PR #7 before publication.");
   expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe("success");
+});
+
+test("a failed publication still releases the drafted fix PRs", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
+  writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\n[ "$3" != "https://github.com/owner/repo/pull/9" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  const result = run("Mark forked PRs ready", setup);
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
+  // The URL that could not be marked ready stays for the retry that restores this session.
+  expect(readFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
 });
