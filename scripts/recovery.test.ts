@@ -80,6 +80,31 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Mark forked PRs ready").if).toBe("always()");
 });
 
+test("snapshot cleanup preserves other refs and waits for the saved snapshot", () => {
+  for (const ref of ["refs/heads/main", "refs/pull/7/merge", "refs/heads/release+next", "refs/heads/release&next", "refs/heads/release#next"]) {
+    for (const visible of [true, false]) {
+      const setup = fixture(), prefix = "code-review-default-pr-7:", key = `${prefix}12-1`;
+      const caches = [{ key: `${prefix}10-1`, ref }, { key: `${prefix}11-1`, ref: "refs/heads/other" }];
+      if (visible) caches.push({ key, ref });
+      writeFileSync(join(setup.dir, "caches.json"), JSON.stringify(caches));
+      executable(setup.dir, "gh", `#!${process.execPath}
+const args = process.argv.slice(2), url = new URL(args.find(arg => arg.startsWith("repos/")), "https://api.github.com/");
+const path = process.env.RUNNER_TEMP + "/caches.json", caches = await Bun.file(path).json();
+if (args.includes("DELETE")) {
+  await Bun.write(path, JSON.stringify(caches.filter(cache => cache.key !== url.searchParams.get("key"))));
+} else {
+  const matches = caches.filter(cache => cache.key.startsWith(url.searchParams.get("key")) && (!url.searchParams.has("ref") || cache.ref === url.searchParams.get("ref")));
+  const result = Bun.spawnSync(["jq", "-r", args[args.indexOf("--jq") + 1]], { stdin: Buffer.from(JSON.stringify({ actions_caches: matches })) });
+  process.stdout.write(result.stdout);
+  process.exit(result.exitCode);
+}
+`);
+      expect(run("Drop older session snapshots", setup, { MODEL_NAME: "default", SESSION_KEY: "pr-7", KEY: key, GITHUB_REF: ref }).exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(join(setup.dir, "caches.json"), "utf8"))).toEqual(visible ? caches.slice(1) : caches);
+    }
+  }
+});
+
 for (const failed of ["Publish check run", "Publish other commit verdicts", "Publish PR review", ""]) {
   test(`publication ${failed ? `failure in ${failed} stays replayable` : "success checkpoints consumed activity"}`, () => {
     const setup = fixture();

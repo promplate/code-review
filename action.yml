@@ -637,7 +637,9 @@ runs:
         KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
       run: |
         # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&per_page=100" \
+        # Caches are scoped to their ref; deleting another ref's snapshot would leave that trigger without a session.
+        ref=$(jq -rn 'env.GITHUB_REF | @uri')
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&ref=$ref&per_page=100" \
           --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
           | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
 
