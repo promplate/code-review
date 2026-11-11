@@ -15,6 +15,14 @@ def json: def hstr: tojson | "\u001b[32m\(.)\u001b[0m";
   else "\u001b[90mnull\u001b[0m" end;
 # A result that is JSON gets the same colouring; anything else stays grey.
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
+# Item titles are data too; break command markers there and suppress commands while printing their bodies.
+def fold($title; $body):
+  ($body | gsub("\r"; "")) as $out
+  | "::group::\($title | gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​"))"
+    + (if $out == "" then ""
+       elif $out | test("##\\[|::") then "\n::stop-commands::\($stop)\n" + $out + "\n::\($stop)::"
+       else "\n" + $out end)
+    + "\n::endgroup::";
 # The settled verdict is one JSON record, marked by its conclusion so it does not read as more prose.
 def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else . end;
 fromjson? // {type: "error", message: .}
@@ -49,27 +57,20 @@ fromjson? // {type: "error", message: .}
   # A file edit folds its paths; the event carries the patch status, not the diff.
   elif .type == "item.completed" and .item.type == "file_change" then
     (.item.changes // [] | map("\(.kind) \(.path)")) as $changes
-    | ("::group::\(if .item.status == "failed" then "\u001b[31m" else "" end)edit \(if ($changes | length) > 4 then "\($changes | length) files" else ($changes | join(", ")) end)\(if .item.status == "failed" then "\u001b[0m" else "" end)"
-      + (if ($changes | length) == 0 then "" else "\n" + ($changes | join("\n") | dim) end)
-      + "\n::endgroup::")
+    | fold("\(if .item.status == "failed" then "\u001b[31m" else "" end)edit \(if ($changes | length) > 4 then "\($changes | length) files" else ($changes | join(", ")) end)\(if .item.status == "failed" then "\u001b[0m" else "" end)";
+      if ($changes | length) == 0 then "" else ($changes | join("\n") | dim) end)
   # A search folds its query and results; the other actions name their target instead.
   elif .type == "item.completed" and .item.type == "web_search" then
     .item as $search
     | (if $search.action.type == "open_page" then "open \($search.action.url // "")"
        elif $search.action.type == "find_in_page" then "find \($search.action.pattern // "") in \($search.action.url // "")"
        else "search \($search.query // "")" end) as $title
-    | ("::group::\($title)"
-      + (if (($search.results // []) | length) == 0 then "" else "\n" + ($search.results | json) end)
-      + "\n::endgroup::")
+    | fold($title; if (($search.results // []) | length) == 0 then "" else ($search.results | json) end)
   # A to-do list folds as one checklist at the end of the turn.
   elif .type == "item.completed" and .item.type == "todo_list" then
-    ("::group::todo"
-      + (if ((.item.items // []) | length) == 0 then "" else "\n" + (.item.items | map("- [\(if .completed then "x" else " " end)] \(.text)") | join("\n") | dim) end)
-      + "\n::endgroup::")
+    fold("todo"; if ((.item.items // []) | length) == 0 then "" else (.item.items | map("- [\(if .completed then "x" else " " end)] \(.text)") | join("\n") | dim) end)
   elif .type == "item.completed" and .item.type == "collab_tool_call" then
-    ("::group::collab \(.item.tool)"
-      + (if .item.prompt == null then "" else "\n" + (.item.prompt | gsub("\r"; "") | dim) end)
-      + "\n::endgroup::")
+    fold("collab \(.item.tool)"; if .item.prompt == null then "" else (.item.prompt | gsub("\r"; "") | dim) end)
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
