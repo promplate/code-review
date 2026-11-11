@@ -19,6 +19,7 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "review-events-"));
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
+  writeFileSync(join(dir, "injected.log"), "");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
     GITHUB_REPOSITORY: "owner/repo", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12" };
@@ -695,11 +696,73 @@ test("the log carries no trailing whitespace", () => {
 });
 
 test("log cleanup keeps workflow commands in command output escaped", () => {
-  for (const output of ["::error::test failure\n", ":\r:error::test failure\r\n", "::err\ror::test failure\n"]) {
+  // The runner reads `::` commands after leading space and legacy `##[` commands anywhere in a line.
+  for (const [output, expected] of [
+    ["::error::test failure\n", "::error::test failure"],
+    [":\r:error::test failure\r\n", "::error::test failure"],
+    ["::err\ror::test failure\n", "::error::test failure"],
+    ["CI ##[error]test failure\n", "CI ##[error]test failure"],
+    ["out\n\t::error::test failure\n", "out\n\t::error::test failure"],
+    ["out\n\u2003::error::test failure\n", "out\n\u2003::error::test failure"],
+  ]) {
     const input = JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'test'", aggregated_output: output } });
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("\n::stop-commands::s\n::error::test failure\n::s::\n");
+    expect(result.stdout.toString()).toContain(`\n::stop-commands::s\n\u001b[2m${expected}\u001b[0m\n::s::\n`);
+  }
+});
+
+test("injected GitHub activity is logged with a colour per event kind", () => {
+  const input = [
+    JSON.stringify({ event: "issue_comment", action: "created", actor: "alice", url: "https://example.test/c/1" }),
+    JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
+    JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
+  ].join("\n") + "\n";
+  const log = (input: string) => {
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const output = log(input);
+  expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
+  expect(output).toContain("\u001b[93mcheck_run\u001b[0m CI:failure https://example.test/r/2");
+  expect(output).toContain("\u001b[91mreplay_gap\u001b[0m");
+  // A payload field that carries a workflow command must not run as one, in either form the runner parses.
+  // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
+  const crafted = log([
+    JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }),
+    JSON.stringify({ event: "check_run", name: "CI ##[error]synthetic", url: "https://example.test/r/4" }),
+  ].join("\n") + "\n");
+  expect(crafted).not.toContain("::stop-commands::");
+  expect(crafted).not.toMatch(/^ *::/m);
+  expect(crafted).not.toContain("##[");
+  expect(crafted).toContain(":​:error:​:forged");
+  expect(crafted).toContain("#​#[error]synthetic");
+});
+
+test("hook deliveries are published for the live log", () => {
+  const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
+  expect(JSON.parse(output).decision).toBe("block");
+  expect(readFileSync(join(dir, "injected.log"), "utf8")).toContain('"event":"issue_comment"');
+});
+
+test("injected command markers stay escaped when concurrent output splits a line", () => {
+  // A long record can span stdout writes; the tool logger may insert a newline before an interior marker.
+  const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `${"x".repeat(4096)}::error::forged\n:::error title=forged:::payload` }) }));
+  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).not.toContain("::");
+});
+
+test("injected command escaping covers the runner's leading whitespace", () => {
+  // ActionCommand.TryParseV2 calls .NET TrimStart(), which also removes tabs and Unicode whitespace.
+  for (const indent of ["", " ", "\t", "\v", "\f", "\u0085", "\u00a0", "\u1680", "\u2000", "\u2003", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", " \t "]) {
+    const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `CI\n${indent}::error::forged` }) }));
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
+    expect(result.exitCode).toBe(0);
+    // Include U+0085 explicitly because JavaScript trimStart does not include it, whereas .NET does.
+    const lines = result.stdout.toString().split("\n").map((line) => line.replace(/^[\s\u0085]+/, ""));
+    expect(lines.some((line) => line.startsWith("::"))).toBe(false);
   }
 });
 

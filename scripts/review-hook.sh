@@ -47,9 +47,11 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
   # Cursor syntax belongs to the broker; consumers retain and return it unchanged.
-  ] | reduce .[] as $event ({seen: $seen, context: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] end)
+  ] | reduce .[] as $event ({seen: $seen, context: [], delivered: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] | .delivered += [$event.context] end)
     | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl") || exit 1
+# The exec stream never carries hook deliveries, so publish them for the live log the action tails. A log is not delivery.
+[ ! -f "$RUNNER_TEMP/injected.log" ] || jq -r '.delivered[] | tojson' <<< "$result" >> "$RUNNER_TEMP/injected.log" || true
 context=$(jq -r .context <<< "$result") || exit 1
 jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
