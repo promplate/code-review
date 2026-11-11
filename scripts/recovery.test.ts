@@ -236,3 +236,35 @@ esac
   expect(existsSync(join(setup.dir, "ready"))).toBe(false);
   expect(readFileSync(join(setup.dir, "forked-prs"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });
+
+test("draft release checks the exact snapshot with the job token and keeps the App token for readiness", () => {
+  for (const ref of ["refs/heads/main", "refs/heads/release+next", "refs/heads/release&next", "refs/heads/release#next"]) {
+    for (const visible of [true, false]) {
+      const setup = fixture(), key = `code-review-default-ref-${ref}:12-1`, url = "https://github.com/owner/repo/pull/8";
+      writeFileSync(join(setup.dir, "forked-prs"), `${url}\n`);
+      executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+      executable(setup.dir, "gh", `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === "api") {
+  if (process.env.GH_TOKEN !== "token") process.exit(1);
+  const url = new URL(args[1], "https://api.github.com/");
+  for (let i = 0; i < args.length; i++) if (args[i] === "-f") {
+    const field = args[++i], split = field.indexOf("=");
+    url.searchParams.append(field.slice(0, split), field.slice(split + 1));
+  }
+  const matches = url.searchParams.get("ref") === process.env.GITHUB_REF && url.searchParams.get("key") === process.env.KEY;
+  const actions_caches = matches && ${visible} ? [{ key: process.env.KEY }] : [{ key: process.env.KEY + "-other" }];
+  const result = Bun.spawnSync(["jq", "-r", args[args.indexOf("--jq") + 1]], { stdin: Buffer.from(JSON.stringify({ actions_caches })) });
+  process.stdout.write(result.stdout);
+  process.exit(result.exitCode);
+} else if (args[0] === "pr" && args[1] === "ready") {
+  if (process.env.GH_TOKEN) process.exit(1);
+  await Bun.write(process.env.RUNNER_TEMP + "/ready", args[2] + "\\n");
+} else process.exit(1);
+`);
+      expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success", GH_TOKEN: "", KEY: key, GITHUB_REF: ref }).exitCode).toBe(0);
+      expect(existsSync(join(setup.dir, "ready"))).toBe(visible);
+      if (visible) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+    }
+  }
+});
