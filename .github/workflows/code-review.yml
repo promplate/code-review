@@ -18,18 +18,20 @@ permissions:
   id-token: write
 
 concurrency:
-  # Comments and reviews from bots cannot steer a review, yet their runs would evict a review that waits for a runner when queued after it.
-  group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}${{ github.event.sender.type == 'Bot' && github.event_name != 'pull_request_target' && format('-{0}', github.run_id) || '' }}
+  # Keep active reviews consuming SSE and preserve every queued trigger.
+  group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  queue: max
 
 jobs:
   review:
     # Same-repository PRs, plus pushes to main so merged work is reviewed too; the App's own PRs wait until they leave draft.
     if: >
       github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-      || (github.event.issue.pull_request != null && github.event.issue.state == 'open' && github.event.sender.type != 'Bot')
+      || (github.event.issue.pull_request != null && github.event.issue.state == 'open')
       || (github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
-          && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')
-          && (github.event_name == 'pull_request_target' || github.event.sender.type != 'Bot'))
+          && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot'))
+    # Low-trust events such as pull_request_target cannot save caches by default, which would drop every session snapshot.
+    cache-mode: write
     runs-on: ubuntu-latest
     steps:
       - uses: promplate/code-review@main

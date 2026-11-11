@@ -59,17 +59,18 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      id-token: write
 
    concurrency:
-     # Comments and reviews from bots cannot steer a review, yet their runs would evict a review that waits for a runner when queued after it.
-     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}${{ endsWith(github.event.sender.login, '[bot]') && github.event_name != 'pull_request_target' && github.event_name != 'repository_dispatch' && format('-{0}', github.run_id) || '' }}
+     # Keep active reviews consuming SSE and preserve every queued trigger.
+     group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
+     queue: max
 
    jobs:
      review:
        # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
        if: >
-         (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.issue.state == 'open' && github.event.sender.type != 'Bot')
-         || (github.event_name != 'issue_comment' && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
-             && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')
-             && (github.event_name == 'pull_request_target' || github.event.sender.type != 'Bot'))
+         (github.event.issue.pull_request != null && github.event.issue.state == 'open')
+         || (github.event.issue.pull_request == null && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
+             && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot'))
+       # Low-trust events such as pull_request_target and issue_comment cannot save caches by default, which would drop every session snapshot.
        cache-mode: write
        runs-on: ubuntu-latest
        steps:
@@ -84,7 +85,7 @@ Comments and reviews wake a new review by starting a workflow run themselves, th
 Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
-- A run started by the App's own comment or review skips, and sits in its own concurrency group, so it can never cancel a review that is waiting for a runner.
+- All triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates. The action skips its own activity and unauthorized commenters.
 - While a review runs, its SSE subscription takes the comments live.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 - Before merging, the review waits for the head's checks except its own and those of other runs of this workflow, whose queued jobs could never finish behind the waiting job. That lookup needs `actions: read` on the job token; without it the wait falls back to every check.
@@ -110,10 +111,12 @@ on:
 
 concurrency:
   group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
+  queue: max
 
 jobs:
   review:
     if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository && (...)
+    cache-mode: write
 ```
 
 A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently. A push that lands only trees this session already reviewed as PR heads, as a squash or rebase merge does, is skipped: its head repeats that verdict as its own check run and only advances the session's reviewed head.
