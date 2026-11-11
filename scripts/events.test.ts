@@ -705,11 +705,16 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
   const { env } = fixture();
-  const body = step("Configure codex").run.match(/<<EOF\n([\s\S]*?)\nEOF/)![1];
-  const result = Bun.spawnSync(["bash", "-ec", `cat <<EOF\n${body}\nEOF`], { env: { ...env, GITHUB_ACTION_PATH: root } });
-  expect(result.exitCode).toBe(0);
-  const config = Bun.TOML.parse(result.stdout.toString()) as any;
-  expect(config.mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\nfi\n/)![0];
+  const run = (config: string) => {
+    const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, GITHUB_ACTION_PATH: root } });
+    expect(result.exitCode).toBe(0);
+    return Bun.TOML.parse(readFileSync(join(env.CODEX_HOME, "config.toml"), "utf8")) as any;
+  };
+  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+  // A supplied config that already names the server keeps its own definition instead of a duplicate table.
+  expect(run('[mcp_servers.gh]\ncommand = "custom"\n').mcp_servers.gh).toEqual({ command: "custom" });
+  expect(run('mcp_servers.gh = { command = "custom" }\n').mcp_servers.gh).toEqual({ command: "custom" });
 });
 
 test("each run reports the tokens every turn spent", () => {

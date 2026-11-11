@@ -307,11 +307,12 @@ runs:
         [[hooks.Stop.hooks]]
         type = "command"
         command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
-        # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
-        [mcp_servers.gh]
-        command = "gh-mcp"
-        env_vars = ["GH_CONFIG_DIR"]
         EOF
+        # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
+        # A codex-config that already defines this server would turn a second table into a parse error that stops codex from starting.
+        if ! grep -Eq '^\[mcp_servers\.gh\]|^mcp_servers\.gh *[.=]' "$CODEX_HOME/config.toml"; then
+          printf '\n[mcp_servers.gh]\ncommand = "gh-mcp"\nenv_vars = ["GH_CONFIG_DIR"]\n' >> "$CODEX_HOME/config.toml"
+        fi
         # Trace to Langfuse when the runner or the job provides its keys.
         if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
           curl -fsSL --retry 5 https://registry.npmjs.org/@langfuse/codex-observability-plugin/-/codex-observability-plugin-0.4.3.tgz | tar xz -C "$RUNNER_TEMP"
