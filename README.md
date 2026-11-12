@@ -142,9 +142,7 @@ on:
 
 jobs:
   review:
-    if: >
-      needs.authorize.outputs.writer == 'true'
-      && (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch)
+    if: needs.authorize.outputs.writer == 'true' && (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch)
 ```
 
 A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently. A push that lands only trees this session already reviewed as PR heads, as a squash or rebase merge does, is skipped: its head repeats that verdict as its own check run and only advances the session's reviewed head.
