@@ -92,20 +92,20 @@ Comments and reviews wake a new review by starting a workflow run themselves, th
 
 Every run sharing a session must use the same serialized concurrency group.
 
-Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
+Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and changes between runs are reconciled by reading current GitHub state:
 
 - Only people with write access and other apps' review activity can steer a review; other apps' ordinary comments are ignored, as are the App's own.
 - Editing a pull request's title or description starts a review of the new text, and a running review receives it through the same stream.
 - All authorized triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates; unauthorized discussion events never take a queue slot, so they cannot cancel a new head's review. A run still authorizing or waiting for the group has consumed no head, so it does not make a newer run skip.
-- While a review runs, its SSE subscription takes the comments live; a synchronous tool hook records them before the model's next message, and a blocked stop catches whatever arrives after the last tool call.
+- While a review runs, its SSE subscription takes the comments live; an asynchronous tool hook records them before the model's next message, and a blocked stop catches whatever arrives after the last tool call.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 - Before merging, the review waits for the head's checks except its own and those of other runs of this workflow, whose queued jobs could never finish behind the waiting job. That lookup needs `actions: read` on the job token; without it the wait falls back to every check.
 
-The broker's SSE cursor includes its storage epoch and sequence; event identity is separate. The tool and stop hooks record consumed context locally. The action checkpoints it with the review session after publishing the checks, PR review and reactions successfully. Queued runs fetch the current PR head and skip consumed activity only when that head also has a saved publication checkpoint. Older caches without this checkpoint are reviewed once more. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Older sessions without sequence checkpoints replay the retained window and dedupe it locally.
+The tool and stop hooks record consumed context locally. The action checkpoints these receipts with the review session after publishing the checks, PR review and reactions successfully. Queued runs fetch the current PR head and skip consumed activity only when that head also has a saved publication checkpoint. Older caches without this checkpoint are reviewed once more. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Receipt deduplication is independent of the transport: the action neither saves a replay cursor nor sends `Last-Event-ID`.
 
-The broker must return HTTP 200 with `Content-Type: text/event-stream`. The subscription retries failures with jittered backoff up to 30 seconds and exposes interruptions to the review; an HTML error page or a timeout before response headers cannot count as a healthy stream. Stopping the subscription also stops its curl, parser and retry timer.
+The broker must return HTTP 200 with `Content-Type: text/event-stream`. The subscription holds one connection open until it ends, then retries with jittered backoff up to 30 seconds; an HTML error page or a timeout before response headers cannot count as a healthy stream. Stopping the subscription also stops its curl, parser and retry timer.
 
-History is bounded. When continuity cannot be established, a `replay_gap` notification asks the review to reconcile current state, CI and discussion through GitHub, checking commenters' write access before following instructions. This requests recovery; it does not reconstruct deleted history or prove the model completed those reads. A crash after writing context can replay it, and a thread-triggered run can see both its trigger and broker copy; delivery is not exactly once.
+Each run reads current state from GitHub. A disconnect (including a clean EOF) or a stopped subscriber sends `subscription_recovery` context, and a successful reconnect requests another read to cover the whole outage. The review reconciles current state, CI and discussion through GitHub, checking commenters' write access before following instructions. This does not reconstruct deleted comments or transient CI states, and the notification does not prove the model completed those reads. Events missed while disconnected have no replay guarantee. A crash after writing context can repeat it, and a thread-triggered run can see both its trigger and broker copy; delivery is not exactly once.
 
 A head pushed after Codex exits is handled by a subsequent workflow run. Publication checks the current PR head and warns when the verdict omits it. Pushes that start no workflow still need an external wake-up trigger to guarantee a follow-up review.
 
@@ -153,7 +153,7 @@ A plain issue is not a review: the agent works on the default branch, keeps one 
 
 ## Runtime
 
-The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.
+The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. The SSE subscriber requires Bash 5.1 or newer to monitor curl and its parser together. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.
 
 ## Options
 

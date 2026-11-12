@@ -1,13 +1,13 @@
 # Formats the GitHub activity the Stop hook injects into the review, which `codex exec --json` never carries.
 # Colours follow meaning, not event names: green passed, red failed, yellow finished without a verdict (skipped,
 # neutral, cancelled), cyan is something a person wrote, blue is the branch or pull request moving, and magenta is
-# the broker warning that history is incomplete.
+# an interrupted subscription requesting reconciliation.
 def ci_color: (.conclusion // .state // "")
   | if . == "success" then 92
     elif IN("failure", "error", "timed_out", "action_required", "startup_failure") then 91
     else 93 end;
 def event_color:
-  if .event == "replay_gap" then 95
+  if .event == "subscription_recovery" then 95
   elif (.event | IN("issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "commit_comment")) then 96
   elif (.event | IN("push", "pull_request")) then 94
   elif (.event | IN("check_run", "workflow_run", "status")) then ci_color

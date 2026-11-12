@@ -166,7 +166,6 @@ esac
 `);
     writeFileSync(path("review.json"), JSON.stringify({ conclusion: "success", summary: "Reviewed", commits: [{ sha: "head", conclusion: "success" }, { sha: "child", conclusion: "success" }], annotations: [] }));
     writeFileSync(path("injected-deliveries.log"), delivery + "\n");
-    writeFileSync(path("injected-cursor"), "seq:epoch:2\n");
     let completed = true;
     for (const stage of ["Publish check run", "Publish other commit verdicts", "Publish PR review"]) {
       const result = run(stage, setup, { STAGE: stage, FAIL_STAGE: failed });
@@ -177,7 +176,7 @@ esac
     expect(existsSync(path("sessions/.github-deliveries.json"))).toBe(!failed);
     expect(gate(setup).includes("SKIP=true")).toBe(!failed);
     if (!failed) {
-      expect(readFileSync(path("sessions/.github-cursor"), "utf8")).toBe("seq:epoch:2\n");
+      expect(existsSync(path("sessions/.github-cursor"))).toBe(false);
       expect(gate(setup, { HEAD_SHA: "new" })).not.toContain("SKIP=true");
     }
   });
