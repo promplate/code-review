@@ -1,6 +1,16 @@
 # Formats the GitHub activity the Stop hook injects into the review, which `codex exec --json` never carries.
-# One bright colour per kind of event, so a reader can skim what arrived between turns.
-def event_color: {"push": 92, "pull_request": 91, "issue_comment": 96, "pull_request_review": 95, "pull_request_review_comment": 96, "pull_request_review_thread": 94, "check_run": 93, "workflow_run": 93, "status": 93, "commit_comment": 94, "replay_gap": 91}[.event] // 97;
+# Colours follow meaning, not event names: red, yellow and green are CI outcomes, cyan is something a person wrote,
+# blue is the branch or pull request moving, and magenta is the broker warning that history is incomplete.
+def ci_color: (.conclusion // .state // "")
+  | if . == "success" then 92
+    elif IN("failure", "error", "timed_out", "cancelled", "startup_failure", "action_required") then 91
+    else 93 end;
+def event_color:
+  if .event == "replay_gap" then 95
+  elif (.event | IN("issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "commit_comment")) then 96
+  elif (.event | IN("push", "pull_request")) then 94
+  elif (.event | IN("check_run", "workflow_run", "status")) then ci_color
+  else 97 end;
 def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action else "" end)\u001b[0m"
   + (if .actor then " " + .actor else "" end) + (if .name then " " + .name else "" end)
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
