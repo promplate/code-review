@@ -65,12 +65,14 @@ test("identity and seeding follow the webhook event, not the workflow event", ()
 });
 
 test("successive edits on an unchanged head get distinct activity ids", () => {
-  const idFor = (body: string) => {
-    const setup = fixture({ action: "edited", sender: writer, number: 7, pull_request: { number: 7, title: "Title", body, head: { sha: "head" } } });
+  const idFor = (body: string, updated: string) => {
+    const setup = fixture({ action: "edited", sender: writer, number: 7, pull_request: { number: 7, title: "Title", body, updated_at: updated, head: { sha: "head" } } });
     return /ACTIVITY_ID=(\w+)/.exec(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" }))![1];
   };
-  expect(idFor("First body")).not.toBe(idFor("Second body"));
-  expect(idFor("First body")).toBe(idFor("First body"));
+  expect(idFor("A", "T1")).not.toBe(idFor("B", "T2"));
+  // Restoring earlier text is still a later edit, not the original activity.
+  expect(idFor("A", "T3")).not.toBe(idFor("A", "T1"));
+  expect(idFor("A", "T1")).toBe(idFor("A", "T1"));
 });
 
 test("a synchronize retry requires a published checkpoint, including for older caches", () => {

@@ -120,8 +120,9 @@ runs:
         [ "$event" != pull_request_target ] || event=pull_request
         echo "EVENT_NAME=$event" >> "$GITHUB_ENV"
         key=$(EVENT_NAME=$event jq -r '[env.EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // .client_payload.sha // ""), (.comment.updated_at // .review.submitted_at
-          # Successive edits on an unchanged head carry different text, which makes their activity identities distinct.
-          // (if env.EVENT_NAME == "pull_request" and .action == "edited" then ((.pull_request.title // "") + "\n" + (.pull_request.body // "")) else null end)
+          # Successive edits on an unchanged head differ by the text they leave behind and when they landed, which keeps
+          # their activity identities distinct even when an edit restores earlier text.
+          // (if env.EVENT_NAME == "pull_request" and .action == "edited" then ((.pull_request.title // "") + "\n" + (.pull_request.body // "") + "\n" + (.pull_request.updated_at // "")) else null end)
           // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
         id=$(printf %s "$key" | sha256sum | cut -c1-40)
         # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
