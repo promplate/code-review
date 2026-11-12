@@ -139,6 +139,20 @@ esac
   });
 }
 
+test("an approval carries the verdict summary as its review body", () => {
+  const setup = fixture();
+  executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *'/reviews?'*|*'/files?'*) printf '[]\n' ;;
+  *) cat > /dev/null; printf '{}\n' ;;
+esac
+`);
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "success", summary: "Checked the transform and its fallback.", annotations: [] }));
+  expect(run("Publish PR review", setup).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "pr-review.json"), "utf8"))).toEqual({ event: "APPROVE", body: "Checked the transform and its fallback." });
+});
+
 test("cache upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
