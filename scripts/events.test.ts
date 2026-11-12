@@ -283,6 +283,12 @@ test("an edited pull request title and body reach the review", () => {
   expect(output).toContain('\\"body\\":\\"New description\\"');
 });
 
+test.each([null, ""])("clearing a PR description preserves an explicit empty body (%j)", (body) => {
+  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
+  const activity = JSON.parse(JSON.parse(output).reason.split("\n")[1]);
+  expect(activity.body).toBe("");
+});
+
 test("a truncated edit says so instead of hiding the change", () => {
   const body = "x".repeat(2000) + "TAIL";
   const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));

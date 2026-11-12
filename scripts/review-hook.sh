@@ -66,7 +66,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end),
         # An edited title or description is the change itself; other pull request events do not need the PR text again.
         title: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),
-        body: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.body | clip(2000)) else null end),
+        body: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.body // "" | clip(2000)) else null end),
         comment: $body.comment.body, comment_id: $body.comment.id, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
