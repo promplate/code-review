@@ -265,6 +265,18 @@ exec '${realMv}' "$@"
   expect(stop.stdout.toString()).toBe("");
 });
 
+test("activity links drop this repository's prefix and keep external ones", () => {
+  const log = [
+    frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "inside", html_url: "https://github.com/owner/repo/pull/7#issuecomment-1" } }, "inside"),
+    frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "other repo", html_url: "https://github.com/owner/repo2/pull/7#issuecomment-2" } }, "other"),
+    frame("check_run", { action: "completed", check_run: check({ details_url: "https://ci.example.test/run/1" }) }, "external"),
+  ].join("");
+  const { output } = runHook(log);
+  expect(output).toContain('\\"url\\":\\"/pull/7#issuecomment-1\\"');
+  expect(output).toContain('\\"url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
+  expect(output).toContain('\\"url\\":\\"https://ci.example.test/run/1\\"');
+});
+
 test("a failed context write leaves the event available for the next Stop", async () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true, "seq:epoch:9"));
