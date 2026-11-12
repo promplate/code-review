@@ -139,18 +139,29 @@ esac
   });
 }
 
-test("an approval carries the verdict summary as its review body", () => {
-  const setup = fixture();
-  executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
-  executable(setup.dir, "gh", `#!/bin/sh
+test("a success verdict rides in the submitted review body, including on the App's own PRs", () => {
+  const summary = "Checked the transform and its fallback.";
+  const earlier = [{ user: { login: "reviewer[bot]" }, state: "COMMENTED", body: summary }];
+  for (const [author, reviews, expected] of [
+    ["writer", [], { event: "APPROVE", body: summary }],
+    ["reviewer[bot]", [], { event: "COMMENT", body: summary }],
+    ["reviewer[bot]", earlier, null],
+  ] as const) {
+    const setup = fixture();
+    executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+    executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *'/reviews?'*|*'/files?'*) printf '[]\n' ;;
-  *) cat > /dev/null; printf '{}\n' ;;
+  *'/reviews?'*) printf '%s\\n' '${JSON.stringify(reviews)}' ;;
+  *'/files?'*) printf '[]\\n' ;;
+  *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
+  *) cat > /dev/null; printf '{}\\n' ;;
 esac
 `);
-  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "success", summary: "Checked the transform and its fallback.", annotations: [] }));
-  expect(run("Publish PR review", setup).exitCode).toBe(0);
-  expect(JSON.parse(readFileSync(join(setup.dir, "pr-review.json"), "utf8"))).toEqual({ event: "APPROVE", body: "Checked the transform and its fallback." });
+    writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "success", summary, annotations: [] }));
+    expect(run("Publish PR review", setup, { PR_AUTHOR: author }).exitCode).toBe(0);
+    const posted = existsSync(join(setup.dir, "posted.json")) ? JSON.parse(readFileSync(join(setup.dir, "posted.json"), "utf8")) : null;
+    expect(posted).toEqual(expected);
+  }
 });
 
 test("cache upload failure restores the previous checkpoint and replays newer activity", () => {
