@@ -32,8 +32,11 @@ def fold($title; $body):
        elif $out | test("##\\[|::") then "\n::stop-commands::\($stop)\n" + $out + "\n::\($stop)::"
        else "\n" + $out end)
     + "\n::endgroup::";
+# Agent prose is the one thing a reviewer has to read closely, so bold blue lifts it out of the grey tool output around it.
+def prose: gsub("\r"; "") | gsub("(?m)[ \t]+$"; "")
+  | if . == "" then "" else split("\n") | map(if . == "" then . else "\u001b[1;34m\(.)\u001b[0m" end) | join("\n") end;
 # The settled verdict is one JSON record, marked by its conclusion so it does not read as more prose.
-def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else . end;
+def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else prose end;
 fromjson? // {type: "error", message: .}
 | if .type == "error" then .message
   elif .type == "turn.failed" then .error.message

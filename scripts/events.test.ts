@@ -1015,8 +1015,9 @@ test("the verdict is coloured by its conclusion", () => {
   const verdict = (conclusion: string) => JSON.stringify({ conclusion, summary: "s", commits: [] });
   expect(log(verdict("success"))).toContain(`\u001b[1;32m✓\u001b[0m {\u001b[36m"conclusion"\u001b[0m:\u001b[32m"success"\u001b[0m`);
   expect(log(verdict("failure"))).toContain(`\u001b[1;31m✗\u001b[0m {\u001b[36m"conclusion"\u001b[0m:\u001b[32m"failure"\u001b[0m`);
-  // Prose and JSON that is not a verdict stay as written.
-  for (const text of ["Working through the diff.", '{"hello":"world"}']) expect(log(text)).toContain(`${text}\n`);
+  // Prose and JSON that is not a verdict stay as written, lifted out of the surrounding tool output.
+  for (const text of ["Working through the diff.", '{"hello":"world"}']) expect(log(text)).toContain(`\u001b[1;34m${text}\u001b[0m\n`);
+  expect(log(verdict("success"))).not.toContain("\u001b[1;34m");
 });
 
 test("the log carries no trailing whitespace", () => {
@@ -1028,7 +1029,7 @@ test("the log carries no trailing whitespace", () => {
   const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
   const output = result.stdout.toString();
-  expect(output).toContain("first line\n\n\nsecond line");
+  expect(output.replace(/\u001b\[[0-9;]*m/g, "")).toContain("first line\n\n\nsecond line");
   expect(output).toContain("raw stderr line with trailing spaces\n");
   expect(output).not.toMatch(/[ \t]+\n/);
   expect(output.replace(/\u001b\[[0-9;]*m/g, "")).not.toMatch(/[ \t]+\n/);
@@ -1053,10 +1054,16 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
   }
 });
 
-test("injected GitHub activity is logged with a colour per event kind", () => {
+test("injected GitHub activity is logged with a colour per meaning", () => {
   const input = [
     JSON.stringify({ event: "issue_comment", action: "created", actor: "alice", url: "https://example.test/c/1" }),
+    JSON.stringify({ event: "pull_request_review_thread", action: "resolved", url: "https://example.test/t/9" }),
     JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
+    JSON.stringify({ event: "check_run", name: "CI", conclusion: "success", url: "https://example.test/r/5" }),
+    JSON.stringify({ event: "workflow_run", name: "CI", conclusion: null, url: "https://example.test/r/6" }),
+    JSON.stringify({ event: "status", state: "failure", url: "https://example.test/s/7" }),
+    JSON.stringify({ event: "push", commit: "abc", url: "https://example.test/p/8" }),
+    JSON.stringify({ event: "pull_request", action: "synchronize", url: "https://example.test/p/9" }),
     JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
   ].join("\n") + "\n";
   const log = (input: string) => {
@@ -1065,9 +1072,19 @@ test("injected GitHub activity is logged with a colour per event kind", () => {
     return result.stdout.toString();
   };
   const output = log(input);
+  // Cyan: something a person wrote.
   expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
-  expect(output).toContain("\u001b[93mcheck_run\u001b[0m CI:failure https://example.test/r/2");
-  expect(output).toContain("\u001b[91mreplay_gap\u001b[0m");
+  expect(output).toContain("\u001b[96mpull_request_review_thread/resolved\u001b[0m");
+  // Green, red and yellow: how CI ended.
+  expect(output).toContain("\u001b[91mcheck_run\u001b[0m CI:failure https://example.test/r/2");
+  expect(output).toContain("\u001b[92mcheck_run\u001b[0m CI:success https://example.test/r/5");
+  expect(output).toContain("\u001b[93mworkflow_run\u001b[0m CI https://example.test/r/6");
+  expect(output).toContain("\u001b[91mstatus\u001b[0m:failure https://example.test/s/7");
+  // Blue: the branch or pull request moved.
+  expect(output).toContain("\u001b[94mpush\u001b[0m");
+  expect(output).toContain("\u001b[94mpull_request/synchronize\u001b[0m");
+  // Magenta: the broker cannot promise a complete history.
+  expect(output).toContain("\u001b[95mreplay_gap\u001b[0m");
   // A payload field that carries a workflow command must not run as one, in either form the runner parses.
   // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
   const crafted = log([
