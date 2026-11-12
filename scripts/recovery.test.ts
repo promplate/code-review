@@ -105,6 +105,32 @@ if (args.includes("DELETE")) {
   }
 });
 
+test("hook receipts survive publication and restore from the cached JSON format", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify(["cached-event"]));
+  const frame = (id: string, body: string) => `data: ${JSON.stringify({ event: "issue_comment", delivery: id, writer: true, body: JSON.stringify({ ...comment, comment: { body } }) })}\n\n`;
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("cached-event", "already handled") + frame(delivery, "fresh activity"));
+  const review = step("Run codex review").run;
+  const restore = review.slice(review.indexOf("# Keep consumption receipts"), review.indexOf('if [ "$AGENT" = true ]; then'));
+  const initialize = () => Bun.spawnSync(["bash", "-ec", restore], { env: setup.env });
+  expect(initialize().exitCode).toBe(0);
+  const hook = () => Bun.spawnSync(["bash", join(root, "scripts/review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+  const output = hook();
+  expect(output.exitCode).toBe(0);
+  expect(output.stdout.toString()).not.toContain("already handled");
+  expect(output.stdout.toString()).toContain("fresh activity");
+  // Parallel rounds may append duplicate receipts; the cache retains distinct deliveries.
+  const receipts = join(setup.dir, "injected-deliveries.log");
+  writeFileSync(receipts, readFileSync(receipts, "utf8") + delivery + "\n");
+  expect(run("Checkpoint published review", setup).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "utf8"))).toEqual(["cached-event", delivery]);
+  expect(gate(setup)).toContain("SKIP=true");
+  rmSync(receipts);
+  expect(initialize().exitCode).toBe(0);
+  expect(hook().stdout.toString()).toBe("");
+});
+
 for (const failed of ["Publish check run", "Publish other commit verdicts", "Publish PR review", ""]) {
   test(`publication ${failed ? `failure in ${failed} stays replayable` : "success checkpoints consumed activity"}`, () => {
     const setup = fixture();
@@ -121,7 +147,7 @@ case "$*" in
 esac
 `);
     writeFileSync(path("review.json"), JSON.stringify({ conclusion: "success", summary: "Reviewed", commits: [{ sha: "head", conclusion: "success" }, { sha: "child", conclusion: "success" }], annotations: [] }));
-    writeFileSync(path("injected-deliveries.json"), JSON.stringify([delivery]));
+    writeFileSync(path("injected-deliveries.log"), delivery + "\n");
     writeFileSync(path("injected-cursor"), "seq:epoch:2\n");
     let completed = true;
     for (const stage of ["Publish check run", "Publish other commit verdicts", "Publish PR review"]) {
@@ -170,7 +196,7 @@ test("cache upload failure restores the previous checkpoint and replays newer ac
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "old\n");
   cpSync(join(setup.dir, "sessions"), join(setup.dir, "saved"), { recursive: true });
-  writeFileSync(join(setup.dir, "injected-deliveries.json"), JSON.stringify([delivery]));
+  writeFileSync(join(setup.dir, "injected-deliveries.log"), delivery + "\n");
   expect(run("Checkpoint published review", setup).exitCode).toBe(0);
   expect(gate(setup)).toContain("SKIP=true");
   // A failed upload leaves the previous cache intact; a later runner restores only that snapshot.
@@ -182,7 +208,7 @@ test("cache upload failure restores the previous checkpoint and replays newer ac
 test("a handoff cannot checkpoint an intermediate verdict as the successor's annotated review", () => {
   const setup = fixture();
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "old\n");
-  writeFileSync(join(setup.dir, "injected-deliveries.json"), "[]");
+  writeFileSync(join(setup.dir, "injected-deliveries.log"), "");
   expect(run("Checkpoint published review", setup, { SUPERSEDED: "true" }).exitCode).toBe(0);
   expect(existsSync(join(setup.dir, "sessions/.github-published-head"))).toBe(false);
 });

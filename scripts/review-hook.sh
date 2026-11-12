@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
 input=$(cat)
-if jq -e '.hook_event_name == "PreToolUse"' <<< "$input" > /dev/null; then
-  # Agent runs post no check run, and a missing id would retry a 404 on every tool call.
-  [ -n "$CHECK_ID" ] || exit 0
-  # Four backticks keep fences inside commands and patches from closing the block early.
-  jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
-    | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
-    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
-  exit 0
-fi
-
-# PreToolUse additionalContext lands between parallel tool calls and their outputs, which strict providers reject, so deliver activity by blocking Stop.
-jq -e '.hook_event_name == "Stop"' <<< "$input" > /dev/null || exit 0
+event=$(jq -r '.hook_event_name // ""' <<< "$input") || exit 0
+case $event in
+  PreToolUse)
+    # A check run shows the command under review while it runs; delivery has its own hook so a slow PATCH cannot delay it.
+    if [ -n "${CHECK_ID:-}" ]; then
+      # Four backticks keep fences inside commands and patches from closing the block early.
+      jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
+        | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
+        | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
+    fi
+    exit 0 ;;
+  PostToolUse)
+    # A subagent's context never reaches the review, so only the root agent consumes shared activity.
+    [ -z "$(jq -r '.agent_id // empty' <<< "$input")" ] || exit 0 ;;
+  Stop) ;;
+  *) exit 0 ;;
+esac
 [ -f "$RUNNER_TEMP/sse.jsonl" ] || exit 0
-SEEN_FILE="$RUNNER_TEMP/injected-deliveries.json"
+# An unchanged stream carries nothing new; Stop always scans so a skipped or failed delivery still reaches the review.
+size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
+[ "$event" = Stop ] || [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
+# Receipts are append-only: parallel tool rounds cannot overwrite each other's deliveries, and a rare duplicate is preferable to a lost event.
+SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
-[ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
+[ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
   ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
@@ -49,21 +58,24 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
   # Cursor syntax belongs to the broker; consumers retain and return it unchanged.
-  ] | reduce .[] as $event ({seen: $seen, context: [], delivered: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] | .delivered += [$event.context] end)
+  ] | reduce .[] as $event ({seen: $seen, fresh: [], context: [], delivered: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .fresh += [$event.delivery] | .context += [$event.context | tojson] | .delivered += [$event.context] end)
     | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl") || exit 1
 # The exec stream never carries hook deliveries, so publish them for the live log the action tails. A log is not delivery.
 [ ! -f "$RUNNER_TEMP/injected.log" ] || jq -r '.delivered[] | tojson' <<< "$result" >> "$RUNNER_TEMP/injected.log" || true
 context=$(jq -r .context <<< "$result") || exit 1
-jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
-  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}' || exit 1
+  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" --arg event "$event" '
+    ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.") as $message
+    | if $event == "Stop" then {decision: "block", reason: $message} else {hookSpecificOutput: {hookEventName: $event, additionalContext: $message}} end' || exit 1
 fi
-# A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
-mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
+# A tool round's context is recorded before the model's next request and a blocked Stop continues the turn, so the output above is delivery; a crash may repeat an event but can never suppress an undelivered one.
+jq -r '.fresh[]' <<< "$result" >> "$SEEN_FILE" || exit 1
 # This comes from the exact snapshot above, including safely filtered events, never from the concurrently growing transport log.
 cursor=$(jq -r '.cursor // empty' <<< "$result") || exit 1
 if [ -n "$cursor" ]; then
-  printf '%s\n' "$cursor" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
+  cursor_file=$(mktemp "$RUNNER_TEMP/injected-cursor.XXXXXX") || exit 1
+  printf '%s\n' "$cursor" > "$cursor_file" && mv "$cursor_file" "$RUNNER_TEMP/injected-cursor"
 fi
+printf '%s\n' "$size" > "$RUNNER_TEMP/injected.size"

@@ -171,7 +171,7 @@ test("Stop excludes other heads, nonterminal CI, suites, its App and this workfl
   ].join("");
   const { output, dir } = runHook(log);
   expect(output).toBe("");
-  expect(JSON.parse(readFileSync(join(dir, "injected-deliveries.json"), "utf8"))).toEqual([]);
+  expect(existsSync(join(dir, "injected-deliveries.log")) ? readFileSync(join(dir, "injected-deliveries.log"), "utf8") : "").toBe("");
 });
 
 test("all human discussion types require writer=true and a non-Bot sender", () => {
@@ -211,7 +211,58 @@ test("history plus pending replay is deduplicated within one Stop and across Sto
   const { output, run, dir } = runHook(event + event);
   expect(output.match(/once-only/g)).toHaveLength(1);
   expect(run().stdout.toString()).toBe("");
-  expect(JSON.parse(readFileSync(join(dir, "injected-deliveries.json"), "utf8"))).toEqual(["same-delivery"]);
+  expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("same-delivery\n");
+});
+
+test("a tool round carries new activity before the verdict and leaves nothing for Stop", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/bin/sh\ncat > /dev/null\n");
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "mid-turn" } }, "mid-turn"));
+  const pre = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(pre.exitCode).toBe(0);
+  expect(pre.stdout.toString()).toBe("");
+  const round = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(round.exitCode).toBe(0);
+  const payload = JSON.parse(round.stdout.toString());
+  expect(payload.hookSpecificOutput.hookEventName).toBe("PostToolUse");
+  expect(payload.hookSpecificOutput.additionalContext).toContain("mid-turn");
+  const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(stop.exitCode).toBe(0);
+  expect(stop.stdout.toString()).toBe("");
+});
+
+test("a subagent tool round leaves shared activity for the main review", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "parent-only" } }, "parent-only"));
+  const sub = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","agent_id":"child","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(sub.exitCode).toBe(0);
+  expect(sub.stdout.toString()).toBe("");
+  expect(existsSync(join(setup.dir, "injected-deliveries.log"))).toBe(false);
+  expect(existsSync(join(setup.dir, "injected-cursor"))).toBe(false);
+  const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(stop.stdout.toString()).toContain("parent-only");
+});
+
+test("parallel tool rounds never lose activity to a shared receipt file", async () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent", true, "seq:epoch:9"));
+  const realMv = Bun.which("mv")!;
+  executable(setup.dir, "mv", `#!/bin/bash
+touch "$RUNNER_TEMP/mv-ready-$$"
+while :; do ready=("$RUNNER_TEMP"/mv-ready-*); [ "\${#ready[@]}" -ge 4 ] && break; sleep 0.01; done
+exec '${realMv}' "$@"
+`);
+  const rounds = Array.from({ length: 4 }, () => Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), stdout: "pipe", stderr: "pipe" }));
+  const outputs = await Promise.all(rounds.map(async child => {
+    const [output, error, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    return output;
+  }));
+  expect(outputs.some(output => output.includes("concurrent"))).toBe(true);
+  expect(readFileSync(join(setup.dir, "injected-deliveries.log"), "utf8")).toContain("concurrent\n");
+  const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(stop.stdout.toString()).toBe("");
 });
 
 test("a failed context write leaves the event available for the next Stop", async () => {
