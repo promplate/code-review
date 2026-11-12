@@ -365,8 +365,8 @@ runs:
         # Heads this session reviewed face the review; markers for pushes it skipped only bound the next range.
         COMMITS=$(jq -rs 'map(select(.id != "")) | map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
         # Keep consumption receipts inside the existing cache paths without invalidating earlier session snapshots.
-        if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then cp "$CODEX_HOME/sessions/.github-deliveries.json" "$RUNNER_TEMP/injected-deliveries.json"; else printf '[]\n' > "$RUNNER_TEMP/injected-deliveries.json"; fi
-        rm -f "$RUNNER_TEMP/injected-cursor"
+        if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then jq -r '.[]' "$CODEX_HOME/sessions/.github-deliveries.json" > "$RUNNER_TEMP/injected-deliveries.log"; else : > "$RUNNER_TEMP/injected-deliveries.log"; fi
+        rm -f "$RUNNER_TEMP/injected-cursor" "$RUNNER_TEMP/injected.size"
         if [ "$AGENT" = true ]; then
           SUBJECT="issue #$ISSUE_NUMBER" MENTION="#$ISSUE_NUMBER" COMMENT="gh issue comment $ISSUE_NUMBER --body-file -"
         elif [ -n "$PR_NUMBER" ]; then
@@ -624,7 +624,7 @@ runs:
       run: |
         # Persist consumption only after every required publication succeeds, so a retry can replay failed delivery.
         mkdir -p "$CODEX_HOME/sessions"
-        jq '.[-200:]' "$RUNNER_TEMP/injected-deliveries.json" > "$CODEX_HOME/sessions/.github-deliveries.json"
+        jq -Rsc 'split("\n") - [""] | reduce .[] as $id ([]; if index($id) then . else . + [$id] end) | .[-200:]' "$RUNNER_TEMP/injected-deliveries.log" > "$CODEX_HOME/sessions/.github-deliveries.json"
         [ ! -s "$RUNNER_TEMP/injected-cursor" ] || cp "$RUNNER_TEMP/injected-cursor" "$CODEX_HOME/sessions/.github-cursor"
         # A successor still needs its own annotated review even if this run published an intermediate commit verdict.
         rm -f "$CODEX_HOME/sessions/.github-published-head"

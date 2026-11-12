@@ -245,9 +245,20 @@ test("a subagent tool round leaves shared activity for the main review", () => {
 
 test("parallel tool rounds never lose activity to a shared receipt file", async () => {
   const setup = fixture();
-  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent"));
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent", true, "seq:epoch:9"));
+  const realMv = Bun.which("mv")!;
+  executable(setup.dir, "mv", `#!/bin/bash
+touch "$RUNNER_TEMP/mv-ready-$$"
+while :; do ready=("$RUNNER_TEMP"/mv-ready-*); [ "\${#ready[@]}" -ge 4 ] && break; sleep 0.01; done
+exec '${realMv}' "$@"
+`);
   const rounds = Array.from({ length: 4 }, () => Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), stdout: "pipe", stderr: "pipe" }));
-  const outputs = await Promise.all(rounds.map(async child => { const output = await new Response(child.stdout).text(); expect(await child.exited).toBe(0); return output; }));
+  const outputs = await Promise.all(rounds.map(async child => {
+    const [output, error, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exitCode).toBe(0);
+    expect(error).toBe("");
+    return output;
+  }));
   expect(outputs.some(output => output.includes("concurrent"))).toBe(true);
   expect(readFileSync(join(setup.dir, "injected-deliveries.log"), "utf8")).toContain("concurrent\n");
   const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });

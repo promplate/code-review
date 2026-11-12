@@ -75,6 +75,7 @@ jq -r '.fresh[]' <<< "$result" >> "$SEEN_FILE" || exit 1
 # This comes from the exact snapshot above, including safely filtered events, never from the concurrently growing transport log.
 cursor=$(jq -r '.cursor // empty' <<< "$result") || exit 1
 if [ -n "$cursor" ]; then
-  printf '%s\n' "$cursor" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
+  cursor_file=$(mktemp "$RUNNER_TEMP/injected-cursor.XXXXXX") || exit 1
+  printf '%s\n' "$cursor" > "$cursor_file" && mv "$cursor_file" "$RUNNER_TEMP/injected-cursor"
 fi
 printf '%s\n' "$size" > "$RUNNER_TEMP/injected.size"
