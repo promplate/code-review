@@ -62,9 +62,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      authorize:
        # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action
        # would skip must never take a slot there: it could push a new head's review out of the queue.
-       # The lookup needs only repository metadata, which every job token may read, so this job holds no scopes.
        name: Check ${{ github.event.sender.login }} may steer the agent
-       permissions: {}
        uses: promplate/code-review/.github/workflows/authorize.yml@main
        with:
          runs-on: ubuntu-latest
@@ -132,17 +130,6 @@ jobs:
       group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
       queue: max
     cache-mode: write
-```
-
-`on.push.branches` cannot name a repository's current default branch, which may not be `main`. To review whatever the default branch is, trigger on every push and filter in the job instead. Each push to another branch then starts a run whose `authorize` job finishes in seconds and skips the review, while the default branch proceeds:
-
-```yaml
-on:
-  push:
-
-jobs:
-  review:
-    if: needs.authorize.outputs.writer == 'true' && (github.event_name != 'push' || github.ref_name == github.event.repository.default_branch)
 ```
 
 A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently. A push that lands only trees this session already reviewed as PR heads, as a squash or rebase merge does, is skipped: its head repeats that verdict as its own check run and only advances the session's reviewed head.
