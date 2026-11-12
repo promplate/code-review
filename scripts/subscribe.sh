@@ -32,7 +32,8 @@ while true; do
   # Separate children let cancellation interrupt wait and reap the entire subscription, including the frame parser.
   bash "$GITHUB_ACTION_PATH/scripts/sse-frames.sh" "$pipe_dir/response" "$pipe_dir/reconnect" < "$pipe_dir/stream" >> "$RUNNER_TEMP/sse.jsonl" &
   parser_pid=$!
-  curl -ifsSN --suppress-connect-headers --connect-timeout 30 "$EVENTS_URL&pr=${PR_NUMBER:-}&sha=$HEAD_SHA&run=$GITHUB_RUN_ID" > "$pipe_dir/stream" 2>>"$RUNNER_TEMP/sse.err" &
+  # The broker pings every 15 seconds; a silent minute means the stream is dead even if TCP is still open, including while waiting for headers.
+  curl -ifsSN --suppress-connect-headers --connect-timeout 30 --speed-limit 1 --speed-time 60 "$EVENTS_URL&pr=${PR_NUMBER:-}&sha=$HEAD_SHA&run=$GITHUB_RUN_ID" > "$pipe_dir/stream" 2>>"$RUNNER_TEMP/sse.err" &
   curl_pid=$!
   curl_status=0 parser_status=0 first_status=0 finished=
   wait -n -p finished "$curl_pid" "$parser_pid" || first_status=$?

@@ -705,6 +705,8 @@ process.exit(28);
   for (const args of calls) {
     expect(args.some((arg: string) => arg.startsWith("Last-Event-ID:"))).toBe(false);
     expect(args).not.toContain("--max-time");
+    // A stream that stops sending pings is dead even if its socket stays open.
+    expect(args).toContain("--speed-time");
     expect(args).toContain("https://example.test/events?token=fixture&pr=7&sha=head&run=12");
   }
 });
