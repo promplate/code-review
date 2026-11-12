@@ -62,6 +62,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      authorize:
        # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action
        # would skip must never take a slot there: it could push a new head's review out of the queue.
+       name: Check ${{ github.event.sender.login }} may steer the agent
        uses: promplate/code-review/.github/workflows/authorize.yml@main
        with:
          runs-on: ubuntu-latest
