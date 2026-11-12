@@ -27,6 +27,9 @@ seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
+  # Reviewers must know when they are judging part of a description; a silent cut would hide the actual change.
+  def clip($n): if . == null then null else length as $len
+    | if $len > $n then .[0:$n] + "…[truncated at \($n) of \($len) characters; read the full text from the PR]" else . end end;
   # The review already knows its repository, so links inside it lose the prefix and external links stay absolute.
   def repo_url: ("https://github.com/" + env.GITHUB_REPOSITORY) as $base
     | if . != null and (. == $base or startswith($base + "/")) then .[($base | length):] else . end;
@@ -62,8 +65,8 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         name: ($body.check_run.name // $body.workflow_run.name // $body.context), conclusion: ($body.check_run.conclusion // $body.workflow_run.conclusion), state: $body.state,
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end),
         # An edited title or description is the change itself; other pull request events do not need the PR text again.
-        title: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.title // null | if . then .[0:200] else . end) else null end),
-        body: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.body // null | if . then .[0:2000] else . end) else null end),
+        title: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),
+        body: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.body | clip(2000)) else null end),
         comment: $body.comment.body, comment_id: $body.comment.id, path: ($body.comment.path // $body.thread.comments[0].path), line: ($body.comment.line // $body.thread.comments[0].line),
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}

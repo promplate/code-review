@@ -283,6 +283,14 @@ test("an edited pull request title and body reach the review", () => {
   expect(output).toContain('\\"body\\":\\"New description\\"');
 });
 
+test("a truncated edit says so instead of hiding the change", () => {
+  const body = "x".repeat(2000) + "TAIL";
+  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));
+  expect(output).toContain("truncated at 2000 of 2004 characters");
+  expect(output).not.toContain("TAIL");
+  expect(output).toContain("truncated at 200 of 201 characters");
+});
+
 test("another app's review activity reaches the review, while its issue comments do not", () => {
   const other = { login: "coderabbitai[bot]", type: "Bot" };
   const review = (sender: object, text: string) => frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { path: "a.ts", line: 3, body: text }, sender }, "bot-review", false);
