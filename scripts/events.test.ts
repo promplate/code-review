@@ -228,6 +228,20 @@ test("a tool round carries new activity before the verdict and leaves nothing fo
   expect(stop.stdout.toString()).toBe("");
 });
 
+test("a child tool hook leaves activity for the root review", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/bin/sh\ncat > /dev/null\n");
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "root-activity" } }, "root-activity", true, "seq:epoch:9"));
+  const child = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","agent_id":"child","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(child.exitCode).toBe(0);
+  expect(child.stdout.toString()).toBe("");
+  expect(existsSync(join(setup.dir, "injected-deliveries.json"))).toBe(false);
+  expect(existsSync(join(setup.dir, "injected-cursor"))).toBe(false);
+  const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(stop.exitCode).toBe(0);
+  expect(JSON.parse(stop.stdout.toString()).reason).toContain("root-activity");
+});
+
 test("a failed context write leaves the event available for the next Stop", async () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true, "seq:epoch:9"));

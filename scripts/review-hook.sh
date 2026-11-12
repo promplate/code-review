@@ -9,7 +9,9 @@ case $event in
       jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
         | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
         | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
-    fi ;;
+    fi
+    # Child hooks share the receipt files, but their context does not reach the root review.
+    [ -z "$(jq -r '.agent_id // ""' <<< "$input")" ] || exit 0 ;;
   Stop) ;;
   *) exit 0 ;;
 esac
