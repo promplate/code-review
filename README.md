@@ -45,7 +45,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
    name: agent invoke
    on:
      pull_request_target:
-       types: [opened, synchronize, reopened, ready_for_review]
+       types: [opened, synchronize, reopened, ready_for_review, edited]
      # Comments and reviews that start a review when none is running.
      issue_comment:
        types: [created, edited, deleted]
@@ -94,7 +94,8 @@ Every run sharing a session must use the same serialized concurrency group.
 
 Each run seeds the webhook that started it into its event stream in the same shape the broker relays. Hooks dedupe by activity identity; repeatable check and thread transitions use the broker's webhook delivery identity instead. A run started for a comment another run already handled is skipped, and comments posted between runs are replayed from the last consumed event:
 
-- Only people with write access can steer a review, and the App's own comments are ignored.
+- Only people with write access and other apps' review activity can steer a review; other apps' ordinary comments are ignored, as are the App's own.
+- Editing a pull request's title or description starts a review of the new text, and a running review receives it through the same stream.
 - All authorized triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates; unauthorized discussion events never take a queue slot, so they cannot cancel a new head's review. A run still authorizing or waiting for the group has consumed no head, so it does not make a newer run skip.
 - While a review runs, its SSE subscription takes the comments live; a synchronous tool hook records them before the model's next message, and a blocked stop catches whatever arrives after the last tool call.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.

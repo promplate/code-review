@@ -2,7 +2,7 @@ name: agent invoke
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   issues:
     # A labeled issue wakes the agent, which decides how to respond rather than reviewing anything.
     types: [labeled]

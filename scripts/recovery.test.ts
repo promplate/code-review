@@ -57,6 +57,24 @@ test("queued PR webhooks resolve the current head while retaining their original
   }
 });
 
+test("identity and seeding follow the webhook event, not the workflow event", () => {
+  for (const [event, expected] of [["pull_request_target", "pull_request"], ["pull_request_review", "pull_request_review"]]) {
+    const setup = fixture({ action: "submitted", review: { id: 5, submitted_at: "now" }, pull_request: { number: 7, head: { sha: "head" } } });
+    expect(gate(setup, { GITHUB_EVENT_NAME: event })).toContain(`EVENT_NAME=${expected}\n`);
+  }
+});
+
+test("successive edits on an unchanged head get distinct activity ids", () => {
+  const idFor = (body: string, updated: string) => {
+    const setup = fixture({ action: "edited", sender: writer, number: 7, pull_request: { number: 7, title: "Title", body, updated_at: updated, head: { sha: "head" } } });
+    return /ACTIVITY_ID=(\w+)/.exec(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" }))![1];
+  };
+  expect(idFor("A", "T1")).not.toBe(idFor("B", "T2"));
+  // Restoring earlier text is still a later edit, not the original activity.
+  expect(idFor("A", "T3")).not.toBe(idFor("A", "T1"));
+  expect(idFor("A", "T1")).toBe(idFor("A", "T1"));
+});
+
 test("a synchronize retry requires a published checkpoint, including for older caches", () => {
   const setup = fixture({ action: "synchronize", pull_request: { number: 7, head: { sha: "old" } } });
   expect(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" })).not.toContain("SKIP=true");
