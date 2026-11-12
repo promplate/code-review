@@ -64,6 +64,15 @@ test("identity and seeding follow the webhook event, not the workflow event", ()
   }
 });
 
+test("successive edits on an unchanged head get distinct activity ids", () => {
+  const idFor = (body: string) => {
+    const setup = fixture({ action: "edited", sender: writer, number: 7, pull_request: { number: 7, title: "Title", body, head: { sha: "head" } } });
+    return /ACTIVITY_ID=(\w+)/.exec(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" }))![1];
+  };
+  expect(idFor("First body")).not.toBe(idFor("Second body"));
+  expect(idFor("First body")).toBe(idFor("First body"));
+});
+
 test("a synchronize retry requires a published checkpoint, including for older caches", () => {
   const setup = fixture({ action: "synchronize", pull_request: { number: 7, head: { sha: "old" } } });
   expect(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" })).not.toContain("SKIP=true");
