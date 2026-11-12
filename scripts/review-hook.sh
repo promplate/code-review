@@ -18,7 +18,10 @@ esac
 lock="$RUNNER_TEMP/injected.lock"
 locked=
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if mkdir "$lock" 2>/dev/null; then locked=1; break; fi
+  if mkdir "$lock" 2>/dev/null; then echo $$ > "$lock/pid"; locked=1; break; fi
+  # A killed hook cannot remove its own lock, and the same runner may be reused for this session.
+  pid=$(cat "$lock/pid" 2>/dev/null || true)
+  [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || { rm -rf "$lock"; continue; }
   sleep 0.2
 done
 [ -n "$locked" ] || exit 0
