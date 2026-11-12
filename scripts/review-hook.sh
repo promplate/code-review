@@ -18,34 +18,13 @@ case $event in
   *) exit 0 ;;
 esac
 [ -f "$RUNNER_TEMP/sse.jsonl" ] || exit 0
-# Tool rounds skip an unchanged stream; Stop always scans, so it stays the authority even if a marker is stale.
-if [ "$event" != Stop ]; then
-  size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
-  [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
-fi
-# Parallel tool calls each run this hook, so serialize the receipt and cursor update rather than lose one; a later round picks up anything skipped.
-lock="$RUNNER_TEMP/injected.lock"
-attempts=10
-[ "$event" != Stop ] || attempts=75
-locked=
-for _ in $(seq 1 "$attempts"); do
-  if mkdir "$lock" 2>/dev/null; then echo $$ > "$lock/pid"; locked=1; break; fi
-  # A killed hook cannot remove its own lock, and the same runner may be reused for this session.
-  pid=$(cat "$lock/pid" 2>/dev/null || true)
-  [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || { rm -rf "$lock"; continue; }
-  sleep 0.2
-done
-if [ -z "$locked" ]; then
-  # Stop has no later round to retry, so block instead of ending with activity unread.
-  [ "$event" != Stop ] || jq -n '{decision: "block", reason: "GitHub activity was not read because another hook still holds the delivery lock. Retry the review output so it can be delivered."}'
-  exit 0
-fi
-trap 'rm -rf "$lock"' EXIT
+# An unchanged stream carries nothing new; Stop always scans so a skipped or failed delivery still reaches the review.
 size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
-if [ "$event" != Stop ] && [ "$size" = "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ]; then exit 0; fi
-SEEN_FILE="$RUNNER_TEMP/injected-deliveries.json"
+[ "$event" = Stop ] || [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
+# Receipts are append-only: parallel tool rounds cannot overwrite each other's deliveries, and a rare duplicate is preferable to a lost event.
+SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
-[ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
+[ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
 result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
   ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
@@ -79,21 +58,20 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
         review: ($body.review | if . == null then null else {state, body} end), thread: $body.thread.node_id,
         resolved: (if $frame.event == "pull_request_review_thread" then $body.action == "resolved" else null end)} | with_entries(select(.value != null)))}
   # Cursor syntax belongs to the broker; consumers retain and return it unchanged.
-  ] | reduce .[] as $event ({seen: $seen, context: [], delivered: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .context += [$event.context | tojson] | .delivered += [$event.context] end)
+  ] | reduce .[] as $event ({seen: $seen, fresh: [], context: [], delivered: [], cursor: ([$frames[].cursor | select(type == "string")] | last)}; if (.seen | index($event.delivery)) then . else .seen += [$event.delivery] | .fresh += [$event.delivery] | .context += [$event.context | tojson] | .delivered += [$event.context] end)
     | .context |= join("\n")
 ' "$RUNNER_TEMP/sse.jsonl") || exit 1
 # The exec stream never carries hook deliveries, so publish them for the live log the action tails. A log is not delivery.
 [ ! -f "$RUNNER_TEMP/injected.log" ] || jq -r '.delivered[] | tojson' <<< "$result" >> "$RUNNER_TEMP/injected.log" || true
 context=$(jq -r .context <<< "$result") || exit 1
-jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
   jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" --arg event "$event" '
     ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.") as $message
     | if $event == "Stop" then {decision: "block", reason: $message} else {hookSpecificOutput: {hookEventName: $event, additionalContext: $message}} end' || exit 1
 fi
-# A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
-mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
+# A tool round's context is recorded before the model's next request and a blocked Stop continues the turn, so the output above is delivery; a crash may repeat an event but can never suppress an undelivered one.
+jq -r '.fresh[]' <<< "$result" >> "$SEEN_FILE" || exit 1
 # This comes from the exact snapshot above, including safely filtered events, never from the concurrently growing transport log.
 cursor=$(jq -r '.cursor // empty' <<< "$result") || exit 1
 if [ -n "$cursor" ]; then

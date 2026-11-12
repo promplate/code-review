@@ -96,7 +96,7 @@ Each run seeds the webhook that started it into its event stream in the same sha
 
 - Only people with write access can steer a review, and the App's own comments are ignored.
 - All authorized triggers for a PR share one concurrency group. `queue: max` preserves up to 100 pending runs while the active review consumes SSE updates; unauthorized discussion events never take a queue slot, so they cannot cancel a new head's review. A run still authorizing or waiting for the group has consumed no head, so it does not make a newer run skip.
-- While a review runs, its SSE subscription takes the comments live; an async tool hook delivers them before the model's next message, and a blocked stop catches whatever arrives after the last tool call.
+- While a review runs, its SSE subscription takes the comments live; a synchronous tool hook records them before the model's next message, and a blocked stop catches whatever arrives after the last tool call.
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 - Before merging, the review waits for the head's checks except its own and those of other runs of this workflow, whose queued jobs could never finish behind the waiting job. That lookup needs `actions: read` on the job token; without it the wait falls back to every check.
 
