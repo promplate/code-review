@@ -1060,7 +1060,7 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
     JSON.stringify({ event: "pull_request_review_thread", action: "resolved", url: "https://example.test/t/9" }),
     JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
     JSON.stringify({ event: "check_run", name: "CI", conclusion: "success", url: "https://example.test/r/5" }),
-    JSON.stringify({ event: "workflow_run", name: "CI", conclusion: null, url: "https://example.test/r/6" }),
+    JSON.stringify({ event: "workflow_run", name: "CI", conclusion: "cancelled", url: "https://example.test/r/6" }),
     JSON.stringify({ event: "status", state: "failure", url: "https://example.test/s/7" }),
     JSON.stringify({ event: "push", commit: "abc", url: "https://example.test/p/8" }),
     JSON.stringify({ event: "pull_request", action: "synchronize", url: "https://example.test/p/9" }),
@@ -1078,7 +1078,7 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // Green, red and yellow: how CI ended.
   expect(output).toContain("\u001b[91mcheck_run\u001b[0m CI:failure https://example.test/r/2");
   expect(output).toContain("\u001b[92mcheck_run\u001b[0m CI:success https://example.test/r/5");
-  expect(output).toContain("\u001b[93mworkflow_run\u001b[0m CI https://example.test/r/6");
+  expect(output).toContain("\u001b[93mworkflow_run\u001b[0m CI:cancelled https://example.test/r/6");
   expect(output).toContain("\u001b[91mstatus\u001b[0m:failure https://example.test/s/7");
   // Blue: the branch or pull request moved.
   expect(output).toContain("\u001b[94mpush\u001b[0m");
