@@ -174,11 +174,11 @@ test("Stop excludes other heads, nonterminal CI, suites, its App and this workfl
   expect(existsSync(join(dir, "injected-deliveries.log")) ? readFileSync(join(dir, "injected-deliveries.log"), "utf8") : "").toBe("");
 });
 
-test("all human discussion types require writer=true and a non-Bot sender", () => {
+test("discussion needs write access, and only review activity admits Bot senders", () => {
   for (const event of ["issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"]) {
     const body = { action: "resolved", pull_request: { number: 7 }, thread: { resolved: true, comments: [{ path: "file.ts", line: 8 }] } };
     expect(runHook(frame(event, body, "no-write", false)).output).toBe("");
-    expect(runHook(frame(event, { ...body, sender: bot }, "bot", true)).output).toBe("");
+    expect(runHook(frame(event, { ...body, sender: bot }, "bot", false)).output.includes(event)).toBe(event !== "issue_comment");
     expect(runHook(frame(event, body)).output).toContain(event);
     expect(runHook(frame(event, { ...body, pull_request: { number: 8 } })).output).toBe("");
   }
@@ -275,6 +275,23 @@ test("activity links drop this repository's prefix and keep external ones", () =
   expect(output).toContain('\\"url\\":\\"/pull/7#issuecomment-1\\"');
   expect(output).toContain('\\"url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
   expect(output).toContain('\\"url\\":\\"https://ci.example.test/run/1\\"');
+});
+
+test("an edited pull request title and body reach the review", () => {
+  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "New title", body: "New description", head: { sha: "head" } } }, "edit"));
+  expect(output).toContain('\\"title\\":\\"New title\\"');
+  expect(output).toContain('\\"body\\":\\"New description\\"');
+});
+
+test("another app's review activity reaches the review, while its issue comments do not", () => {
+  const other = { login: "coderabbitai[bot]", type: "Bot" };
+  const review = (sender: object, text: string) => frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { path: "a.ts", line: 3, body: text }, sender }, "bot-review", false);
+  const included = runHook(review(other, "bot finding")).output;
+  expect(included).toContain("bot finding");
+  expect(included).toContain('\\"actor_type\\":\\"Bot\\"');
+  expect(runHook(review({ login: "reviewer[bot]", type: "Bot" }, "own finding")).output).toBe("");
+  expect(runHook(review(human, "stranger finding")).output).toBe("");
+  expect(runHook(frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "bot chatter" }, sender: other }, "bot-chatter", false)).output).toBe("");
 });
 
 test("a failed context write leaves the event available for the next Stop", async () => {
