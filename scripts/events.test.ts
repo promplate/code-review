@@ -218,28 +218,29 @@ test("a tool round carries new activity before the verdict and leaves nothing fo
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\ncat > /dev/null\n");
   writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "mid-turn" } }, "mid-turn"));
-  const round = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  const pre = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(pre.exitCode).toBe(0);
+  expect(pre.stdout.toString()).toBe("");
+  const round = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
   expect(round.exitCode).toBe(0);
   const payload = JSON.parse(round.stdout.toString());
-  expect(payload.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  expect(payload.hookSpecificOutput.hookEventName).toBe("PostToolUse");
   expect(payload.hookSpecificOutput.additionalContext).toContain("mid-turn");
   const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   expect(stop.exitCode).toBe(0);
   expect(stop.stdout.toString()).toBe("");
 });
 
-test("a child tool hook leaves activity for the root review", () => {
+test("a subagent tool round leaves shared activity for the main review", () => {
   const setup = fixture();
-  executable(setup.dir, "gh", "#!/bin/sh\ncat > /dev/null\n");
-  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "root-activity" } }, "root-activity", true, "seq:epoch:9"));
-  const child = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","agent_id":"child","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
-  expect(child.exitCode).toBe(0);
-  expect(child.stdout.toString()).toBe("");
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "parent-only" } }, "parent-only"));
+  const sub = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","agent_id":"child","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(sub.exitCode).toBe(0);
+  expect(sub.stdout.toString()).toBe("");
   expect(existsSync(join(setup.dir, "injected-deliveries.json"))).toBe(false);
   expect(existsSync(join(setup.dir, "injected-cursor"))).toBe(false);
   const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
-  expect(stop.exitCode).toBe(0);
-  expect(JSON.parse(stop.stdout.toString()).reason).toContain("root-activity");
+  expect(stop.stdout.toString()).toContain("parent-only");
 });
 
 test("a failed context write leaves the event available for the next Stop", async () => {

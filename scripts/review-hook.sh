@@ -3,31 +3,46 @@ input=$(cat)
 event=$(jq -r '.hook_event_name // ""' <<< "$input") || exit 0
 case $event in
   PreToolUse)
-    # A check run shows the command under review while it runs; an async hook cannot decide the tool call, which this one does not need to.
+    # A check run shows the command under review while it runs; delivery has its own hook so a slow PATCH cannot delay it.
     if [ -n "${CHECK_ID:-}" ]; then
       # Four backticks keep fences inside commands and patches from closing the block early.
       jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
         | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
         | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
     fi
-    # Child hooks share the receipt files, but their context does not reach the root review.
-    [ -z "$(jq -r '.agent_id // ""' <<< "$input")" ] || exit 0 ;;
+    exit 0 ;;
+  PostToolUse)
+    # A subagent's context never reaches the review, so only the root agent consumes shared activity.
+    [ -z "$(jq -r '.agent_id // empty' <<< "$input")" ] || exit 0 ;;
   Stop) ;;
   *) exit 0 ;;
 esac
 [ -f "$RUNNER_TEMP/sse.jsonl" ] || exit 0
+# Tool rounds skip an unchanged stream; Stop always scans, so it stays the authority even if a marker is stale.
+if [ "$event" != Stop ]; then
+  size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
+  [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
+fi
 # Parallel tool calls each run this hook, so serialize the receipt and cursor update rather than lose one; a later round picks up anything skipped.
 lock="$RUNNER_TEMP/injected.lock"
+attempts=10
+[ "$event" != Stop ] || attempts=75
 locked=
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 "$attempts"); do
   if mkdir "$lock" 2>/dev/null; then echo $$ > "$lock/pid"; locked=1; break; fi
   # A killed hook cannot remove its own lock, and the same runner may be reused for this session.
   pid=$(cat "$lock/pid" 2>/dev/null || true)
   [ -z "$pid" ] || kill -0 "$pid" 2>/dev/null || { rm -rf "$lock"; continue; }
   sleep 0.2
 done
-[ -n "$locked" ] || exit 0
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+if [ -z "$locked" ]; then
+  # Stop has no later round to retry, so block instead of ending with activity unread.
+  [ "$event" != Stop ] || jq -n '{decision: "block", reason: "GitHub activity was not read because another hook still holds the delivery lock. Retry the review output so it can be delivered."}'
+  exit 0
+fi
+trap 'rm -rf "$lock"' EXIT
+size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
+if [ "$event" != Stop ] && [ "$size" = "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ]; then exit 0; fi
 SEEN_FILE="$RUNNER_TEMP/injected-deliveries.json"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
@@ -73,11 +88,9 @@ context=$(jq -r .context <<< "$result") || exit 1
 jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
-  if [ "$event" = PreToolUse ]; then
-    jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}}' || exit 1
-  else
-    jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}' || exit 1
-  fi
+  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" --arg event "$event" '
+    ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.") as $message
+    | if $event == "Stop" then {decision: "block", reason: $message} else {hookSpecificOutput: {hookEventName: $event, additionalContext: $message}} end' || exit 1
 fi
 # A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
 mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1
@@ -86,3 +99,4 @@ cursor=$(jq -r '.cursor // empty' <<< "$result") || exit 1
 if [ -n "$cursor" ]; then
   printf '%s\n' "$cursor" > "$RUNNER_TEMP/injected-cursor.new" && mv "$RUNNER_TEMP/injected-cursor.new" "$RUNNER_TEMP/injected-cursor"
 fi
+printf '%s\n' "$size" > "$RUNNER_TEMP/injected.size"
