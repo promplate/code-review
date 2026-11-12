@@ -13,7 +13,7 @@ const homes: string[] = [];
 const human = { login: "collaborator", type: "User" };
 const bot = { login: "ci[bot]", type: "Bot" };
 const check = (overrides = {}) => ({ id: 100, name: "test", status: "completed", conclusion: "success", head_sha: "head", app: { slug: "github-actions" }, ...overrides });
-const frame = (event: string, body: object, delivery = event, writer = true, cursor?: string) => `id: ${cursor ?? delivery}\ndata: ${JSON.stringify({ event, delivery, writer, cursor, body: JSON.stringify({ sender: human, ...body }) })}\n\n`;
+const frame = (event: string, body: object, delivery = event, writer = true) => `id: ${delivery}\ndata: ${JSON.stringify({ event, delivery, writer, body: JSON.stringify({ sender: human, ...body }) })}\n\n`;
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "review-events-"));
@@ -95,15 +95,15 @@ test("Stop consumes terminal CI for its head, including events from CI bots", ()
   for (const name of ["check_run", "workflow_run", "status", "failure", "external"]) expect(output).toContain(name);
 });
 
-test("a replay gap requests GitHub reconciliation once without trusting recovered instructions", () => {
-  const gap = `event: replay_gap\ndata: ${JSON.stringify({ event: "replay_gap", delivery: "gap:epoch:old:3", writer: false, body: JSON.stringify({ reason: "expired", from: 2, to: 2 }) })}\n\n`;
-  const { output, run } = runHook(gap);
+test("an interrupted subscription requests GitHub reconciliation once without trusting recovered instructions", () => {
+  const recovery = `event: subscription_recovery\ndata: ${JSON.stringify({ event: "subscription_recovery", delivery: "subscription:12:1:3:connection_failed", writer: false, body: JSON.stringify({ reason: "connection_failed", status: "0" }) })}\n\n`;
+  const { output, run } = runHook(recovery);
   expect(JSON.parse(output).decision).toBe("block");
-  expect(output).toContain("replay_gap");
+  expect(output).toContain("subscription_recovery");
   expect(output).toContain("GitHub");
   expect(output).toContain("write access");
   expect(run().stdout.toString()).toBe("");
-  expect(parseFrames(gap)).toBe(gap);
+  expect(parseFrames(recovery)).toBe(recovery);
 });
 
 test("a stopped subscriber cannot silently leave the review on a stale snapshot", () => {
@@ -125,31 +125,25 @@ test("a cached failure receipt cannot hide a stopped subscription in a later run
   }
 });
 
-test("gap control frames do not break CI waiting or publishing newer heads", () => {
-  const gap = `event: replay_gap\ndata: ${JSON.stringify({ event: "replay_gap", delivery: "gap:head", writer: false, body: JSON.stringify({ reason: "expired" }) })}\n\n`;
-  const ci = runCI([{ pages: [{ check_runs: [check({ status: "in_progress" })] }] }, { pages: [{ check_runs: [check()] }] }], gap + frame("status", { sha: "head", state: "success" }));
+test("subscription control frames do not break CI waiting or publishing newer heads", () => {
+  const recovery = `event: subscription_recovery\ndata: ${JSON.stringify({ event: "subscription_recovery", delivery: "subscription:head", writer: false, body: JSON.stringify({ reason: "connection_failed" }) })}\n\n`;
+  const ci = runCI([{ pages: [{ check_runs: [check({ status: "in_progress" })] }] }, { pages: [{ check_runs: [check()] }] }], recovery + frame("status", { sha: "head", state: "success" }));
   expect(ci.result.exitCode).toBe(0); expect(ci.calls).toBe(2); expectTailReleased(ci.dir);
   const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.jsonl"), gap + frame("pull_request", { action: "synchronize", number: 7, after: "newer" }));
+  writeFileSync(join(dir, "sse.jsonl"), recovery + frame("pull_request", { action: "synchronize", number: 7, after: "newer" }));
   const publish = step("Publish check run").run.split("# Pushes made")[0] + '\nprintf "%s" "$PUSHED"';
   const result = Bun.spawnSync(["bash", "-ec", publish], { env });
   expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe("newer");
 });
 
-test("consumption checkpoints cover the Stop snapshot, never later arrivals", () => {
-  const one = frame("issue_comment", { issue: { number: 7 }, comment: { body: "first" } }, "first", true, "seq:epoch:1");
-  const two = frame("issue_comment", { issue: { number: 8 }, comment: { body: "other PR" } }, "second", true, "seq:epoch:2");
+test("consumption receipts cover delivered activity, never filtered events or later arrivals", () => {
+  const one = frame("issue_comment", { issue: { number: 7 }, comment: { body: "first" } }, "first", true);
+  const two = frame("issue_comment", { issue: { number: 8 }, comment: { body: "other PR" } }, "second", true);
   const { dir, output } = runHook(one + two);
   expect(output).toContain("first");
   expect(output).not.toContain("other PR");
-  writeFileSync(join(dir, "sse.jsonl"), one + two + frame("status", { sha: "head", state: "failure" }, "later", false, "seq:epoch:3"));
-  expect(readFileSync(join(dir, "injected-cursor"), "utf8")).toBe("seq:epoch:2\n");
-});
-
-test("consumption checkpoints preserve opaque broker cursors", () => {
-  const cursor = "next-format/opaque:42";
-  const { dir } = runHook(frame("status", { sha: "head", state: "success" }, "status", true, cursor));
-  expect(readFileSync(join(dir, "injected-cursor"), "utf8")).toBe(cursor + "\n");
+  writeFileSync(join(dir, "sse.jsonl"), one + two + frame("status", { sha: "head", state: "failure" }, "later", false));
+  expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("first\n");
 });
 
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
@@ -206,7 +200,7 @@ test("head changes and draft transitions reach the review, while the events that
   for (const action of ["opened", "reopened"]) expect(runHook(pull(action)).output).toBe("");
 });
 
-test("history plus pending replay is deduplicated within one Stop and across Stops", () => {
+test("duplicate live deliveries are deduplicated within one Stop and across Stops", () => {
   const event = frame("issue_comment", { issue: { number: 7 }, comment: { body: "once-only" } }, "same-delivery");
   const { output, run, dir } = runHook(event + event);
   expect(output.match(/once-only/g)).toHaveLength(1);
@@ -238,14 +232,13 @@ test("a subagent tool round leaves shared activity for the main review", () => {
   expect(sub.exitCode).toBe(0);
   expect(sub.stdout.toString()).toBe("");
   expect(existsSync(join(setup.dir, "injected-deliveries.log"))).toBe(false);
-  expect(existsSync(join(setup.dir, "injected-cursor"))).toBe(false);
   const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   expect(stop.stdout.toString()).toContain("parent-only");
 });
 
 test("parallel tool rounds never lose activity to a shared receipt file", async () => {
   const setup = fixture();
-  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent", true, "seq:epoch:9"));
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent", true));
   const realMv = Bun.which("mv")!;
   executable(setup.dir, "mv", `#!/bin/bash
 touch "$RUNNER_TEMP/mv-ready-$$"
@@ -310,12 +303,10 @@ test("another app's review activity reaches the review, while its issue comments
 
 test("a failed context write leaves the event available for the next Stop", async () => {
   const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true, "seq:epoch:9"));
-  writeFileSync(join(dir, "injected-cursor"), "seq:epoch:8\n");
+  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true));
   const child = Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), stdout: "pipe", stderr: "pipe" });
   await child.stdout.cancel();
   expect(await child.exited).not.toBe(0);
-  expect(readFileSync(join(dir, "injected-cursor"), "utf8")).toBe("seq:epoch:8\n");
   const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
   expect(retry.exitCode).toBe(0);
   expect(retry.stdout.toString()).toContain("pending-event");
@@ -486,15 +477,13 @@ test("SSE only commits blank-line-terminated frames and discards reconnect fragm
   expect(parseFrames(first.replaceAll("\n", "\r\n"))).toBe(first);
 });
 
-test("a failed SSE write does not advance its replay cursor", async () => {
-  const { dir, env } = fixture(), cursor = join(dir, "sse.cursor");
-  writeFileSync(cursor, "previous\n");
+test("a failed SSE write fails the parser", async () => {
+  const { env } = fixture();
   const child = Bun.spawn(["bash", join(scripts, "sse-frames.sh")], {
     env, stdin: Buffer.from(frame("status", { sha: "head", state: "success" }, "unwritten")), stdout: "pipe", stderr: "pipe",
   });
   await child.stdout.cancel();
   expect(await child.exited).not.toBe(0);
-  expect(readFileSync(cursor, "utf8")).toBe("previous\n");
 });
 
 test("HTTP framing skips informational headers before accepting an HTTP/2 event stream", () => {
@@ -504,13 +493,11 @@ test("HTTP framing skips informational headers before accepting an HTTP/2 event 
   const result = Bun.spawnSync(["bash", join(scripts, "sse-frames.sh"), response], { env, stdin: Buffer.from(headers + event) });
   expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toBe(event);
   expect(readFileSync(response, "utf8")).toBe("200 text/event-stream\n");
-  expect(readFileSync(join(dir, "sse.cursor"), "utf8")).toBe("accepted\n");
 });
 
 test("the subscription survives 360 HTTP failures and stops all its own children", async () => {
   const { dir, env } = fixture();
   executable(dir, "sleep", "#!/usr/bin/env bash\nexit 0\n");
-  writeFileSync(join(dir, "sse.cursor"), "previous\n");
   let requests = 0;
   const cursors: (string | null)[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
@@ -518,13 +505,12 @@ test("the subscription survives 360 HTTP failures and stops all its own children
     if (requests <= 360) return new Response("UNAVAILABLE BODY MUST NOT BECOME AN EVENT", { status: 503 });
     return new Response(requests === 361 ? frame("status", { sha: "head", state: "success" }, "restored") : new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(": ping\n\n")); } }), { headers: { "content-type": "text/event-stream" } });
   } });
-  const child = Bun.spawn(["bash", join(scripts, "subscribe.sh"), "previous"], { env: { ...env, EVENTS_URL: `${server.url}?fixture=1` }, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: `${server.url}?fixture=1` }, stdout: "pipe", stderr: "pipe" });
   try {
     const deadline = performance.now() + 15_000;
     while (requests < 362 && child.exitCode === null && performance.now() < deadline) await Bun.sleep(10);
     expect(requests).toBeGreaterThanOrEqual(362);
-    expect(cursors.slice(0, 361).every(cursor => cursor === "previous")).toBe(true);
-    expect(cursors[361]).toBe("restored");
+    expect(cursors.every(cursor => cursor === null)).toBe(true);
     const log = readFileSync(join(dir, "sse.jsonl"), "utf8");
     expect(log).toContain("connection_failed"); expect(log).toContain("restored"); expect(log).not.toContain("UNAVAILABLE BODY");
     expect(readFileSync(join(dir, "sse.err"), "utf8")).toContain("503");
@@ -546,23 +532,68 @@ test("the subscription survives 360 HTTP failures and stops all its own children
   } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; server.stop(true); }
 }, 20_000);
 
-test("a failed stream writer records a visible terminal failure", () => {
+test.each([false, true])("a failed stream writer records a visible terminal failure with curl still running: %j", running => {
   const { dir, env } = fixture();
-  executable(dir, "curl", "#!/usr/bin/env bash\nexit 0\n");
+  executable(dir, "curl", `#!/usr/bin/env bash\n${running ? `exec '${realSleep}' 60` : "exit 0"}\n`);
   executable(dir, "awk", "#!/usr/bin/env bash\nexit 1\n");
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(1);
   expect(readFileSync(join(dir, "sse.failed"), "utf8")).toContain("status 1");
 });
 
-test("a cached outage receipt cannot hide a new run failing at the same cursor", () => {
+test("a live reconnect reconciles the whole outage and a later disconnect is fresh activity", async () => {
+  const { dir, env } = fixture();
+  executable(dir, "sleep", `#!/usr/bin/env bash\nexec '${realSleep}' 0.02\n`);
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  let requests = 0, reconnect!: (response: Response) => void;
+  const response = () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    streams.push(controller);
+    controller.enqueue(new TextEncoder().encode(": ping\n\n"));
+  } }), { headers: { "content-type": "text/event-stream" } });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+    requests++;
+    if (requests === 1) return response();
+    return new Promise<Response>(resolve => { reconnect = resolve; });
+  } });
+  const child = Bun.spawn(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: `${server.url}?fixture=1` }, stdout: "pipe", stderr: "pipe" });
+  const log = () => readFileSync(join(dir, "sse.jsonl"), "utf8");
+  const until = async (condition: () => boolean) => {
+    for (const deadline = performance.now() + 2000; !condition() && performance.now() < deadline;) await Bun.sleep(5);
+    expect(condition()).toBe(true);
+  };
+  const hook = () => {
+    const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  try {
+    await until(() => log().includes(": ping"));
+    expect(log()).not.toContain("subscription_recovery");
+    streams[0]!.close();
+    await until(() => requests === 2 && log().includes("connection_failed"));
+    expect(hook()).toContain("connection_failed");
+    expect(hook()).toBe("");
+    // The first recovery read happened before the new connection was established.
+    reconnect(response());
+    await until(() => log().includes("connection_restored"));
+    expect(child.exitCode).toBeNull();
+    expect(hook()).toContain("connection_restored");
+    expect(hook()).toBe("");
+    streams[1]!.close();
+    await until(() => log().split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(JSON.parse(line.slice(6)).body)).filter(body => body.reason === "connection_failed").length === 2);
+    expect(hook()).toContain("connection_failed");
+    expect(hook()).toBe("");
+  } finally { child.kill("SIGTERM"); await child.exited; server.stop(true); }
+});
+
+test("a cached outage receipt cannot hide a new run failing to connect", () => {
   const { dir, env } = fixture();
   executable(dir, "curl", "#!/usr/bin/env bash\nexit 22\n");
   executable(dir, "sleep", '#!/usr/bin/env bash\nkill -TERM "$PPID"\n');
   for (const [GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT] of [["12", "1"], ["13", "1"], ["13", "2"]]) {
     writeFileSync(join(dir, "sse.jsonl"), "");
     const current = { ...env, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, EVENTS_URL: "https://example.test/?fixture=1" };
-    const subscription = Bun.spawnSync(["bash", join(scripts, "subscribe.sh"), "seq:epoch:4"], { env: current, timeout: 3000 });
+    const subscription = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: current, timeout: 3000 });
     expect(subscription.exitCode).toBe(143);
     const run = () => Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: current, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
     const result = run(); expect(result.exitCode).toBe(0); expect(result.stdout.toString()).toContain("connection_failed");
@@ -570,33 +601,32 @@ test("a cached outage receipt cannot hide a new run failing at the same cursor",
   }
 });
 
-test.each(["html", "wrong type with SSE bytes", "no headers", "empty SSE", "SSE rotation"])("the subscriber distinguishes %s from a failed response", async mode => {
+test.each(["html", "streaming html", "wrong type with SSE bytes", "no headers", "empty SSE", "SSE timeout"])("the subscriber distinguishes %s from a failed response", async mode => {
   const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.cursor"), "previous\n");
-  executable(dir, "curl", `#!/usr/bin/env bash\nexec '${realCurl}' "$@" --max-time 0.1\n`);
+  executable(dir, "curl", `#!/usr/bin/env bash\nexec '${realCurl}' "$@" ${mode === "streaming html" ? "" : "--max-time 0.1"}\n`);
   executable(dir, "sleep", '#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> "$RUNNER_TEMP/delays"\n[ "$(wc -l < "$RUNNER_TEMP/delays")" -lt 2 ] || kill -TERM "$PPID"\n');
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
     if (mode === "no headers") return new Promise<Response>(() => {});
     if (mode === "html") return new Response("<html>Service unavailable</html>", { headers: { "content-type": "text/html" } });
-    if (mode === "wrong type with SSE bytes") return new Response(frame("status", { sha: "head", state: "success" }, "invalid-cursor"), { headers: { "content-type": "text/plain" } });
+    if (mode === "streaming html") return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("<html>Service unavailable")); } }), { headers: { "content-type": "text/html" } });
+    if (mode === "wrong type with SSE bytes") return new Response(frame("status", { sha: "head", state: "success" }, "invalid-event"), { headers: { "content-type": "text/plain" } });
     const body = mode === "empty SSE" ? "" : new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(": ping\n\n")); } });
     return new Response(body, { headers: { "content-type": "Text/Event-Stream; charset=utf-8" } });
   } });
   const child = Bun.spawn(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: `${server.url}?fixture=1` }, stdout: "pipe", stderr: "pipe", timeout: 3000 });
   try {
     expect(await child.exited).toBe(143);
-    const failure = mode === "html" || mode === "wrong type with SSE bytes" || mode === "no headers";
-    expect(readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number)).toEqual(failure ? [1, 2] : [1, 1]);
+    expect(readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number)).toEqual([1, 2]);
     const log = readFileSync(join(dir, "sse.jsonl"), "utf8");
-    expect(log.includes("connection_failed")).toBe(failure);
-    expect(log).not.toContain("invalid-cursor"); expect(log).not.toContain("<html>"); expect(log).not.toContain("content-type:");
-    expect(readFileSync(join(dir, "sse.cursor"), "utf8")).toBe("previous\n");
+    expect(log).toContain("connection_failed");
+    expect(log.includes("connection_restored")).toBe(mode === "empty SSE" || mode === "SSE timeout");
+    expect(log).not.toContain("invalid-event"); expect(log).not.toContain("<html>"); expect(log).not.toContain("content-type:");
   } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; server.stop(true); }
 });
 
 test.each([
-  ["outage and recovery", [22, 22, 22, 22, 22, 22, 22, 22, 28, 7, 0, 22, 22], [[1, 1], [2, 2], [3, 4], [6, 8], [12, 16], [23, 30], [23, 30], [23, 30], [1, 1], [1, 1], [1, 1], [1, 1], [2, 2]]],
-  ["healthy rotations", [28, 28, 0], [[1, 1], [1, 1], [1, 1]]],
+  ["outage and recovery", [22, 22, 22, 22, 22, 22, 22, 22, 28, 7, 0, 22, 22], [[1, 1], [2, 2], [3, 4], [6, 8], [12, 16], [23, 30], [23, 30], [23, 30], [23, 30], [23, 30], [23, 30], [23, 30], [23, 30]]],
+  ["timeouts and EOF", [28, 28, 0], [[1, 1], [2, 2], [3, 4]]],
 ] as const)("subscription retry delays stay bounded through %s", (_, statuses, bounds) => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "statuses"), statuses.join("\n") + "\n");
@@ -608,7 +638,7 @@ test.each([
   expect(delays).toHaveLength(bounds.length);
   for (const [i, [min, max]] of bounds.entries()) { expect(delays[i]!).toBeGreaterThanOrEqual(min); expect(delays[i]!).toBeLessThanOrEqual(max); }
   const { output, run } = runHook(readFileSync(join(dir, "sse.jsonl"), "utf8"));
-  expect((output.match(/connection_failed/g) || []).length).toBe(statuses.some(status => status !== 0 && status !== 28) ? 1 : 0);
+  expect((output.match(/connection_failed/g) || []).length).toBe(statuses.length);
   expect(run().stdout.toString()).toBe("");
 });
 
@@ -639,15 +669,7 @@ test("TERM interrupts a long retry delay after the failure becomes visible", asy
   } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; }
 });
 
-test.each([
-  ["empty response", "", "dispatch", "", "dispatch"],
-  ["heartbeat", ": ping\n\n", "dispatch", "", "dispatch"],
-  ["truncated id", "id: lost", "dispatch", "", "dispatch"],
-  ["truncated frame", "id: lost\ndata: {}\n", "dispatch", "", "dispatch"],
-  ["no saved cursor", "", "", "", ""],
-  ["only a gap receipt", "", "gap:old:cursor", "", ""],
-  ["a consumed sequence", "", "dispatch", "seq:epoch:5", "seq:epoch:5"],
-])("the real subscription preserves its replay cursor after %s", (_, initialResponse, savedCursor, checkpoint, expectedCursor) => {
+test.each(["", ": ping\n\n", "id: lost", "id: lost\ndata: {}\n"])("subscriptions keep complete frames and ignore legacy cursors after %j", initialResponse => {
   const { dir, env } = fixture();
   const first = frame("status", { sha: "head", state: "success" }, "first");
   const second = frame("status", { sha: "head", state: "failure" }, "second");
@@ -668,19 +690,24 @@ process.exit(28);
   executable(dir, "sleep", '#!/usr/bin/env bash\n[ "$(wc -l < "$RUNNER_TEMP/curl-calls")" -lt 4 ] || kill -TERM "$PPID"\n');
   const subscription = step("Subscribe PR updates via SSE").run;
   mkdirSync(join(dir, "sessions"), { recursive: true });
-  if (savedCursor) writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify([savedCursor]));
-  if (checkpoint) writeFileSync(join(dir, "sessions/.github-cursor"), checkpoint);
+  writeFileSync(join(dir, "sessions/.github-deliveries.json"), JSON.stringify(["old-delivery"]));
+  writeFileSync(join(dir, "sessions/.github-cursor"), "legacy-checkpoint");
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "created", sender: { login: "collaborator", type: "User" } }));
   const result = Bun.spawnSync(["bash", "-c", subscription + '\nwait "$!" || [ "$?" -eq 143 ]'], { env: { ...env, EVENTS_URL: "https://example.test/events?token=fixture", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(dir, "event.json"), ACTIVITY_ID: "seed", ACTIVITY_WRITER: "true" }, timeout: 3000 });
   expect(result.exitCode).toBe(0);
   const log = readFileSync(join(dir, "sse.jsonl"), "utf8");
   expect(log.startsWith("id: seed\nevent: issue_comment\ndata: {")).toBe(true);
-  expect(log.endsWith(first + second)).toBe(true);
+  expect(log).toContain(first); expect(log).toContain(second);
+  expect(log.match(/id: second/g)).toHaveLength(1);
+  expect(existsSync(join(dir, "sse.cursor"))).toBe(false);
   const calls = readFileSync(join(dir, "curl-calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-  for (const [i, delivery] of [expectedCursor, expectedCursor, "first", "second"].entries()) {
-    if (delivery) expect(calls[i]).toContain(`Last-Event-ID: ${delivery}`);
-    else expect(calls[i].some((arg: string) => arg.startsWith("Last-Event-ID:"))).toBe(false);
-    expect(calls[i]).toContain("https://example.test/events?token=fixture&pr=7&sha=head&run=12");
+  expect(calls).toHaveLength(4);
+  for (const args of calls) {
+    expect(args.some((arg: string) => arg.startsWith("Last-Event-ID:"))).toBe(false);
+    expect(args).not.toContain("--max-time");
+    // A stream that stops sending pings is dead even if its socket stays open.
+    expect(args).toContain("--speed-time");
+    expect(args).toContain("https://example.test/events?token=fixture&pr=7&sha=head&run=12");
   }
 });
 
@@ -760,13 +787,12 @@ test("issue runs propagate Codex failures without requiring a verdict", () => {
 test("forking a review copies its conversation but not another PRs consumption position", () => {
   const { dir, env } = fixture(), source = join(dir, "code-review-homes/owner/repo/source"), target = join(dir, "target");
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
-  for (const name of [".github-cursor", ".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
+  for (const name of [".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
   const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
-  expect(existsSync(join(target, "sessions/.github-cursor"))).toBe(false);
   expect(existsSync(join(target, "sessions/.github-deliveries.json"))).toBe(false);
   expect(existsSync(join(target, "sessions/.github-published-head"))).toBe(false);
 });
@@ -1107,7 +1133,7 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
     JSON.stringify({ event: "status", state: "failure", url: "https://example.test/s/7" }),
     JSON.stringify({ event: "push", commit: "abc", url: "https://example.test/p/8" }),
     JSON.stringify({ event: "pull_request", action: "synchronize", url: "https://example.test/p/9" }),
-    JSON.stringify({ event: "replay_gap", reason: "subscription_failed" }),
+    JSON.stringify({ event: "subscription_recovery", reason: "subscription_failed" }),
   ].join("\n") + "\n";
   const log = (input: string) => {
     const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input) });
@@ -1126,8 +1152,8 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // Blue: the branch or pull request moved.
   expect(output).toContain("\u001b[94mpush\u001b[0m");
   expect(output).toContain("\u001b[94mpull_request/synchronize\u001b[0m");
-  // Magenta: the broker cannot promise a complete history.
-  expect(output).toContain("\u001b[95mreplay_gap\u001b[0m");
+  // Magenta: the subscription was interrupted.
+  expect(output).toContain("\u001b[95msubscription_recovery\u001b[0m");
   // A payload field that carries a workflow command must not run as one, in either form the runner parses.
   // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
   const crafted = log([
