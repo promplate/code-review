@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
 input=$(cat)
-if jq -e '.hook_event_name == "PreToolUse"' <<< "$input" > /dev/null; then
-  # Agent runs post no check run, and a missing id would retry a 404 on every tool call.
-  [ -n "$CHECK_ID" ] || exit 0
-  # Four backticks keep fences inside commands and patches from closing the block early.
-  jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
-    | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
-    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
-  exit 0
-fi
-
-# PreToolUse additionalContext lands between parallel tool calls and their outputs, which strict providers reject, so deliver activity by blocking Stop.
-jq -e '.hook_event_name == "Stop"' <<< "$input" > /dev/null || exit 0
+event=$(jq -r '.hook_event_name // ""' <<< "$input") || exit 0
+case $event in
+  PreToolUse)
+    # A check run shows the command under review while it runs; an async hook cannot decide the tool call, which this one does not need to.
+    if [ -n "${CHECK_ID:-}" ]; then
+      # Four backticks keep fences inside commands and patches from closing the block early.
+      jq -c '{Bash: "sh", apply_patch: "diff"}[.tool_name] as $lang
+        | {output: {title: "Reviewing…", summary: (if $lang then "````\($lang)\n\(.tool_input.command[0:3000])\n````" else "`\(.tool_name)`\n\n````json\n\(.tool_input | tojson | .[0:3000])\n````" end)}}' <<< "$input" \
+        | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH --input - > /dev/null || true
+    fi ;;
+  Stop) ;;
+  *) exit 0 ;;
+esac
 [ -f "$RUNNER_TEMP/sse.jsonl" ] || exit 0
+# Parallel tool calls each run this hook, so serialize the receipt and cursor update rather than lose one; a later round picks up anything skipped.
+lock="$RUNNER_TEMP/injected.lock"
+locked=
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if mkdir "$lock" 2>/dev/null; then locked=1; break; fi
+  sleep 0.2
+done
+[ -n "$locked" ] || exit 0
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 SEEN_FILE="$RUNNER_TEMP/injected-deliveries.json"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(cat "$SEEN_FILE")
@@ -58,7 +68,11 @@ context=$(jq -r .context <<< "$result") || exit 1
 jq -c .seen <<< "$result" > "$SEEN_FILE.new" || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
-  jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}' || exit 1
+  if [ "$event" = PreToolUse ]; then
+    jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}}' || exit 1
+  else
+    jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" '{decision: "block", reason: ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.")}' || exit 1
+  fi
 fi
 # A broken output pipe is not consumption. A crash here may replay an event, but must never suppress an undelivered one.
 mv "$SEEN_FILE.new" "$SEEN_FILE" || exit 1

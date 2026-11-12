@@ -214,6 +214,20 @@ test("history plus pending replay is deduplicated within one Stop and across Sto
   expect(JSON.parse(readFileSync(join(dir, "injected-deliveries.json"), "utf8"))).toEqual(["same-delivery"]);
 });
 
+test("a tool round carries new activity before the verdict and leaves nothing for Stop", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/bin/sh\ncat > /dev/null\n");
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "mid-turn" } }, "mid-turn"));
+  const round = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), timeout: 3000 });
+  expect(round.exitCode).toBe(0);
+  const payload = JSON.parse(round.stdout.toString());
+  expect(payload.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  expect(payload.hookSpecificOutput.additionalContext).toContain("mid-turn");
+  const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(stop.exitCode).toBe(0);
+  expect(stop.stdout.toString()).toBe("");
+});
+
 test("a failed context write leaves the event available for the next Stop", async () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "pending-event" } }, "pending-event", true, "seq:epoch:9"));
