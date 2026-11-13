@@ -124,7 +124,7 @@ A plain issue is not a review: the agent works on the default branch, keeps one 
 
 ## Runtime
 
-The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. The SSE subscriber requires Bash 5.1 or newer to monitor curl and its parser together. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.
+The action reuses `bun-version` from the runner or installs it, and uses Bun for the Codex launcher and the optional Langfuse hook. An existing `codex` binary is reused; otherwise Bun installs `codex-version`. The review prompt receives the installed versions rather than hard-coded versions. No separate Node.js installation is needed. The checkout stays untrusted, so Codex skips a reviewed repository's own `.codex/config.toml` and the MCP servers it defines instead of running commands a pull request could supply. The SSE subscriber requires Bash 5.1 or newer to monitor curl and its parser together. GitHub's checkout, cache and artifact actions use their own Node 24 runtime; self-hosted runners must be version 2.327.1 or newer.
 
 ## Options
 
