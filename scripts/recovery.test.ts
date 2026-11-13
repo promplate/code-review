@@ -63,7 +63,7 @@ test("a dispatch names its target, and an issue stays in the issue session group
   const setup = fixture({});
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  "api repos/owner/repo/issues/9"*) printf '%s' '{"number":9,"title":"claim"}' ;;
+  "api repos/owner/repo/issues/9"*) printf '%s' false ;;
   "api repos/owner/repo/commits/main"*) printf '%s' 'basesha' ;;
   *) exit 1 ;;
 esac`);
@@ -78,7 +78,7 @@ esac`);
   expect(dispatch({ DISPATCHED_PR: "7", DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
   // A pull request reaches its own group, so the issue input refuses one instead of forking the session.
   writeFileSync(join(setup.dir, "github-env"), "");
-  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' '{"number":9,"pull_request":{"url":"https://api.github.com/pulls/9"}}'`);
+  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' true`);
   expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
   expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("AGENT=true");
 });

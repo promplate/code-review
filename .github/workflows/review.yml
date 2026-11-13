@@ -43,7 +43,7 @@ jobs:
       # Runs that restore the same session queue behind one another, so the group follows the action's own session key:
       # `pr-<number>`, `issue-<number>` or `ref-<name>`, and an explicit key as given.
       # A run that ends up skipping still restores the session first, and unauthorized activity never reaches this job.
-      group: code-review-${{ inputs.session-key || (github.event.client_payload.pr && format('pr-{0}', github.event.client_payload.pr)) || (github.event.inputs.pr && format('pr-{0}', github.event.inputs.pr)) || (github.event.inputs.issue && format('issue-{0}', github.event.inputs.issue)) || (github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number)) || (github.event.issue.number && (github.event.issue.pull_request && format('pr-{0}', github.event.issue.number) || format('issue-{0}', github.event.issue.number))) || format('ref-{0}', github.ref_name) }}
+      group: code-review-${{ inputs.session-key || (github.event.client_payload.pr && format('pr-{0}', github.event.client_payload.pr)) || (github.event.inputs.pr && format('pr-{0}', github.event.inputs.pr)) || ((github.event.inputs.issue || github.event.issue.number) && (github.event.issue.pull_request && format('pr-{0}', github.event.issue.number) || format('issue-{0}', github.event.inputs.issue || github.event.issue.number))) || (github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number)) || format('ref-{0}', github.ref_name) }}
       queue: max
     runs-on: ${{ inputs.runs-on }}
     steps:
