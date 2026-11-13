@@ -74,13 +74,24 @@ esac`);
   expect(env).toContain("SESSION_KEY=issue-9\n");
   // The agent works on the default branch, whatever ref the dispatch ran on.
   expect(env).toContain("HEAD_SHA=basesha\nHEAD_BRANCH=main\nBASE=main\n");
+  // Keep a valid issue response here so removing the two-target guard makes this fail.
+  expect(dispatch({ DISPATCHED_PR: "7", DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
   // A pull request reaches its own group, so the issue input refuses one instead of forking the session.
   writeFileSync(join(setup.dir, "github-env"), "");
   executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' '{"number":9,"pull_request":{"url":"https://api.github.com/pulls/9"}}'`);
   expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
   expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("AGENT=true");
-  // One dispatch names one target: two would restore one session under the other's group.
-  expect(dispatch({ DISPATCHED_PR: "7", DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
+});
+
+test.each(["DISPATCHED_PR", "DISPATCHED_ISSUE"])("%s rejects noncanonical numbers before querying the API", (input) => {
+  const setup = fixture({});
+  executable(setup.dir, "gh", `#!/bin/sh\necho called >> "$RUNNER_TEMP/api-called"\nprintf '%s' '{"number":7,"head":{"sha":"head","ref":"feature","repo":{"full_name":"owner/repo"}},"base":{"ref":"main"},"user":{"login":"writer"}}'`);
+  for (const number of ["07", "0", "-7", "7 ", "7\n"]) {
+    const result = run("Resolve the review target", setup, { GITHUB_EVENT_NAME: "workflow_dispatch", SESSION_KEY: "", DISPATCHED_PR: "", DISPATCHED_ISSUE: "", [input]: number });
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(join(setup.dir, "api-called"))).toBe(false);
+    expect(readFileSync(join(setup.dir, "github-env"), "utf8")).toBe("");
+  }
 });
 
 test("identity and seeding follow the webhook event, not the workflow event", () => {

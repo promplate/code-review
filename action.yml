@@ -67,6 +67,10 @@ runs:
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
         # Two targets would restore one session under the other's group, so a dispatch names one of them.
         [ -z "$DISPATCHED_PR" ] || [ -z "$DISPATCHED_ISSUE" ] || { echo "::error::Name either pr or issue, not both."; exit 1; }
+        # The group uses the input verbatim; leading zeros would put the API's canonical number in another group.
+        for target in "$DISPATCHED_PR" "$DISPATCHED_ISSUE"; do
+          [ -z "$target" ] || [[ "$target" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
+        done
         [ -z "$DISPATCHED_PR" ] || number=$DISPATCHED_PR
         [ -z "$DISPATCHED_ISSUE" ] || number=$DISPATCHED_ISSUE
         # An event on a plain issue is not a review: the agent works on the default branch and decides what, if anything, to do about it.
