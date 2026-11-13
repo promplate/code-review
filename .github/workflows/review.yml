@@ -38,7 +38,7 @@ jobs:
     needs: authorize
     # A disabled check admits the run; an enabled one must have found write access.
     # Discussion on a closed target has nothing left to review, while a pull request closing still gets its merge reviewed.
-    if: always() && github.event.issue.state != 'closed' && (github.event.pull_request.state != 'closed' || github.event.action == 'closed') && (needs.authorize.result == 'skipped' || needs.authorize.outputs.writer == 'true')
+    if: ${{ !cancelled() && github.event.issue.state != 'closed' && (github.event.pull_request.state != 'closed' || github.event.action == 'closed') && (needs.authorize.result == 'skipped' || needs.authorize.outputs.writer == 'true') }}
     # Low-trust events such as pull_request_target and issue_comment cannot save caches by default, which would drop every session snapshot.
     cache-mode: write
     concurrency:
