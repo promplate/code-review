@@ -42,8 +42,10 @@ jobs:
     # Low-trust events such as pull_request_target and issue_comment cannot save caches by default, which would drop every session snapshot.
     cache-mode: write
     concurrency:
-      # Comments and reviews from bots cannot steer a review, yet their runs would evict a review that waits for a runner when queued after it.
-      group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.ref }}${{ github.event.sender.type == 'Bot' && github.event_name != 'pull_request_target' && format('-{0}', github.run_id) || '' }}
+      # Runs that restore the same session queue behind one another, so the group follows the action's own session key:
+      # `pr-<number>`, `issue-<number>` or `ref-<name>`, and an explicit key as given.
+      # Only discussion from bots, which the action may skip, is split per run; otherwise its runs would evict a review that waits for a runner when queued after it.
+      group: code-review-${{ inputs.session-key || (github.event.client_payload.pr && format('pr-{0}', github.event.client_payload.pr)) || (github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number)) || (github.event.issue.number && (github.event.issue.pull_request && format('pr-{0}', github.event.issue.number) || format('issue-{0}', github.event.issue.number))) || format('ref-{0}', github.ref_name) }}${{ !inputs.session-key && github.event.sender.type == 'Bot' && (github.event_name == 'issue_comment' || github.event_name == 'issues' || github.event_name == 'pull_request_review' || github.event_name == 'pull_request_review_comment') && format('-{0}', github.run_id) || '' }}
       queue: max
     runs-on: ${{ inputs.runs-on }}
     steps:
