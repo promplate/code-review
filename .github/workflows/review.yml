@@ -3,6 +3,10 @@ name: review
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: Runner for the permission check and the review.
+        type: string
+        default: ubuntu-latest
       authorize:
         description: Only repository writers may wake the agent. Checked before the run joins the review queue.
         type: boolean
@@ -27,6 +31,8 @@ jobs:
     permissions: {}
     if: inputs.authorize
     uses: ./.github/workflows/authorize.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
 
   agent:
     name: review
@@ -38,7 +44,7 @@ jobs:
     concurrency:
       group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr || github.ref }}
       queue: max
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     steps:
       - uses: promplate/code-review@main
         with:
