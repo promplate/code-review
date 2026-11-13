@@ -12,7 +12,7 @@ inputs:
     description: Contents of a Codex auth.json, to sign in with ChatGPT instead of an API key.
   codex-version:
     description: "@openai/codex version to install when the runner has no codex."
-    default: 0.166.0
+    default: 0.169.0
   bun-version:
     description: Bun version to reuse or install for the Codex launcher and hooks.
     default: 1.4.4
