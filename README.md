@@ -114,15 +114,14 @@ Set the `service-tier` input to `ultrafast` (or another tier the model advertise
 
 ## Issues
 
-Add an `issues` trigger to have labels start a session that acts on issues instead of reviewing them:
+Add an `issues` trigger to have issue activity start a session that acts on issues instead of reviewing them:
 
 ```yaml
 on:
   issues:
-    types: [labeled]
 ```
 
-A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone. Such a run posts no check run and no verdict; the trigger only delivers the context. `labeled` rather than `opened` keeps every new issue from waking it before someone asks.
+A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone; labelling and classifying the issue is its work too, so the trigger delivers every issue event rather than filtering out the ones a run might act on. Such a run posts no check run and no verdict.
 
 ## Runtime
 
