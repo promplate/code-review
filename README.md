@@ -64,7 +64,9 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
        with:
          # Only repository writers may wake the agent, checked before the run joins the review queue.
          authorize: true
-       secrets: inherit
+       secrets:
+         codex-config: ${{ secrets.CODEX_CONFIG }}
+         codex-auth: ${{ secrets.CODEX_AUTH }}
    ```
 
 The reusable workflow owns the permission check, the shared concurrency group and the review step. Pass `authorize: false` only when every trigger is trusted, such as a private repository; without the check, an unauthorized run still takes a queue slot before it exits. `service-tier` and `session-key` reach the action through the same call.
@@ -94,7 +96,7 @@ Add `repository_dispatch: { types: [code-review] }` to also let the broker start
 
 ## Pushes
 
-To also review pushes outside PRs, such as direct commits to `main`, add a `push` trigger, key the concurrency group by ref for pushes, and let pushes pass the job's `if:`:
+To also review pushes outside PRs, such as direct commits to `main`, add a `push` trigger. The reusable workflow keys the concurrency group by ref for pushes:
 
 ```yaml
 on:
@@ -102,14 +104,6 @@ on:
     branches: [main]
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
-
-jobs:
-  review:
-    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository && (...)
-    concurrency:
-      group: code-review-${{ github.event.pull_request.number || github.event.client_payload.pr || github.ref }}
-      queue: max
-    cache-mode: write
 ```
 
 A push gets a `code-review` check run on its head commit. Certain fixes are committed to the branch, or opened as PRs when branch protection rejects them, and Codex comments on a commit only when someone has to act. Each branch keeps one session; set the `session-key` input to group reviews differently. A push that lands only trees this session already reviewed as PR heads, as a squash or rebase merge does, is skipped: its head repeats that verdict as its own check run and only advances the session's reviewed head.
@@ -118,16 +112,12 @@ Set the `service-tier` input to `ultrafast` (or another tier the model advertise
 
 ## Issues
 
-Add an `issues` trigger, and let plain-issue activity pass the job's `if:`, to have the same session act on issues instead of reviewing them:
+Add an `issues` trigger to have labels start a session that acts on issues instead of reviewing them:
 
 ```yaml
 on:
   issues:
     types: [labeled]
-
-jobs:
-  review:
-    if: github.event.issue.state == 'open' || github.event.pull_request.state == 'open' && (...)
 ```
 
 A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone. Such a run posts no check run and no verdict; the trigger only delivers the context. `labeled` rather than `opened` keeps every new issue from waking it before someone asks.
