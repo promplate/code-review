@@ -84,7 +84,9 @@ Each run seeds the webhook that started it into its event stream in the same sha
 - Completed checks on the reviewed head wake a review that waits for CI; the review's own check runs and suites never do.
 - The review decides when a pull request is safe to merge, using CI results it trusts and running the checks that matter when CI is missing or flaky. It leaves work that is still moving, such as recent pushes or an open draft, to the author. The action merges only when the verdict says so and the head has not moved since.
 
-The tool and stop hooks record consumed context locally. The action checkpoints these receipts with the review session after publishing the checks, PR review and reactions successfully. Queued runs fetch the current PR head and skip consumed activity only when that head also has a saved publication checkpoint. Older caches without this checkpoint are reviewed once more. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Receipt deduplication is independent of the transport: the action neither saves a replay cursor nor sends `Last-Event-ID`.
+The tool and stop hooks record consumed context locally. The action checkpoints these receipts with the review session after publishing the checks, PR review and reactions successfully. Session snapshots are Actions artifacts shared across trigger refs and subject to the repository's artifact retention. When no artifact exists, the action can resume from a legacy cache visible to the trigger. Queued runs fetch the current PR head and skip consumed activity only when that head also has a saved publication checkpoint. Receiving an event alone never marks it consumed, and a forked review starts its own checkpoint. Receipt deduplication is independent of the transport: the action neither saves a replay cursor nor sends `Last-Event-ID`.
+
+Anyone with read access to the repository can download its session artifacts, including the full Codex conversation and tool output. In a public repository, treat those snapshots as public. [GitHub artifact access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
 
 The broker must return HTTP 200 with `Content-Type: text/event-stream`. The subscription holds one connection open until it ends, then retries with jittered backoff up to 30 seconds; an HTML error page, a minute without a ping, or a timeout before response headers cannot count as a healthy stream. Stopping the subscription also stops its curl, parser and retry timer.
 
@@ -130,7 +132,7 @@ The action reuses `bun-version` from the runner or installs it, and uses Bun for
 
 The App needs **Contents**, **Pull requests** and **Checks** write access, plus **Issues** write when reviews should open issues for problems they cannot fix. The broker asks for whichever Issues level the installation grants, so a read-only installation still reviews and only loses issue creation.
 
-`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: write` lets it drop superseded session snapshots from the Actions cache.
+`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: write` lets it restore session artifacts across workflow runs and drop superseded snapshots.
 
 To review as your own GitHub App, deploy the broker with that App's credentials and point the `broker` input at it; the action learns which login it acts as from the token it mints, so workflows never name the App.
 
