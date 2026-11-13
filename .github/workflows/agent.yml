@@ -15,6 +15,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review.
+      issue:
+        description: Issue number to hand the agent; a pull request belongs in `pr`.
 
 permissions:
   actions: write

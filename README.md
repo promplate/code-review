@@ -96,6 +96,8 @@ A head pushed after Codex exits is handled by a subsequent workflow run. Publica
 
 Add `repository_dispatch: { types: [code-review] }` to also let the broker start a review when a base push leaves an approved PR conflicting. The dispatch identifies the PR in `client_payload.pr`.
 
+Add `workflow_dispatch` to start a run by hand, and give it `pr` and `issue` inputs to name the target; with neither, it reviews the ref it was dispatched on. A pull request belongs in `pr`, because sessions are grouped by the number they act on: an `issue` input rejects a number the API reports as a pull request rather than running in that PR's group.
+
 ## Pushes
 
 To also review pushes outside PRs, such as direct commits to `main`, add a `push` trigger. The reusable workflow keys the concurrency group by ref for pushes:

@@ -59,6 +59,21 @@ test("queued PR webhooks resolve the current head while retaining their original
   }
 });
 
+test("a dispatch names its target, and an issue stays in the issue session group", () => {
+  const setup = fixture({});
+  executable(setup.dir, "gh", `#!/bin/sh\n[ "$*" = "api repos/owner/repo/issues/9" ] || exit 1\nprintf '%s' '{"number":9,"title":"claim"}'`);
+  const dispatch = (env: Record<string, string>) => run("Resolve the review target", setup, { GITHUB_EVENT_NAME: "workflow_dispatch", CODEX_CONFIG: 'model = "deepseek-flash"', SESSION_KEY: "", ...env });
+  expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).toBe(0);
+  const env = readFileSync(join(setup.dir, "github-env"), "utf8");
+  expect(env).toContain("AGENT=true\nISSUE_NUMBER=9\n");
+  expect(env).toContain("SESSION_KEY=issue-9\n");
+  // A pull request reaches its own group, so the issue input refuses one instead of forking the session.
+  writeFileSync(join(setup.dir, "github-env"), "");
+  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' '{"number":9,"pull_request":{"url":"https://api.github.com/pulls/9"}}'`);
+  expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
+  expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("AGENT=true");
+});
+
 test("identity and seeding follow the webhook event, not the workflow event", () => {
   for (const [event, expected] of [["pull_request_target", "pull_request"], ["pull_request_review", "pull_request_review"]]) {
     const setup = fixture({ action: "submitted", review: { id: 5, submitted_at: "now" }, pull_request: { number: 7, head: { sha: "head" } } });
