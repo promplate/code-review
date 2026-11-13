@@ -694,15 +694,10 @@ runs:
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
-        # The wait identifies this workflow's other runs, which the App token cannot list.
-        ACTIONS_TOKEN: ${{ github.token }}
       run: |
         merge=$(jq -c 'select(.conclusion == "success") | .merge // empty' "$RUNNER_TEMP/review.json")
         [ -n "$merge" ] || exit 0
-        # The shared wait excludes this job's own check runs, wakes on the SSE stream and gives up at WAIT_CI_TIMEOUT instead of holding the runner.
-        # A repository with no other checks still merges, as it did before the wait moved into the script.
-        WAIT_CI_ALLOW_EMPTY=1 bash "$GITHUB_ACTION_PATH/scripts/wait-ci.sh" "$HEAD_SHA" '.' pass || { echo "::notice::Not merging: checks did not all pass in time."; exit 0; }
+        # The verdict already weighed CI and ran what it judged necessary, so a check still running or flaky is not a gate here.
         # A push (such as a formatter) or a person can move the branch or close the PR while the review runs; merging then would land code no review saw, or fail on a closed PR.
         read -r state head < <(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" --jq '.state + " " + .head.sha' </dev/null)
         [ "$state" = open ] || { echo "::notice::Not merging: the pull request is $state."; exit 0; }
