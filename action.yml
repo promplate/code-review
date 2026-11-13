@@ -283,11 +283,36 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$FORK_KEY"
 
     - name: Restore the session to fork
+      id: restore-fork
       if: steps.fork-snapshot.outputs.id
+      continue-on-error: true
       uses: actions/download-artifact@v8
       with:
         artifact-ids: ${{ steps.fork-snapshot.outputs.id }}
         run-id: ${{ steps.fork-snapshot.outputs.run-id }}
+        github-token: ${{ github.token }}
+        path: ${{ env.CODEX_HOME }}/fork
+
+    - name: Find a replacement session to fork
+      id: fork-replacement
+      if: steps.restore-fork.outcome == 'failure'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FORK_KEY: ${{ steps.check.outputs.fork-key }}
+        REPLACE_SNAPSHOT_ID: ${{ steps.fork-snapshot.outputs.id }}
+      run: |
+        # The opener has its own queue and can prune this snapshot during the child's download.
+        bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$FORK_KEY"
+        rm -rf "$CODEX_HOME/fork"
+
+    - name: Restore the replacement session to fork
+      id: restore-fork-replacement
+      if: steps.fork-replacement.outputs.id
+      uses: actions/download-artifact@v8
+      with:
+        artifact-ids: ${{ steps.fork-replacement.outputs.id }}
+        run-id: ${{ steps.fork-replacement.outputs.run-id }}
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}/fork
 
@@ -399,7 +424,7 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ (steps.fork-snapshot.outputs.id || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
+        FORK_KEY: ${{ (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}

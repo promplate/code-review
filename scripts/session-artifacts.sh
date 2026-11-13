@@ -24,6 +24,12 @@ fi
 
 latest=$(jq -r 'last | [.id, .workflow_run.id, .name] | @tsv' <<< "$snapshots")
 read -r id run slot <<< "$latest"
+if [ -n "${REPLACE_SNAPSHOT_ID:-}" ]; then
+  if [ -z "$id" ] || jq -e --argjson failed "$REPLACE_SNAPSHOT_ID" 'any(.[]; .id == $failed)' <<< "$snapshots" >/dev/null; then
+    echo "::error::The fork session download failed and the selected snapshot was not replaced." >&2
+    exit 1
+  fi
+fi
 # Reruns share a workflow run ID. Use the other name if overwriting would remove the latest snapshot.
 if [ "$run" = "$GITHUB_RUN_ID" ] && [ "$slot" = "$name" ]; then name=$name-next; fi
 printf 'id=%s\nrun-id=%s\nname=%s\n' "$id" "$run" "$name" >> "$GITHUB_OUTPUT"

@@ -190,6 +190,38 @@ test("attempts 2 and 3 alternate slots and keep the last snapshot until its repl
   expect(lookup("11").id).toBe("18");
 });
 
+test("a fork retries the download only after the opener prunes its selected snapshot", () => {
+  const { setup, lookup, cleanup, artifact, write, read } = sessionSnapshots();
+  const find = "Find a replacement session to fork", restore = "Restore the replacement session to fork";
+  const source = { SESSION_KEY: "pr-6" };
+  const name = lookup("10", source).name;
+  const old = artifact(20, name, 10, 10), next = artifact(19, name + "-next", 11, 11);
+  const output = join(setup.dir, "github-output");
+  expect(step("Restore the session to fork")["continue-on-error"]).toBe(true);
+  expect(step(find).if).toBe("steps.restore-fork.outcome == 'failure'");
+  expect(step(restore).with).toMatchObject({
+    "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
+    path: "${{ env.CODEX_HOME }}/fork",
+  });
+  expect(step("Run codex review").env.FORK_KEY).toContain("steps.restore-fork-replacement.outcome == 'success'");
+  write([old]);
+  expect(lookup("12", source).id).toBe("20");
+  const retry = () => {
+    writeFileSync(output, "");
+    return run(find, setup, { GH_TOKEN: "token", FORK_KEY: "pr-6", REPLACE_SNAPSHOT_ID: "20" });
+  };
+  expect(retry().exitCode).not.toBe(0);
+  write([old, next]);
+  expect(retry().exitCode).not.toBe(0);
+  expect(read()).toEqual([old, next]);
+  expect(cleanup(next.id, source).exitCode).toBe(0);
+  expect(read()).toEqual([next]);
+  mkdirSync(join(setup.dir, "fork"));
+  expect(retry().exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toContain("id=19\nrun-id=11\n");
+  expect(existsSync(join(setup.dir, "fork"))).toBe(false);
+});
+
 test("hook receipts survive publication and restore from the cached JSON format", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
