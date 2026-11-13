@@ -59,35 +59,15 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
      id-token: write
 
    jobs:
-     authorize:
-       # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action
-       # would skip must never take a slot there: it could push a new head's review out of the queue.
-       name: Check ${{ github.event.sender.login }} may steer the agent
-       uses: promplate/code-review/.github/workflows/authorize.yml@main
+     agent:
+       uses: promplate/code-review/.github/workflows/review.yml@main
        with:
-         runs-on: ubuntu-latest
-     review:
-       # Sessions are cached in the base branch's scope, so only same-repository PRs are reviewed; the App's own PRs wait until they leave draft.
-       needs: authorize
-       if: >
-         needs.authorize.outputs.writer == 'true' && (
-         (github.event.issue.pull_request != null && github.event.issue.state == 'open')
-         || (github.event_name == 'repository_dispatch' && github.event.client_payload.pr)
-         || (github.event.issue.pull_request == null && github.event.pull_request.state == 'open' && github.event.pull_request.head.repo.full_name == github.repository
-             && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')))
-       concurrency:
-         # Keep the active review consuming SSE while later events wait to reconcile its saved session.
-         group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.event.client_payload.pr }}
-         queue: max
-       # Low-trust events such as pull_request_target and issue_comment cannot save caches by default, which would drop every session snapshot.
-       cache-mode: write
-       runs-on: ubuntu-latest
-       steps:
-         - uses: promplate/code-review@main
-           with:
-             codex-config: ${{ secrets.CODEX_CONFIG }}
-             codex-auth: ${{ secrets.CODEX_AUTH }}
+         # Only repository writers may wake the agent, checked before the run joins the review queue.
+         authorize: true
+       secrets: inherit
    ```
+
+The reusable workflow owns the permission check, the shared concurrency group and the review step. Pass `authorize: false` only when every trigger is trusted, such as a private repository; without the check, an unauthorized run still takes a queue slot before it exits. `service-tier` and `session-key` reach the action through the same call.
 
 Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers. They start runs only when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)), so a workflow added on a PR branch can review that PR but cannot take comments until it reaches the default branch.
 
