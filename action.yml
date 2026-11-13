@@ -60,6 +60,7 @@ runs:
         DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
+        CODEX_CONFIG: ${{ inputs.codex-config }}
       run: |
         # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
@@ -90,15 +91,34 @@ runs:
           # One session per issue, so follow-up comments continue the same conversation.
           if [ "$agent" = true ]; then SESSION_KEY=${SESSION_KEY:-issue-$number}; else SESSION_KEY=${SESSION_KEY:-ref-$GITHUB_REF_NAME}; fi
         fi
-        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY" >> "$GITHUB_ENV"
+        home="${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY"
+        printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "$home" >> "$GITHUB_ENV"
         # A session belongs to the model that recorded it; resuming it elsewhere is rejected, so each model keeps its own snapshots.
-        MODEL=$(printf '%s\n' "${{ inputs.codex-config }}" | sed -n 's/^model *= *"\([^"]*\)".*/\1/p' | head -1)
+        MODEL=$(sed -n 's/^model *= *"\([^"]*\)".*/\1/p' <<< "$CODEX_CONFIG" | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
-        # A reused runner may retain receipts from a snapshot whose upload failed; restore receipts only from the matching session cache.
-        rm -f "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-deliveries.json" "${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY/sessions/.github-published-head"
+        # A reused runner can hold an older snapshot, or one that was never published.
+        rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork"
+
+    - name: Find codex session snapshot
+      id: snapshot
+      if: env.SKIP != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY"
 
     - name: Restore codex session
+      if: steps.snapshot.outputs.id
+      uses: actions/download-artifact@v8
+      with:
+        artifact-ids: ${{ steps.snapshot.outputs.id }}
+        run-id: ${{ steps.snapshot.outputs.run-id }}
+        github-token: ${{ github.token }}
+        path: ${{ env.CODEX_HOME }}
+
+    - name: Restore legacy session cache
       id: session-cache
+      if: steps.snapshot.outcome == 'success' && !steps.snapshot.outputs.id
       uses: actions/cache/restore@v6
       with:
         # Branch names may contain "-" but never ":", so the key's prefix matches only this session's snapshots.
@@ -106,8 +126,11 @@ runs:
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
+        # The old shell interpolation stripped the quotes around the configured model.
         key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: "code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:"
+        restore-keys: |
+          code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:
+          code-review-default-${{ env.SESSION_KEY }}:
 
     - name: Skip activity another review already handled
       shell: bash
@@ -250,17 +273,38 @@ runs:
         bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" &
         echo "SSE_PID=$!" >> "$GITHUB_ENV"
 
-    # Paths are part of the cache version, so restore into the opening review's home; the review copies the session from there.
+    - name: Find the session to fork
+      id: fork-snapshot
+      if: steps.check.outputs.fork-key && !steps.snapshot.outputs.id && !steps.session-cache.outputs.cache-matched-key && env.SKIP != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FORK_KEY: ${{ steps.check.outputs.fork-key }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$FORK_KEY"
+
     - name: Restore the session to fork
+      if: steps.fork-snapshot.outputs.id
+      uses: actions/download-artifact@v8
+      with:
+        artifact-ids: ${{ steps.fork-snapshot.outputs.id }}
+        run-id: ${{ steps.fork-snapshot.outputs.run-id }}
+        github-token: ${{ github.token }}
+        path: ${{ env.CODEX_HOME }}/fork
+
+    # Paths are part of the cache version, so a legacy cache restores into the opening review's home.
+    - name: Restore the legacy session to fork
       id: fork
-      if: steps.check.outputs.fork-key && !steps.session-cache.outputs.cache-matched-key && env.SKIP != 'true'
+      if: steps.fork-snapshot.outcome == 'success' && !steps.fork-snapshot.outputs.id
       uses: actions/cache/restore@v6
       with:
         path: |
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/sessions
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/last-thread-id
           ${{ runner.temp }}/code-review-homes/${{ github.repository }}/${{ steps.check.outputs.fork-key }}/check-runs.jsonl
-        key: "code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:"
+        key: code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:
+          code-review-default-${{ steps.check.outputs.fork-key }}:
 
     - name: Reuse the runner's Bun
       id: bun
@@ -355,7 +399,7 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ steps.fork.outputs.cache-matched-key && steps.check.outputs.fork-key }}
+        FORK_KEY: ${{ (steps.fork-snapshot.outputs.id || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
@@ -367,7 +411,7 @@ runs:
         jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
         # Heads this session reviewed face the review; markers for pushes it skipped only bound the next range.
         COMMITS=$(jq -rs 'map(select(.id != "")) | map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
-        # Keep consumption receipts inside the existing cache paths without invalidating earlier session snapshots.
+        # Seed the hook receipts from the restored session before processing new activity.
         if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then jq -r '.[]' "$CODEX_HOME/sessions/.github-deliveries.json" > "$RUNNER_TEMP/injected-deliveries.log"; else : > "$RUNNER_TEMP/injected-deliveries.log"; fi
         rm -f "$RUNNER_TEMP/injected.size"
         if [ "$AGENT" = true ]; then
@@ -431,6 +475,7 @@ runs:
         review() {
         if [ -n "$FORK_KEY" ]; then
           fork=${{ runner.temp }}/code-review-homes/${{ github.repository }}/$FORK_KEY
+          [ ! -d "$CODEX_HOME/fork" ] || fork=$CODEX_HOME/fork
           cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
           # The conversation transfers, but events filtered for the source PR were never consumed for this one.
           rm -f "$CODEX_HOME/sessions/.github-deliveries.json" "$CODEX_HOME/sessions/.github-published-head"
@@ -635,40 +680,37 @@ runs:
     - name: Save codex session
       id: save-session
       if: env.SKIP != 'true' || env.RECORDED_SKIP == 'true'
-      # A cache upload failure must not discard a completed review.
+      # An upload failure must not discard a completed review.
       continue-on-error: true
-      uses: actions/cache/save@v6
+      uses: actions/upload-artifact@v7
       with:
+        name: ${{ steps.snapshot.outputs.name }}
+        include-hidden-files: true
+        if-no-files-found: error
+        # A rerun can replace an obsolete slot in this run; lookup keeps the newest snapshot in the other slot.
+        overwrite: true
         path: |
           ${{ env.CODEX_HOME }}/sessions
           ${{ env.CODEX_HOME }}/last-thread-id
           ${{ env.CODEX_HOME }}/check-runs.jsonl
-        key: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Drop older session snapshots
-      if: steps.save-session.outcome == 'success'
+      if: steps.save-session.outputs.artifact-id
       continue-on-error: true
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
-      run: |
-        # Each snapshot holds the whole session, so keep only the one just saved, once it is listed.
-        # Caches are scoped to their ref; deleting another ref's snapshot would leave that trigger without a session.
-        ref=$(jq -rn 'env.GITHUB_REF | @uri')
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches?key=code-review-$MODEL_NAME-$SESSION_KEY:&ref=$ref&per_page=100" \
-          --jq 'if any(.actions_caches[]; .key == env.KEY) then .actions_caches[].key | select(. != env.KEY) else empty end' </dev/null \
-          | while read -r key; do bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api -X DELETE "repos/${{ github.repository }}/actions/caches?key=$key" </dev/null > /dev/null; done
+        SNAPSHOT_ID: ${{ steps.save-session.outputs.artifact-id }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY" "$SNAPSHOT_ID"
 
     - name: Mark forked PRs ready
-      # A failed publication skips the cache save, so the pending list is kept beside the session until every draft is ready.
+      # A failed publication skips the snapshot, so the pending list is kept beside the session until every draft is ready.
       # Consumed retries still need to release drafts restored from the session.
       if: always()
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        SAVE_OUTCOME: ${{ steps.save-session.outcome }}
-        KEY: code-review-${{ env.MODEL_NAME }}-${{ env.SESSION_KEY }}:${{ github.run_id }}-${{ github.run_attempt }}
+        SNAPSHOT_ID: ${{ steps.save-session.outputs.artifact-id }}
       run: |
         [ -n "$CODEX_HOME" ] || exit 0
         opened=$(if [ -f "$RUNNER_TEMP/forked-prs" ]; then cat "$RUNNER_TEMP/forked-prs"; fi) || exit 1
@@ -678,10 +720,8 @@ runs:
         # A draft this run opened can only fork the session it was written into; drafts an earlier run left pending were already waiting after a save.
         if [ -n "$(printf '%s' "$opened" | sed '/^$/d')" ]; then
           listed=false
-          [ "$SAVE_OUTCOME" != success ] || listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/caches" \
-            --method GET -f "key=$KEY" -f "ref=$GITHUB_REF" -f per_page=100 \
-            --jq 'any(.actions_caches[]; .key == env.KEY)' </dev/null) || listed=false
-          [ "$listed" = true ] || { echo "::warning::The session snapshot $KEY is not listed, so drafts this run opened stay draft."; pending=$(comm -23 <(printf '%s\n' "$pending") <(printf '%s\n' "$opened" | sed '/^$/d' | sort -u)); [ -n "$pending" ] || exit 0; }
+          [ -z "$SNAPSHOT_ID" ] || listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/artifacts/$SNAPSHOT_ID" --jq '.expired == false' </dev/null) || listed=false
+          [ "$listed" = true ] || { echo "::warning::The session snapshot is unavailable, so drafts this run opened stay draft."; pending=$(comm -23 <(printf '%s\n' "$pending") <(printf '%s\n' "$opened" | sed '/^$/d' | sort -u)); [ -n "$pending" ] || exit 0; }
         fi
         left=
         while read -r url; do
@@ -739,7 +779,7 @@ runs:
     - name: Drop the plugin cache
       if: always()
       shell: bash
-      # Every home syncs its own ~90MB copy of the curated plugins, which self-hosted runners would keep in /tmp; the session is already cached.
+      # Every home syncs its own ~90MB copy of the curated plugins, which self-hosted runners would keep in /tmp.
       # A Resolve failure leaves CODEX_HOME unset, and `rm -rf "/.tmp"` would delete a real directory on a self-hosted runner.
       run: |
         [ -n "$CODEX_HOME" ] || exit 0

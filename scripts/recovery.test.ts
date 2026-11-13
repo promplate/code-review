@@ -18,7 +18,8 @@ function fixture(event: object = comment) {
   for (const file of ["github-env", "sse.jsonl", "check-runs.jsonl"]) writeFileSync(join(dir, file), "");
   writeFileSync(join(dir, "event.json"), JSON.stringify(event));
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
-    GITHUB_REPOSITORY: "owner/repo", GITHUB_ENV: join(dir, "github-env"), GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: "issue_comment",
+    GITHUB_REPOSITORY: "owner/repo", GITHUB_REPOSITORY_ID: "23", GITHUB_ENV: join(dir, "github-env"), GITHUB_OUTPUT: join(dir, "github-output"),
+    GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: "issue_comment", MODEL_NAME: "deepseek-flash", SESSION_KEY: "pr-7",
     PR_NUMBER: "7", HEAD_SHA: "head", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
     EYES_REACTION_ID: "", EYES_REACTION_PATH: "" };
   return { dir, env };
@@ -50,8 +51,9 @@ test("queued PR webhooks resolve the current head while retaining their original
     const fresh = { number: 7, head: { sha: "new", ref: "feature", repo: { full_name: "owner/repo" } }, base: { ref: "main" }, user: writer };
     executable(setup.dir, "gh", `#!/bin/sh\n[ "$*" = "api repos/owner/repo/pulls/7" ] || exit 1\nprintf '%s' '${JSON.stringify(fresh)}'\n`);
     const before = readFileSync(join(setup.dir, "event.json"), "utf8");
-    expect(run("Resolve the review target", setup, { GITHUB_EVENT_NAME: kind }).exitCode).toBe(0);
+    expect(run("Resolve the review target", setup, { GITHUB_EVENT_NAME: kind, CODEX_CONFIG: 'model = "deepseek-flash"' }).exitCode).toBe(0);
     expect(readFileSync(join(setup.dir, "github-env"), "utf8")).toContain("HEAD_SHA=new\n");
+    expect(readFileSync(join(setup.dir, "github-env"), "utf8")).toContain("MODEL_NAME=deepseek-flash\n");
     expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("SKIP=true");
     expect(readFileSync(join(setup.dir, "event.json"), "utf8")).toBe(before);
   }
@@ -84,7 +86,7 @@ test("a synchronize retry requires a published checkpoint, including for older c
   expect(gate(setup, { GITHUB_EVENT_NAME: "pull_request_target" })).toContain("SKIP=true");
 });
 
-test("every publication precedes checkpointing and cache save, while merge waits follow it", () => {
+test("every publication precedes checkpointing and snapshot upload, while merge waits follow it", () => {
   const index = (name: string) => steps.indexOf(step(name));
   const checkpoint = index("Checkpoint published review"), save = index("Save codex session");
   for (const name of ["Publish check run", "Publish other commit verdicts", "Publish PR review", "Finish PR reactions", "Write review summary"]) expect(index(name)).toBeLessThan(checkpoint);
@@ -93,34 +95,99 @@ test("every publication precedes checkpointing and cache save, while merge waits
   expect(step("Checkpoint published review").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
-  expect(step("Drop older session snapshots").if).toBe("steps.save-session.outcome == 'success'");
-  // A failed publication skips the cache save, so drafts must still be released from the runner and the session copy.
+  expect(step("Drop older session snapshots").if).toBe("steps.save-session.outputs.artifact-id");
+  // A failed publication skips the snapshot, but earlier saved drafts can still be released.
   expect(step("Mark forked PRs ready").if).toBe("always()");
 });
 
-test("snapshot cleanup preserves other refs and waits for the saved snapshot", () => {
-  for (const ref of ["refs/heads/main", "refs/pull/7/merge", "refs/heads/release+next", "refs/heads/release&next", "refs/heads/release#next"]) {
-    for (const visible of [true, false]) {
-      const setup = fixture(), prefix = "code-review-default-pr-7:", key = `${prefix}12-1`;
-      const caches = [{ key: `${prefix}10-1`, ref }, { key: `${prefix}11-1`, ref: "refs/heads/other" }];
-      if (visible) caches.push({ key, ref });
-      writeFileSync(join(setup.dir, "caches.json"), JSON.stringify(caches));
-      executable(setup.dir, "gh", `#!${process.execPath}
-const args = process.argv.slice(2), url = new URL(args.find(arg => arg.startsWith("repos/")), "https://api.github.com/");
-const path = process.env.RUNNER_TEMP + "/caches.json", caches = await Bun.file(path).json();
-if (args.includes("DELETE")) {
-  await Bun.write(path, JSON.stringify(caches.filter(cache => cache.key !== url.searchParams.get("key"))));
+function sessionSnapshots() {
+  const setup = fixture(), artifacts = join(setup.dir, "artifacts.json"), output = join(setup.dir, "github-output");
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!${process.execPath}
+const [command, endpoint, ...args] = process.argv.slice(2);
+if (endpoint.includes("collaborators")) { console.log("write"); process.exit(0); }
+const path = process.env.RUNNER_TEMP + "/artifacts.json", artifacts = await Bun.file(path).json();
+if (command !== "api" || process.env.GH_TOKEN !== "token" || !endpoint.startsWith("repos/owner/repo/actions/artifacts")) process.exit(1);
+if (args.includes("GET")) {
+  const name = args.find(arg => arg.startsWith("name=")).slice(5);
+  if (process.env.FAIL_LIST === name) process.exit(1);
+  console.log(JSON.stringify({ artifacts: artifacts.filter(artifact => artifact.name === name) }));
 } else {
-  const matches = caches.filter(cache => cache.key.startsWith(url.searchParams.get("key")) && (!url.searchParams.has("ref") || cache.ref === url.searchParams.get("ref")));
-  const result = Bun.spawnSync(["jq", "-r", args[args.indexOf("--jq") + 1]], { stdin: Buffer.from(JSON.stringify({ actions_caches: matches })) });
-  process.stdout.write(result.stdout);
-  process.exit(result.exitCode);
+  const id = Number(endpoint.split("/").at(-1)), found = artifacts.find(artifact => artifact.id === id);
+  if (!found) process.exit(1);
+  if (args.includes("DELETE")) await Bun.write(path, JSON.stringify(artifacts.filter(artifact => artifact.id !== id)));
+  else console.log(JSON.stringify(found));
 }
 `);
-      expect(run("Drop older session snapshots", setup, { MODEL_NAME: "default", SESSION_KEY: "pr-7", KEY: key, GITHUB_REF: ref }).exitCode).toBe(0);
-      expect(JSON.parse(readFileSync(join(setup.dir, "caches.json"), "utf8"))).toEqual(visible ? caches.slice(1) : caches);
-    }
-  }
+  writeFileSync(artifacts, "[]");
+  const lookup = (runId: string, extraEnv: Record<string, string> = {}) => {
+    writeFileSync(output, "");
+    expect(run("Find codex session snapshot", setup, { GH_TOKEN: "token", GITHUB_RUN_ID: runId, ...extraEnv }).exitCode).toBe(0);
+    return Object.fromEntries(readFileSync(output, "utf8").trimEnd().split("\n").map(line => line.split("=")));
+  };
+  const cleanup = (id: number, extraEnv: Record<string, string> = {}) => run("Drop older session snapshots", setup, { GH_TOKEN: "token", SNAPSHOT_ID: String(id), ...extraEnv });
+  const artifact = (id: number, name: string, runId: number, second: number, repo = 23, expired = false) =>
+    ({ id, name, expired, created_at: `2026-11-13T00:00:${String(second).padStart(2, "0")}Z`, workflow_run: { id: runId, head_repository_id: repo } });
+  return { setup, lookup, cleanup, artifact,
+    write: (entries: ReturnType<typeof artifact>[]) => writeFileSync(artifacts, JSON.stringify(entries)),
+    read: () => JSON.parse(readFileSync(artifacts, "utf8")) };
+}
+
+test("main → merge ref → main restores the latest complete snapshot before deduplication", () => {
+  const { setup, lookup, cleanup, artifact, write, read } = sessionSnapshots();
+  const restore = "Restore codex session";
+  const snapshotPaths = step("Save codex session").with.path.trim().split("\n").map((path: string) => path.split("/").at(-1));
+  expect(snapshotPaths).toEqual(["sessions", "last-thread-id", "check-runs.jsonl"]);
+  expect(step("Save codex session").with["include-hidden-files"]).toBe(true);
+  expect(step(restore).with["artifact-ids"]).toBe("${{ steps.snapshot.outputs.id }}");
+  expect(step("Restore legacy session cache").if).toContain("!steps.snapshot.outputs.id");
+  expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
+  const main = { GITHUB_REF: "refs/heads/main" }, merge = { GITHUB_REF: "refs/pull/7/merge" };
+  const first = lookup("10", main);
+  expect(first.id).toBe("");
+  expect(run("Find codex session snapshot", setup, { GH_TOKEN: "token", FAIL_LIST: first.name }).exitCode).not.toBe(0);
+  const initial = artifact(20, first.name, 10, 10), orphan = artifact(19, first.name + "-next", 9, 9), review = artifact(11, first.name, 11, 11);
+  const other = artifact(12, first.name + "-other", 12, 10), fork = artifact(13, first.name, 13, 10, 24), expired = artifact(14, first.name, 14, 10, 23, true);
+  write([initial, orphan, other]);
+  expect(lookup("11", merge)).toEqual({ id: "20", "run-id": "10", name: first.name });
+  expect(cleanup(11).exitCode).not.toBe(0);
+  expect(read()).toEqual([initial, orphan, other]);
+  write([initial, orphan, review, other, fork, expired]);
+  expect(cleanup(11, { FAIL_LIST: first.name + "-next" }).exitCode).not.toBe(0);
+  expect(read()).toEqual([initial, orphan, review, other, fork, expired]);
+  expect(cleanup(11).exitCode).toBe(0);
+  expect(read()).toEqual([review, other, fork, expired]);
+  expect(lookup("12", main)).toEqual({ id: "11", "run-id": "11", name: first.name });
+  expect(lookup("12", { ...main, SESSION_KEY: "pr-8" }).id).toBe("");
+  expect(lookup("12", { ...main, MODEL_NAME: "another-model" }).id).toBe("");
+
+  // Emulate the download of the selected snapshot into a fresh runner home.
+  writeFileSync(join(setup.dir, "last-thread-id"), "shared-thread\n");
+  writeFileSync(join(setup.dir, "check-runs.jsonl"), '{"sha":"head"}\n');
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([delivery]));
+  expect(gate(setup, main)).toContain("SKIP=true");
+});
+
+test("attempts 2 and 3 alternate slots and keep the last snapshot until its replacement is visible", () => {
+  const { lookup, cleanup, artifact, write, read } = sessionSnapshots();
+  const runId = "10", primary = lookup(runId).name, alternate = primary + "-next";
+  const first = artifact(20, primary, 10, 10), second = artifact(19, alternate, 10, 11), third = artifact(18, primary, 10, 12);
+  expect(step("Save codex session").with).toMatchObject({ name: "${{ steps.snapshot.outputs.name }}", overwrite: true });
+  write([first]);
+  expect(lookup(runId, { GITHUB_RUN_ATTEMPT: "2" })).toEqual({ id: "20", "run-id": runId, name: alternate });
+  expect(cleanup(second.id).exitCode).not.toBe(0);
+  expect(read()).toEqual([first]);
+  write([first, second]);
+  expect(cleanup(second.id).exitCode).toBe(0);
+  expect(read()).toEqual([second]);
+  expect(lookup(runId, { GITHUB_RUN_ATTEMPT: "3" })).toEqual({ id: "19", "run-id": runId, name: primary });
+  expect(cleanup(third.id).exitCode).not.toBe(0);
+  expect(read()).toEqual([second]);
+  write([second, third]);
+  expect(cleanup(third.id).exitCode).toBe(0);
+  expect(read()).toEqual([third]);
+  expect(lookup("11").id).toBe("18");
 });
 
 test("hook receipts survive publication and restore from the cached JSON format", () => {
@@ -130,7 +197,7 @@ test("hook receipts survive publication and restore from the cached JSON format"
   const frame = (id: string, body: string) => `data: ${JSON.stringify({ event: "issue_comment", delivery: id, writer: true, body: JSON.stringify({ ...comment, comment: { body } }) })}\n\n`;
   writeFileSync(join(setup.dir, "sse.jsonl"), frame("cached-event", "already handled") + frame(delivery, "fresh activity"));
   const review = step("Run codex review").run;
-  const restore = review.slice(review.indexOf("# Keep consumption receipts"), review.indexOf('if [ "$AGENT" = true ]; then'));
+  const restore = review.slice(review.indexOf("# Seed the hook receipts"), review.indexOf('if [ "$AGENT" = true ]; then'));
   const initialize = () => Bun.spawnSync(["bash", "-ec", restore], { env: setup.env });
   expect(initialize().exitCode).toBe(0);
   const hook = () => Bun.spawnSync(["bash", join(root, "scripts/review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
@@ -207,7 +274,7 @@ esac
   }
 });
 
-test("cache upload failure restores the previous checkpoint and replays newer activity", () => {
+test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), "[]");
@@ -275,7 +342,7 @@ test("a failed publication releases only drafts an earlier run left pending", ()
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
   executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
-  const result = run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "skipped" });
+  const result = run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "" });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("stay draft");
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/9\n");
@@ -284,15 +351,15 @@ test("a failed publication releases only drafts an earlier run left pending", ()
 });
 
 test.each([
-  ["", { SAVE_OUTCOME: "skipped" }, false],
-  ["forked-prs", { SAVE_OUTCOME: "success" }, true],
-  ["sessions/.github-pending-drafts", { SAVE_OUTCOME: "skipped" }, true],
+  ["", { SNAPSHOT_ID: "" }, false],
+  ["forked-prs", { SNAPSHOT_ID: "27" }, true],
+  ["sessions/.github-pending-drafts", { SNAPSHOT_ID: "" }, true],
 ])("draft release accepts optional lists: %s", (file, extra, released) => {
   const setup = fixture(), url = "https://github.com/owner/repo/pull/8";
   if (file) writeFileSync(join(setup.dir, file), `${url}\n`);
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *actions/caches*) echo true ;;
+  *actions/artifacts/27*) echo true ;;
   "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
@@ -309,12 +376,12 @@ test("new draft handoffs preserve pending drafts restored from the session", () 
   expect(Bun.spawnSync(["bash", "-eo", "pipefail", "-c", commands], { env: { ...setup.env, AGENT: "true" } }).exitCode).toBe(0);
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *actions/caches*) echo true ;;
+  *actions/artifacts/27*) echo true ;;
   "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
 `);
-  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success" }).exitCode).toBe(0);
+  expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "27" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\nhttps://github.com/owner/repo/pull/9\n");
 });
 
@@ -326,7 +393,7 @@ test("a consumed retry still releases its cached pending drafts", () => {
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
   expect(gate(setup)).toContain("SKIP=true");
   expect(step("Mark forked PRs ready").if).toBe("always()");
-  expect(run("Mark forked PRs ready", setup, { SKIP: "true", SAVE_OUTCOME: "skipped" }).exitCode).toBe(0);
+  expect(run("Mark forked PRs ready", setup, { SKIP: "true", SNAPSHOT_ID: "" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });
 
@@ -335,44 +402,27 @@ test("a draft stays draft when the saved session is not listed", () => {
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *actions/caches*) echo false ;;
+  *actions/artifacts/27*) echo false ;;
   "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
 `);
-  expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success" }).exitCode).toBe(0);
+  expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "27" }).exitCode).toBe(0);
   expect(existsSync(join(setup.dir, "ready"))).toBe(false);
   expect(readFileSync(join(setup.dir, "forked-prs"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });
 
 test("draft release checks the exact snapshot with the job token and keeps the App token for readiness", () => {
-  for (const ref of ["refs/heads/main", "refs/heads/release+next", "refs/heads/release&next", "refs/heads/release#next"]) {
-    for (const visible of [true, false]) {
-      const setup = fixture(), key = `code-review-default-ref-${ref}:12-1`, url = "https://github.com/owner/repo/pull/8";
-      writeFileSync(join(setup.dir, "forked-prs"), `${url}\n`);
-      executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
-      executable(setup.dir, "gh", `#!${process.execPath}
-const args = process.argv.slice(2);
-if (args[0] === "api") {
-  if (process.env.GH_TOKEN !== "token") process.exit(1);
-  const url = new URL(args[1], "https://api.github.com/");
-  for (let i = 0; i < args.length; i++) if (args[i] === "-f") {
-    const field = args[++i], split = field.indexOf("=");
-    url.searchParams.append(field.slice(0, split), field.slice(split + 1));
-  }
-  const matches = url.searchParams.get("ref") === process.env.GITHUB_REF && url.searchParams.get("key") === process.env.KEY;
-  const actions_caches = matches && ${visible} ? [{ key: process.env.KEY }] : [{ key: process.env.KEY + "-other" }];
-  const result = Bun.spawnSync(["jq", "-r", args[args.indexOf("--jq") + 1]], { stdin: Buffer.from(JSON.stringify({ actions_caches })) });
-  process.stdout.write(result.stdout);
-  process.exit(result.exitCode);
-} else if (args[0] === "pr" && args[1] === "ready") {
-  if (process.env.GH_TOKEN) process.exit(1);
-  await Bun.write(process.env.RUNNER_TEMP + "/ready", args[2] + "\\n");
-} else process.exit(1);
+  const setup = fixture(), url = "https://github.com/owner/repo/pull/8";
+  writeFileSync(join(setup.dir, "forked-prs"), `${url}\n`);
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$1 $2" in
+  "api repos/owner/repo/actions/artifacts/27") [ "$GH_TOKEN" = token ] && echo true ;;
+  "pr ready") [ -z "$GH_TOKEN" ] && echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
 `);
-      expect(run("Mark forked PRs ready", setup, { SAVE_OUTCOME: "success", GH_TOKEN: "", KEY: key, GITHUB_REF: ref }).exitCode).toBe(0);
-      expect(existsSync(join(setup.dir, "ready"))).toBe(visible);
-      if (visible) expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
-    }
-  }
+  expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "27", GH_TOKEN: "" }).exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
 });
