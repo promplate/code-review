@@ -281,13 +281,17 @@ esac
   });
 }
 
-test("a success verdict rides in the submitted review body, including on the App's own PRs", () => {
-  const summary = "Checked the transform and its fallback.";
-  const earlier = [{ user: { login: "reviewer[bot]" }, state: "COMMENTED", body: summary }];
-  for (const [author, reviews, expected] of [
-    ["writer", [], { event: "APPROVE", body: summary }],
-    ["reviewer[bot]", [], { event: "COMMENT", body: summary }],
-    ["reviewer[bot]", earlier, null],
+test("success reviews keep useful text and omit empty comments", () => {
+  const text = "LGTM";
+  const earlier = [{ user: { login: "reviewer[bot]" }, state: "COMMENTED", body: text }];
+  for (const [author, reviews, summary, expected] of [
+    ["writer", [], text, { event: "APPROVE", body: text }],
+    ["writer", [], "", { event: "APPROVE" }],
+    ["writer", [], " \n", { event: "APPROVE" }],
+    ["reviewer[bot]", [], text, { event: "COMMENT", body: text }],
+    ["reviewer[bot]", earlier, text, null],
+    ["reviewer[bot]", [], "", null],
+    ["reviewer[bot]", earlier, " \n", null],
   ] as const) {
     const setup = fixture();
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");

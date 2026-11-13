@@ -641,10 +641,10 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # A review carries the verdict itself: its body is the summary, so Codex does not repeat that text as a comment. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
+        # The review state carries the verdict; its body is optional for approvals. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
         REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews?per_page=100" </dev/null)
         LAST=$(jq -r '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last | .state // ""' <<< "$REVIEWS")
-        # The App's own PRs get a COMMENT review for either verdict, and the comment body tells repeat runs they already said it.
+        # On the App's own PRs, publish only a nonempty COMMENT review and use its body to avoid repeats.
         LAST_COMMENT=$(jq -r '[.[] | select(.user.login == env.BOT_LOGIN and .state == "COMMENTED")] | last | .body // ""' <<< "$REVIEWS")
         # A comment rarely changes the verdict, and repeating a change request would duplicate its threads.
         # Review comments must sit inside diff hunks, so must-fix issues elsewhere go into the body as permalinks, which GitHub renders as snippets.
@@ -662,9 +662,9 @@ runs:
             body: $body,
             comments: [$issues[] | select(in_diff) | {path, line, side: "RIGHT", body: .message}]} end
           elif $author == env.BOT_LOGIN then
-            if $lastComment != "" and $lastComment == $review.summary then empty else {event: "COMMENT", body: $review.summary} end
+            if ($review.summary | test("\\S") | not) or $lastComment == $review.summary then empty else {event: "COMMENT", body: $review.summary} end
           elif $last == "APPROVED" then empty
-          else {event: "APPROVE", body: $review.summary} end' > "$RUNNER_TEMP/pr-review.json"
+          else {event: "APPROVE"} + (if $review.summary | test("\\S") then {body: $review.summary} else {} end) end' > "$RUNNER_TEMP/pr-review.json"
         [ ! -s "$RUNNER_TEMP/pr-review.json" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews --input "$RUNNER_TEMP/pr-review.json" </dev/null
 
     - name: Finish PR reactions

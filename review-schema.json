@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "conclusion": { "type": "string", "enum": ["success", "failure", "neutral"] },
-    "summary": { "type": "string", "description": "Review outcome and decisive reason or material uncertainty in one or two short sentences. No change inventory, verdict label, generic assurance or routine CI results." },
+    "summary": { "type": "string", "description": "For a clean approval, an empty string or a brief LGTM if ready to merge. Otherwise only the decisive reason or material uncertainty in one or two short sentences; for failure, name the blocking behavior and consequence. No verdict restatement, change inventory or routine CI recap." },
     "reactions": {
       "type": "array",
       "minItems": 1,
