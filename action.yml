@@ -23,6 +23,10 @@ inputs:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
     description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
+  setup:
+    description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`.
+  model-catalog-file:
+    description: Path in this repository to a Codex model catalog; it is read from the default branch and loaded as the review's model catalog.
 
 runs:
   using: composite
@@ -351,6 +355,13 @@ runs:
           code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:
           code-review-default-${{ steps.check.outputs.fork-key }}:
 
+    - name: Run setup
+      if: inputs.setup != '' && env.SKIP != 'true'
+      shell: bash
+      env:
+        SETUP: ${{ inputs.setup }}
+      run: bash -e -c "$SETUP"
+
     - name: Reuse the runner's Bun
       id: bun
       if: env.SKIP != 'true'
@@ -375,12 +386,25 @@ runs:
         uv tool install --force gh-mcp==0.3.9
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+    - name: Install the model catalog
+      if: inputs.model-catalog-file != '' && env.SKIP != 'true'
+      shell: bash
+      env:
+        CATALOG: ${{ inputs.model-catalog-file }}
+        GH_CONFIG_DIR: ${{ runner.temp }}/gh
+      run: |
+        # The catalog shapes how Codex runs, so it comes from the default branch rather than the change under review.
+        mkdir -p "$CODEX_HOME"
+        # Each attempt replaces the file, so an error response cannot prefix a successful retry's JSON.
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json"' _ "repos/${{ github.repository }}/contents/$CATALOG" </dev/null
+
     - name: Configure codex
       if: env.SKIP != 'true'
       shell: bash
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
+        MODEL_CATALOG: ${{ inputs.model-catalog-file }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
@@ -423,7 +447,15 @@ runs:
         # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
         # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
         bun -e '
-          const path = process.argv[1], text = await Bun.file(path).text();
+          const path = process.argv[1];
+          let text = await Bun.file(path).text();
+          // The input overrides the root setting, including quoted or indented keys, without editing multiline strings.
+          if (process.env.MODEL_CATALOG) {
+            const config = Bun.TOML.parse(text);
+            config.model_catalog_json = `${process.env.CODEX_HOME}/models.json`;
+            text = Bun.TOML.stringify(config);
+            await Bun.write(path, text);
+          }
           if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
           const config = text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
           try { Bun.TOML.parse(config); }

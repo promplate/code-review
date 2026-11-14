@@ -19,6 +19,14 @@ on:
         description: Codex session this run continues; one per PR, or per branch for pushes, by default.
         type: string
         default: ""
+      setup:
+        description: Shell to run on the runner before Codex is installed, for tools the review needs.
+        type: string
+        default: ""
+      model-catalog-file:
+        description: Path in this repository to a Codex model catalog, read from the default branch.
+        type: string
+        default: ""
     secrets:
       codex-config:
         required: true
@@ -53,3 +61,5 @@ jobs:
           codex-auth: ${{ secrets.codex-auth }}
           service-tier: ${{ inputs.service-tier }}
           session-key: ${{ inputs.session-key }}
+          setup: ${{ inputs.setup }}
+          model-catalog-file: ${{ inputs.model-catalog-file }}

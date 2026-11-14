@@ -1218,6 +1218,22 @@ test("codex is configured with the gh MCP server and the token config dir", () =
   expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] } });
 });
 
+test("the catalog input overrides TOML keys without changing other values", () => {
+  const { env } = fixture();
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
+  for (const key of ["model_catalog_json", "  model_catalog_json", "\tmodel_catalog_json", '"model_catalog_json"', "'model_catalog_json'", '"model_catalog_\\u006ason"']) {
+    const config = `${key} = "/old/models.json"\ndeveloper_instructions = """\nmodel_catalog_json = an example, not a setting\n"""\n[mcp_servers.other]\ncommand = "custom"\n`;
+    const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, MODEL_CATALOG: ".github/models.json", GITHUB_ACTION_PATH: root } });
+    expect(result.exitCode).toBe(0);
+    const actual = Bun.TOML.parse(readFileSync(join(env.CODEX_HOME, "config.toml"), "utf8")) as any;
+    expect(actual.model_catalog_json).toBe(join(env.CODEX_HOME, "models.json"));
+    expect(actual.developer_instructions).toBe((Bun.TOML.parse(config) as any).developer_instructions);
+    expect(actual.mcp_servers.other).toEqual({ command: "custom" });
+    expect(actual.mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+    expect(actual.hooks.Stop[0].hooks[0].command).toBe(`bash ${root}/scripts/review-hook.sh`);
+  }
+});
+
 test("each run reports the tokens every turn spent", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "codex.jsonl"), [

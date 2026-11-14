@@ -45,6 +45,22 @@ function gate(setup: ReturnType<typeof fixture>, extraEnv: Record<string, string
 
 afterEach(() => { for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
+test("a model catalog download discards a failed attempt's response", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", `#!/bin/sh
+[ "$*" = "api repos/owner/repo/contents/.github/models.json -H Accept: application/vnd.github.raw" ] || exit 1
+if [ ! -f "$RUNNER_TEMP/attempt" ]; then
+  touch "$RUNNER_TEMP/attempt"
+  printf '%s' '{"message":"Service Unavailable"}'
+  echo 'gh: HTTP 503' >&2
+  exit 1
+fi
+printf '%s' '{"models":[{"slug":"review-model"}]}'
+`);
+  expect(run("Install the model catalog", setup, { CATALOG: ".github/models.json" }).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
+});
+
 test("queued PR webhooks resolve the current head while retaining their original activity", () => {
   for (const kind of ["pull_request_target", "pull_request_review"]) {
     const setup = fixture({ action: "synchronize", sender: writer, pull_request: { number: 7, head: { sha: "old" } } });
