@@ -56,7 +56,8 @@ runs:
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        DISPATCHED_PR: ${{ github.event.client_payload.pr }}
+        DISPATCHED_PR: ${{ github.event.client_payload.pr || github.event.inputs.pr }}
+        DISPATCHED_ISSUE: ${{ github.event.inputs.issue }}
         DISPATCHED_SHA: ${{ github.event.client_payload.sha }}
         DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
@@ -64,9 +65,22 @@ runs:
       run: |
         # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
-        [ -z "$DISPATCHED_PR" ] || number=$DISPATCHED_PR
+        # Two targets would restore one session under the other's group, so a dispatch names one of them.
+        [ -z "$DISPATCHED_PR" ] || [ -z "$DISPATCHED_ISSUE" ] || { echo "::error::Name either pr or issue, not both."; exit 1; }
+        # The group uses the input verbatim; leading zeros would put the API's canonical number in another group.
+        for target in "$DISPATCHED_PR" "$DISPATCHED_ISSUE"; do
+          [ -z "$target" ] || [[ "$target" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
+        done
+        number=${DISPATCHED_PR:-${DISPATCHED_ISSUE:-$number}}
         # An event on a plain issue is not a review: the agent works on the default branch and decides what, if anything, to do about it.
         agent=$(jq -r 'if .issue and .issue.pull_request == null then "true" else "false" end' "$GITHUB_EVENT_PATH")
+        # A manual dispatch carries no issue object, so its input decides: a pull request belongs in `pr`, because its runs share the session group that PR's own runs use.
+        if [ -n "$DISPATCHED_ISSUE" ]; then
+          has_pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$DISPATCHED_ISSUE" --jq 'has("pull_request")' </dev/null) \
+            || { echo "::error::#$DISPATCHED_ISSUE is not readable as an issue."; exit 1; }
+          [ "$has_pr" = false ] || { echo "::error::#$DISPATCHED_ISSUE is a pull request; dispatch it with the pr input."; exit 1; }
+          agent=true
+        fi
         [ "$agent" != true ] || printf 'AGENT=true\nISSUE_NUMBER=%s\n' "$number" >> "$GITHUB_ENV"
         # A queued webhook can name an old head; only its PR number remains authoritative.
         pr=
@@ -83,9 +97,15 @@ runs:
           # A deleted branch has no commit to check out, so a `push` trigger must not start a review for it.
           # The expression renders as the string false, not empty, so an emptiness test would skip every push.
           [ "${{ github.event.deleted }}" != "true" ] || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A deleted branch has nothing to review."; }
-          # Pushes outside PRs review the pushed branch; fixes split into PRs then target the default branch.
-          # A dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
-          printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "${DISPATCHED_SHA:-$GITHUB_SHA}" "$GITHUB_REF_NAME" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
+          # An issue is not a review: its agent works on the default branch whatever ref the dispatch ran on.
+          if [ -n "$DISPATCHED_ISSUE" ]; then
+            head_branch=${{ github.event.repository.default_branch }}
+            head_sha=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$head_branch" --jq .sha </dev/null)
+          else
+            # Pushes outside PRs review the pushed branch, and a dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
+            head_branch=$GITHUB_REF_NAME head_sha=${DISPATCHED_SHA:-$GITHUB_SHA}
+          fi
+          printf 'HEAD_SHA=%s\nHEAD_BRANCH=%s\nBASE=%s\n' "$head_sha" "$head_branch" "${{ github.event.repository.default_branch }}" >> "$GITHUB_ENV"
           # A dispatch may name an older commit, which the session's last head cannot bound.
           [ -z "$DISPATCHED_SHA" ] || printf 'DISPATCHED_SHA=%s\nDISPATCHED_BASE=%s\n' "$DISPATCHED_SHA" "$DISPATCHED_BASE" >> "$GITHUB_ENV"
           # One session per issue, so follow-up comments continue the same conversation.

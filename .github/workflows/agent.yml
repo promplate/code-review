@@ -15,6 +15,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review.
+      issue:
+        description: Issue number to hand the agent; a pull request belongs in `pr`.
 
 permissions:
   actions: write
@@ -37,7 +42,8 @@ jobs:
           && (github.event.action != 'ready_for_review' || github.event.pull_request.user.type == 'Bot')))
     concurrency:
       # Keep the active review consuming SSE while later events wait to reconcile its saved session.
-      group: code-review-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+      # A dispatch names the same target a webhook would, so its group has to match that target's own runs.
+      group: code-review-${{ github.event.inputs.pr || github.event.inputs.issue || github.event.pull_request.number || github.event.issue.number || github.ref }}
       queue: max
     runs-on: ubuntu-latest
     steps:

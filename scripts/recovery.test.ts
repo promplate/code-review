@@ -32,7 +32,7 @@ function executable(dir: string, name: string, source: string) {
 
 function run(name: string, setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
   const script = step(name).run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ runner.temp }}", setup.dir)
-    .replaceAll("${{ steps.check.outputs.id }}", "10").replaceAll("${{ github.token }}", "token").replace(/\$\{\{[^}]+\}\}/g, "");
+    .replaceAll("${{ github.event.repository.default_branch }}", "main").replaceAll("${{ steps.check.outputs.id }}", "10").replaceAll("${{ github.token }}", "token").replace(/\$\{\{[^}]+\}\}/g, "");
   return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { env: { ...setup.env, ...extraEnv }, timeout: 3000 });
 }
 
@@ -56,6 +56,41 @@ test("queued PR webhooks resolve the current head while retaining their original
     expect(readFileSync(join(setup.dir, "github-env"), "utf8")).toContain("MODEL_NAME=deepseek-flash\n");
     expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("SKIP=true");
     expect(readFileSync(join(setup.dir, "event.json"), "utf8")).toBe(before);
+  }
+});
+
+test("a dispatch names its target, and an issue stays in the issue session group", () => {
+  const setup = fixture({});
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  "api repos/owner/repo/issues/9"*) printf '%s' false ;;
+  "api repos/owner/repo/commits/main"*) printf '%s' 'basesha' ;;
+  *) exit 1 ;;
+esac`);
+  const dispatch = (env: Record<string, string>) => run("Resolve the review target", setup, { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF_NAME: "feature", CODEX_CONFIG: 'model = "deepseek-flash"', SESSION_KEY: "", ...env });
+  expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).toBe(0);
+  const env = readFileSync(join(setup.dir, "github-env"), "utf8");
+  expect(env).toContain("AGENT=true\nISSUE_NUMBER=9\n");
+  expect(env).toContain("SESSION_KEY=issue-9\n");
+  // The agent works on the default branch, whatever ref the dispatch ran on.
+  expect(env).toContain("HEAD_SHA=basesha\nHEAD_BRANCH=main\nBASE=main\n");
+  // Keep a valid issue response here so removing the two-target guard makes this fail.
+  expect(dispatch({ DISPATCHED_PR: "7", DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
+  // A pull request reaches its own group, so the issue input refuses one instead of forking the session.
+  writeFileSync(join(setup.dir, "github-env"), "");
+  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' true`);
+  expect(dispatch({ DISPATCHED_ISSUE: "9" }).exitCode).not.toBe(0);
+  expect(readFileSync(join(setup.dir, "github-env"), "utf8")).not.toContain("AGENT=true");
+});
+
+test.each(["DISPATCHED_PR", "DISPATCHED_ISSUE"])("%s rejects noncanonical numbers before querying the API", (input) => {
+  const setup = fixture({});
+  executable(setup.dir, "gh", `#!/bin/sh\necho called >> "$RUNNER_TEMP/api-called"\nprintf '%s' '{"number":7,"head":{"sha":"head","ref":"feature","repo":{"full_name":"owner/repo"}},"base":{"ref":"main"},"user":{"login":"writer"}}'`);
+  for (const number of ["07", "0", "-7", "7 ", "7\n"]) {
+    const result = run("Resolve the review target", setup, { GITHUB_EVENT_NAME: "workflow_dispatch", SESSION_KEY: "", DISPATCHED_PR: "", DISPATCHED_ISSUE: "", [input]: number });
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(join(setup.dir, "api-called"))).toBe(false);
+    expect(readFileSync(join(setup.dir, "github-env"), "utf8")).toBe("");
   }
 });
 
