@@ -345,6 +345,27 @@ esac
   }
 });
 
+test("a failure review does not reopen a thread an unresolved review already covers", () => {
+  for (const [resolved, line, posted] of [[false, 12, false], [true, 12, true], [false, 13, true]] as const) {
+    const setup = fixture();
+    executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+    executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *'/reviews?'*) printf '[]\\n' ;;
+  *'/files?'*) printf '%s\\n' '{"a.py":[[10,14]]}' ;;
+  *'api graphql'*) printf '%s\\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":${resolved},"path":"a.py","line":${line},"comments":{"nodes":[{"author":{"login":"reviewer[bot]"},"body":"Boom"}]}}]}}}}}' ;;
+  *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
+  *) cat > /dev/null; printf '{}\\n' ;;
+esac
+`);
+    writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "", annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
+    expect(run("Publish PR review", setup).exitCode).toBe(0);
+    const published = join(setup.dir, "posted.json");
+    expect(existsSync(published)).toBe(posted);
+    if (posted) expect(JSON.parse(readFileSync(published, "utf8")).comments).toHaveLength(1);
+  }
+});
+
 test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");

@@ -3,7 +3,7 @@
 Reviews same-repository pull requests, and optionally branch pushes, with [Codex](https://github.com/openai/codex "openai/codex") as the [muspi-merol-review](https://github.com/apps/muspi-merol-review "muspi-merol-review GitHub App") GitHub App:
 
 - a `code-review` check run per commit, with annotations on the reviewed head
-- `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise
+- `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise; a finding an unresolved thread already carries is not posted again
 - everything else as regular PR comments, answers to review comments in their thread
 - certain fixes committed to the PR, or opened as separate PRs when out of scope
 - out-of-scope problems it is certain of but cannot fix with certainty opened as issues

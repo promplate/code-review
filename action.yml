@@ -671,14 +671,27 @@ runs:
         # Review comments must sit inside diff hunks, so must-fix issues elsewhere go into the body as permalinks, which GitHub renders as snippets.
         HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/files?per_page=100" --paginate \
           --jq '.[] | {(.filename): [.patch // "" | scan("@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@") | (.[0] | tonumber) as $start | [$start, $start + (.[1] // "1" | tonumber)]]}' </dev/null | jq -cs add)
-        jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --arg blob "$GITHUB_SERVER_URL/${{ github.repository }}/blob/$(git rev-parse HEAD)" \
+        # A finding an earlier review posted and nobody resolved is already on the pull request; posting it again would open a second thread for one root cause.
+        THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api graphql --paginate -f query='
+          query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+              reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor }
+                nodes { isResolved path line comments(first: 1) { nodes { author { login } body } } } } } } }' \
+          -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER" </dev/null \
+          | jq -cs --arg bot "$BOT_LOGIN" '[.[]?.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false and .comments.nodes[0].author.login == $bot) | {path, line, body: .comments.nodes[0].body}]')
+        jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
+          --arg blob "$GITHUB_SERVER_URL/${{ github.repository }}/blob/$(git rev-parse HEAD)" \
           --arg author "$PR_AUTHOR" --arg last "$LAST" --arg lastComment "$LAST_COMMENT" '
           def in_diff: .line as $line | any($hunks[.path][]?; .[0] <= $line and $line < .[1]);
+          # The same wording on the same path is the same finding; a thread GitHub marked outdated keeps only its path and body to compare.
+          def reported: . as $issue | any($threads[]; .path == $issue.path and .body == $issue.message and (.line == null or .line == $issue.line));
           if $review.conclusion == "failure" and $last == "CHANGES_REQUESTED"
              and (env.GITHUB_EVENT_NAME | IN("issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "repository_dispatch")) then empty
-          elif $review.conclusion == "failure" then [$review.annotations[] | select(.level == "failure")] as $issues
+          elif $review.conclusion == "failure" then [$review.annotations[] | select(.level == "failure") | select(reported | not)] as $issues
             | ([$review.summary, ($issues[] | select(in_diff | not) | "\(.message)\n\($blob)/\(.path)#L\(.line)")] | join("\n\n")) as $body
-            | if $lastComment != "" and $body == $lastComment then empty else {
+            | if $lastComment != "" and $body == $lastComment then empty
+              elif ($issues | length) == 0 and ($review.summary | test("\\S") | not) then empty
+              else {
             event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end),
             body: $body,
             comments: [$issues[] | select(in_diff) | {path, line, side: "RIGHT", body: .message}]} end
