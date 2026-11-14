@@ -427,7 +427,8 @@ runs:
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
         # A bare key after a table belongs to that table, so the catalog reference goes above the config's own sections.
-        [ -z "$MODEL_CATALOG" ] || { printf 'model_catalog_json = "%s/models.json"\n' "$CODEX_HOME" > "$CODEX_HOME/config.new"; cat "$CODEX_HOME/config.toml" >> "$CODEX_HOME/config.new"; mv "$CODEX_HOME/config.new" "$CODEX_HOME/config.toml"; }
+        # The input wins: the config's own catalog would otherwise define the key twice, which TOML rejects.
+        [ -z "$MODEL_CATALOG" ] || { { printf 'model_catalog_json = "%s/models.json"\n' "$CODEX_HOME"; sed '/^model_catalog_json[[:space:]]*=/d' "$CODEX_HOME/config.toml"; } > "$CODEX_HOME/config.new"; mv "$CODEX_HOME/config.new" "$CODEX_HOME/config.toml"; }
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
         # A PostToolUse hook delivers the round's activity once its tools finish, before the model writes the next message; blocking Stop alone would only deliver it after the verdict. It must run synchronously: an async hook's context is drained after the turn and can be dropped when the session ends. The check-run label keeps its own entry so a slow PATCH cannot delay delivery.
         cat >> "$CODEX_HOME/config.toml" <<EOF
