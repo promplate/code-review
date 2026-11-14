@@ -678,7 +678,7 @@ runs:
             repository(owner: $owner, name: $name) { pullRequest(number: $number) {
               reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor }
                 nodes { isResolved path line comments(first: 1) { nodes { author { login } body } } } } } } }' \
-          -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER" </dev/null \
+          -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER" </dev/null \
           | jq -cs --arg bot "$BOT_LOGIN" '[.[]?.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false and .comments.nodes[0].author.login == ($bot | rtrimstr("[bot]"))) | {path, line, body: .comments.nodes[0].body}]')
         jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
           --arg blob "$GITHUB_SERVER_URL/${{ github.repository }}/blob/$(git rev-parse HEAD)" \
