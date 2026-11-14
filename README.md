@@ -71,6 +71,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 
 The reusable workflow owns the permission check, the shared concurrency group and the review step. Pass `authorize: false` only when every trigger is trusted, such as a private repository; without the check, an unauthorized run still takes a queue slot before it exits. `service-tier` and `session-key` reach the action through the same call. `setup` runs shell on the runner before Codex is installed, for tools the review needs; add their directories to the PATH through `$GITHUB_PATH`. `model-catalog-file` names a Codex model catalog in this repository, which is read from the default branch rather than the change under review and takes precedence over a `model_catalog_json` the config names itself.
 
+If the catalog fetch returns HTTP 404, the action warns and continues without the override, preserving any `model_catalog_json` in the supplied config. This lets a PR introduce the catalog before it exists on the default branch. Other fetch errors are retried and fail the run if they persist.
+
 Comments and reviews wake a new review by starting a workflow run themselves, through the workflow's own triggers. They start runs only when the workflow exists on the **default branch** ([docs](https://docs.github.com/en/actions/reference/events-that-trigger-workflows#issue_comment)), so a workflow added on a PR branch can review that PR but cannot take comments until it reaches the default branch.
 
 Every run sharing a session must use the same serialized concurrency group.

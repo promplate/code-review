@@ -59,6 +59,44 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
 `);
   expect(run("Install the model catalog", setup, { CATALOG: ".github/models.json" }).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
+  expect(readFileSync(setup.env.GITHUB_OUTPUT, "utf8")).toBe("loaded=true\n");
+  expect(step("Install the model catalog").id).toBe("catalog");
+});
+
+test("a missing model catalog warns once and leaves the supplied configuration intact", () => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo called >> "$RUNNER_TEMP/calls"
+printf '%s' '{"message":"Not Found"}'
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+`);
+  const result = run("Install the model catalog", setup, { CATALOG: ".github/models.json" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("::warning::");
+  expect(readFileSync(join(setup.dir, "calls"), "utf8")).toBe("called\n");
+  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  const output = existsSync(setup.env.GITHUB_OUTPUT) ? readFileSync(setup.env.GITHUB_OUTPUT, "utf8") : "";
+  expect(output).not.toContain("loaded=true");
+  expect(step("Configure codex").env.MODEL_CATALOG).toBe("${{ steps.catalog.outputs.loaded }}");
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
+  for (const config of ['model = "m"\n', 'model_catalog_json = "/existing/models.json"\n']) {
+    const configured = Bun.spawnSync(["bash", "-ec", region], { env: { ...setup.env, CODEX_CONFIG: config, MODEL_CATALOG: "" } });
+    expect(configured.exitCode).toBe(0);
+    expect(Bun.TOML.parse(readFileSync(join(setup.dir, "config.toml"), "utf8")).model_catalog_json).toBe(Bun.TOML.parse(config).model_catalog_json);
+  }
+});
+
+test("other model catalog fetch errors still exhaust retries and fail", () => {
+  for (const status of [403, 503]) {
+    const setup = fixture();
+    executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+    executable(setup.dir, "gh", `#!/bin/sh\necho called >> "$RUNNER_TEMP/calls"\necho 'gh: HTTP ${status}' >&2\nexit 1\n`);
+    expect(run("Install the model catalog", setup, { CATALOG: ".github/models.json" }).exitCode).toBe(1);
+    expect(readFileSync(join(setup.dir, "calls"), "utf8")).toBe("called\n".repeat(8));
+    expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
+  }
 });
 
 test("queued PR webhooks resolve the current head while retaining their original activity", () => {
