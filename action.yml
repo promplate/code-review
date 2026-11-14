@@ -216,8 +216,8 @@ runs:
         verdict=$(bash "$GITHUB_ACTION_PATH/scripts/covered-push.sh" "$base" "$HEAD_SHA") || exit 0
         # The pushed head keeps a check of its own, borrowing the verdict of the review that covered the same tree.
         conclusion=${verdict%% *} covered=${verdict#* }
-        title="No must-fix issue introduced"
-        [ "$conclusion" != failure ] || title="Must-fix issue introduced here"
+        title="Innocent commit"
+        [ "$conclusion" != failure ] || title="Blocking defect introduced here"
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs -f name=code-review -f head_sha=$HEAD_SHA \
           -f status=completed -f conclusion=$conclusion -f "output[title]=$title" \
           -f "output[summary]=This push lands the tree reviewed at $covered; that review's verdict stands." </dev/null > /dev/null
@@ -658,7 +658,7 @@ runs:
         name: "code-review", head_sha: $sha, status: "completed",
         conclusion: $commit.conclusion,
         output: {
-          title: (if $commit.conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end),
+          title: (if $commit.conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end),
           summary: $review.summary,
           annotations: [$review.annotations[:50][] | {path, start_line: .line, end_line: .line, annotation_level: .level, message}]
         }}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
@@ -683,7 +683,7 @@ runs:
           fi
           # Commits CI pushed during the review have no check run yet.
           jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
-            title: (if $conclusion == "failure" then "Must-fix issue introduced here" else "No must-fix issue introduced" end), summary: $summary}}' \
+            title: (if $conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end), summary: $summary}}' \
             | if [ -n "$id" ]; then jq 'del(.head_sha)' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
               else bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs --input - > /dev/null; fi
         done
