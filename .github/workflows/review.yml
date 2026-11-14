@@ -47,7 +47,7 @@ jobs:
       queue: max
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: promplate/code-review@main
+      - uses: $/
         with:
           codex-config: ${{ secrets.codex-config }}
           codex-auth: ${{ secrets.codex-auth }}
