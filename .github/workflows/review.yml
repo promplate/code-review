@@ -27,9 +27,22 @@ on:
         description: Path in this repository to a Codex model catalog, read from the default branch.
         type: string
         default: ""
+      codex-config-file:
+        description: Path in this repository to a Codex config.toml, read from the default branch; the `codex-config` secret takes precedence.
+        type: string
+        default: ""
+      codex-auth-file:
+        description: Path in this repository to a Codex auth.json, read from the default branch; the `codex-auth` secret takes precedence.
+        type: string
+        default: ""
+      model-catalog:
+        description: Contents of a Codex model catalog; takes precedence over `model-catalog-file`.
+        type: string
+        default: ""
     secrets:
+      # Either the secret or the matching `*-file` input supplies it; the action requires one of them.
       codex-config:
-        required: true
+        required: false
       codex-auth:
         required: false
 
@@ -63,3 +76,6 @@ jobs:
           session-key: ${{ inputs.session-key }}
           setup: ${{ inputs.setup }}
           model-catalog-file: ${{ inputs.model-catalog-file }}
+          model-catalog: ${{ inputs.model-catalog }}
+          codex-config-file: ${{ inputs.codex-config-file }}
+          codex-auth-file: ${{ inputs.codex-auth-file }}

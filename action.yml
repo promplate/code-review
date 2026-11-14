@@ -6,10 +6,13 @@ branding:
 
 inputs:
   codex-config:
-    description: Contents of a Codex config.toml whose model provider speaks the Responses API.
-    required: true
+    description: Contents of a Codex config.toml whose model provider speaks the Responses API; name it in `codex-config-file` instead to keep it in the repository.
+  codex-config-file:
+    description: Path in this repository to a Codex config.toml, read from the default branch. `codex-config` takes precedence.
   codex-auth:
-    description: Contents of a Codex auth.json, to sign in with ChatGPT instead of an API key.
+    description: Contents of a Codex auth.json, to sign in with ChatGPT instead of an API key; name it in `codex-auth-file` instead to keep it in the repository.
+  codex-auth-file:
+    description: Path in this repository to a Codex auth.json, read from the default branch. `codex-auth` takes precedence.
   codex-version:
     description: "@openai/codex version to install when the runner has no codex."
     default: 0.169.0
@@ -25,8 +28,10 @@ inputs:
     description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
   setup:
     description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`.
+  model-catalog:
+    description: Contents of a Codex model catalog; name it in `model-catalog-file` instead to keep it in the repository.
   model-catalog-file:
-    description: Path in this repository to a Codex model catalog; it is read from the default branch and loaded as the review's model catalog.
+    description: Path in this repository to a Codex model catalog, read from the default branch. `model-catalog` takes precedence.
 
 runs:
   using: composite
@@ -66,6 +71,7 @@ runs:
         DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
         CODEX_CONFIG: ${{ inputs.codex-config }}
+        CONFIG_FILE: ${{ inputs.codex-config-file }}
       run: |
         # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
@@ -117,6 +123,13 @@ runs:
         fi
         home="${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY"
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "$home" >> "$GITHUB_ENV"
+        # Resolve the config before restoring snapshots, whose names include its model.
+        if [ -z "$CODEX_CONFIG" ] && [ -n "$CONFIG_FILE" ]; then
+          # The default branch supplies trusted settings; each attempt replaces any failed response.
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$CONFIG_FILE" "$RUNNER_TEMP/config.toml" </dev/null
+          CODEX_CONFIG=$(cat "$RUNNER_TEMP/config.toml")
+          echo "CODEX_CONFIG_FILE=$RUNNER_TEMP/config.toml" >> "$GITHUB_ENV"
+        fi
         # A session belongs to the model that recorded it; resuming it elsewhere is rejected, so each model keeps its own snapshots.
         MODEL=$(sed -n 's/^model *= *"\([^"]*\)".*/\1/p' <<< "$CODEX_CONFIG" | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
@@ -386,17 +399,25 @@ runs:
         uv tool install --force gh-mcp==0.3.9
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-    - name: Install the model catalog
-      if: inputs.model-catalog-file != '' && env.SKIP != 'true'
+    - name: Fetch config files
+      if: (inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
       shell: bash
       env:
-        CATALOG: ${{ inputs.model-catalog-file }}
+        AUTH_FILE: ${{ inputs.codex-auth-file }}
+        CATALOG_FILE: ${{ inputs.model-catalog-file }}
+        CODEX_AUTH: ${{ inputs.codex-auth }}
+        CATALOG: ${{ inputs.model-catalog }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # The catalog shapes how Codex runs, so it comes from the default branch rather than the change under review.
+        # These files configure how Codex runs, so they come from the default branch rather than the change under review.
+        # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
+        fetch() {
+          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$1" "$2" </dev/null
+        }
         mkdir -p "$CODEX_HOME"
-        # Each attempt replaces the file, so an error response cannot prefix a successful retry's JSON.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json"' _ "repos/${{ github.repository }}/contents/$CATALOG" </dev/null
+        fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
+        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG"
+        [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
       if: env.SKIP != 'true'
@@ -404,7 +425,8 @@ runs:
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
-        MODEL_CATALOG: ${{ inputs.model-catalog-file }}
+        CATALOG: ${{ inputs.model-catalog }}
+        MODEL_CATALOG: ${{ inputs.model-catalog || inputs.model-catalog-file }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
@@ -425,7 +447,12 @@ runs:
         RUNTIME_INFO="Bun $(bun --version); $($CODEX_RUNTIME "$CODEX_BIN" --version)"
         printf 'CODEX_BIN=%s\nCODEX_RUNTIME=%s\nRUNTIME_INFO=%s\n' "$CODEX_BIN" "$CODEX_RUNTIME" "$RUNTIME_INFO" >> "$GITHUB_ENV"
         mkdir -p "$CODEX_HOME"
+        # A literal input wins over the file it replaces, so a caller can override a repository's config for one run.
+        [ -n "$CODEX_CONFIG" ] || [ -z "$CODEX_CONFIG_FILE" ] || CODEX_CONFIG=$(cat "$CODEX_CONFIG_FILE")
+        [ -n "$CODEX_CONFIG" ] || { echo "::error::Provide codex-config or codex-config-file."; exit 1; }
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
+        [ -z "$CATALOG" ] || printf '%s' "$CATALOG" > "$CODEX_HOME/models.json"
+        [ -n "$CODEX_AUTH" ] || [ -z "$CODEX_AUTH_FILE" ] || CODEX_AUTH=$(cat "$CODEX_AUTH_FILE")
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
         # A PostToolUse hook delivers the round's activity once its tools finish, before the model writes the next message; blocking Stop alone would only deliver it after the verdict. It must run synchronously: an async hook's context is drained after the turn and can be dropped when the session ends. The check-run label keeps its own entry so a slow PATCH cannot delay delivery.
         cat >> "$CODEX_HOME/config.toml" <<EOF
