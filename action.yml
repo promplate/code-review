@@ -307,7 +307,8 @@ runs:
         jq -nr --arg event "${EVENT_NAME:-$GITHUB_EVENT_NAME}" --arg delivery "$ACTIVITY_ID" --argjson writer "${ACTIVITY_WRITER:-false}" --rawfile body "$GITHUB_EVENT_PATH" \
           '"id: \($delivery)\nevent: \($event)\ndata: \(({receivedAt: (now * 1000 | floor), event: $event, delivery: $delivery, body: $body, writer: $writer} | tojson))\n"' > "$RUNNER_TEMP/sse.jsonl"
         # GitHub supplies current state; the subscription only supplies live activity.
-        bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" &
+        # The runner holds the step open for 5 seconds while a background child keeps its output pipe, so point the subscription at a file.
+        bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" >> "$RUNNER_TEMP/sse.err" 2>&1 &
         echo "SSE_PID=$!" >> "$GITHUB_ENV"
 
     - name: Find the session to fork
