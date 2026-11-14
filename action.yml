@@ -426,9 +426,6 @@ runs:
         printf 'CODEX_BIN=%s\nCODEX_RUNTIME=%s\nRUNTIME_INFO=%s\n' "$CODEX_BIN" "$CODEX_RUNTIME" "$RUNTIME_INFO" >> "$GITHUB_ENV"
         mkdir -p "$CODEX_HOME"
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
-        # A bare key after a table belongs to that table, so the catalog reference goes above the config's own sections.
-        # The input wins: the config's own catalog would otherwise define the key twice, which TOML rejects.
-        [ -z "$MODEL_CATALOG" ] || { { printf 'model_catalog_json = "%s/models.json"\n' "$CODEX_HOME"; sed '/^model_catalog_json[[:space:]]*=/d' "$CODEX_HOME/config.toml"; } > "$CODEX_HOME/config.new"; mv "$CODEX_HOME/config.new" "$CODEX_HOME/config.toml"; }
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
         # A PostToolUse hook delivers the round's activity once its tools finish, before the model writes the next message; blocking Stop alone would only deliver it after the verdict. It must run synchronously: an async hook's context is drained after the turn and can be dropped when the session ends. The check-run label keeps its own entry so a slow PATCH cannot delay delivery.
         cat >> "$CODEX_HOME/config.toml" <<EOF
@@ -450,7 +447,15 @@ runs:
         # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
         # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
         bun -e '
-          const path = process.argv[1], text = await Bun.file(path).text();
+          const path = process.argv[1];
+          let text = await Bun.file(path).text();
+          // The input overrides the root setting, including quoted or indented keys, without editing multiline strings.
+          if (process.env.MODEL_CATALOG) {
+            const config = Bun.TOML.parse(text);
+            config.model_catalog_json = `${process.env.CODEX_HOME}/models.json`;
+            text = Bun.TOML.stringify(config);
+            await Bun.write(path, text);
+          }
           if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
           const config = text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
           try { Bun.TOML.parse(config); }
