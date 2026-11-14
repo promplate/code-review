@@ -346,12 +346,20 @@ esac
 });
 
 test("a failure review does not reopen a thread an unresolved review already covers", () => {
-  for (const [resolved, line, login, posted] of [[false, 12, "reviewer", false], [false, null, "reviewer", false], [true, 12, "reviewer", true], [false, 13, "reviewer", true], [false, 12, "another-reviewer", true]] as const) {
+  for (const [resolved, line, login, last, posted, comments] of [
+    [false, 12, "reviewer", "CHANGES_REQUESTED", false, 0],
+    [false, null, "reviewer", "CHANGES_REQUESTED", false, 0],
+    [true, 12, "reviewer", "CHANGES_REQUESTED", true, 1],
+    [false, 13, "reviewer", "CHANGES_REQUESTED", true, 1],
+    [false, 12, "another-reviewer", "CHANGES_REQUESTED", true, 1],
+    // A standing approval says nothing about the open finding, so the change request is restated.
+    [false, 12, "reviewer", "APPROVED", true, 0],
+  ] as const) {
     const setup = fixture();
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
     executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *'/reviews?'*) printf '[]\\n' ;;
+  *'/reviews?'*) printf '%s\\n' '${JSON.stringify([{ user: { login: "reviewer[bot]" }, state: last, body: "" }])}' ;;
   *'/files?'*) printf '%s\\n' '{"a.py":[[10,14]]}' ;;
   *'api graphql'*) printf '%s\\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":${resolved},"path":"a.py","line":${line},"comments":{"nodes":[{"author":{"login":"${login}"},"body":"Boom"}]}}]}}}}}' ;;
   *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
@@ -359,10 +367,10 @@ case "$*" in
 esac
 `);
     writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "", annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
-    expect(run("Publish PR review", setup).exitCode).toBe(0);
+    expect(run("Publish PR review", setup, { GITHUB_EVENT_NAME: "pull_request_target" }).exitCode).toBe(0);
     const published = join(setup.dir, "posted.json");
     expect(existsSync(published)).toBe(posted);
-    if (posted) expect(JSON.parse(readFileSync(published, "utf8")).comments).toHaveLength(1);
+    if (posted) expect(JSON.parse(readFileSync(published, "utf8")).comments).toHaveLength(comments);
   }
 });
 

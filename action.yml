@@ -689,9 +689,12 @@ runs:
           if $review.conclusion == "failure" and $last == "CHANGES_REQUESTED"
              and (env.GITHUB_EVENT_NAME | IN("issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "repository_dispatch")) then empty
           elif $review.conclusion == "failure" then [$review.annotations[] | select(.level == "failure") | select(reported | not)] as $issues
+            | ([$issues[] | select(in_diff)] | length) as $inline
             | ([$review.summary, ($issues[] | select(in_diff | not) | "\(.message)\n\($blob)/\(.path)#L\(.line)")] | join("\n\n")) as $body
-            | if $lastComment != "" and $body == $lastComment then empty
-              elif ($issues | length) == 0 and ($review.summary | test("\\S") | not) then empty
+            # Silence only repeats: a new inline finding still publishes even when the body matches, and a human pull request keeps the standing change request only when there is one.
+            | if ($inline == 0 and ($issues | length) == 0 and ($review.summary | test("\\S") | not))
+                 and ($author == env.BOT_LOGIN or $last == "CHANGES_REQUESTED") then empty
+              elif $inline == 0 and $lastComment != "" and $body == $lastComment then empty
               else {
             event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end),
             body: $body,
