@@ -57,7 +57,7 @@ if [ ! -f "$RUNNER_TEMP/attempt" ]; then
 fi
 printf '%s' '{"models":[{"slug":"review-model"}]}'
 `);
-  expect(run("Install the model catalog", setup, { CATALOG: ".github/models.json" }).exitCode).toBe(0);
+  expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/models.json" }).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
 });
 
