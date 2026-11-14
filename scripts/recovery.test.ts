@@ -317,7 +317,7 @@ esac
 }
 
 test("success reviews keep useful text and omit empty comments", () => {
-  const text = "LGTM";
+  const text = "Disabling built-in filtering also disables DOM sorting for custom items.";
   const earlier = [{ user: { login: "reviewer[bot]" }, state: "COMMENTED", body: text }];
   for (const [author, reviews, summary, expected] of [
     ["writer", [], text, { event: "APPROVE", body: text }],
