@@ -4,15 +4,23 @@ set -euo pipefail
 retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$@" </dev/null; }
 endpoint="repos/$GITHUB_REPOSITORY/actions/artifacts"
 # An exact-name query works across refs and keeps unrelated workflow artifacts out of the lookup.
-name=code-review-session-$(printf '%s\0%s' "$MODEL_NAME" "$1" | sha256sum | cut -d ' ' -f1)
-artifacts=$(
-  for slot in "$name" "$name-next"; do
-    retry "$endpoint" --paginate --method GET -f "name=$slot" -f per_page=100 || exit 1
-  done
-)
-snapshots=$(jq -cs '[
-  .[].artifacts[] | select(.expired == false and (.workflow_run.head_repository_id | tostring) == env.GITHUB_REPOSITORY_ID)
-] | sort_by(.created_at, .id)' <<< "$artifacts")
+key=$(printf '%s\0%s' "$MODEL_NAME" "$1" | sha256sum | cut -d ' ' -f1)
+name=agent-session-$key
+lookup() {
+  local artifacts
+  artifacts=$(
+    for slot in "$1" "$1-next"; do
+      retry "$endpoint" --paginate --method GET -f "name=$slot" -f per_page=100 || exit 1
+    done
+  ) || return 1
+  jq -cs '[
+    .[].artifacts[] | select(.expired == false and (.workflow_run.head_repository_id | tostring) == env.GITHUB_REPOSITORY_ID)
+  ] | sort_by(.created_at, .id)' <<< "$artifacts"
+}
+# A listing failure must fail the step: every later step reads the snapshot this one reports.
+snapshots=$(lookup "$name") || exit 1
+# Sessions saved before the rename still hold running conversations; the next save moves them to the new name.
+if [ "$snapshots" = "[]" ]; then snapshots=$(lookup "code-review-session-$key") || exit 1; fi
 if [ -n "${2:-}" ]; then
   # The successor must be visible to the same lookup used for restore before either slot is pruned.
   jq -r --argjson saved "$2" '
