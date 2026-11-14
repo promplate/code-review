@@ -63,8 +63,10 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
   expect(step("Install the model catalog").id).toBe("catalog");
 });
 
-test("a missing model catalog warns once and leaves the supplied configuration intact", () => {
+test.each([false, true])("a missing model catalog preserves supplied configuration (existing catalog: %s)", (existing) => {
   const setup = fixture();
+  const catalog = join(setup.dir, "models.json"), contents = '{"models":[{"slug":"setup-model"}]}';
+  if (existing) writeFileSync(catalog, contents);
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
 echo called >> "$RUNNER_TEMP/calls"
@@ -76,13 +78,15 @@ exit 1
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("::warning::");
   expect(readFileSync(join(setup.dir, "calls"), "utf8")).toBe("called\n");
-  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  expect(existsSync(catalog)).toBe(existing);
+  if (existing) expect(readFileSync(catalog, "utf8")).toBe(contents);
   const output = existsSync(setup.env.GITHUB_OUTPUT) ? readFileSync(setup.env.GITHUB_OUTPUT, "utf8") : "";
-  expect(output).not.toContain("loaded=true");
+  expect(output).toBe("");
+  const loaded = /^loaded=(.*)$/m.exec(output)?.[1] ?? "";
   expect(step("Configure codex").env.MODEL_CATALOG).toBe("${{ steps.catalog.outputs.loaded }}");
   const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
-  for (const config of ['model = "m"\n', 'model_catalog_json = "/existing/models.json"\n']) {
-    const configured = Bun.spawnSync(["bash", "-ec", region], { env: { ...setup.env, CODEX_CONFIG: config, MODEL_CATALOG: "" } });
+  for (const config of ['model = "m"\n', 'model_catalog_json = "/existing/models.json"\n', `model_catalog_json = "${catalog}"\n`]) {
+    const configured = Bun.spawnSync(["bash", "-ec", region], { env: { ...setup.env, CODEX_CONFIG: config, MODEL_CATALOG: loaded } });
     expect(configured.exitCode).toBe(0);
     expect(Bun.TOML.parse(readFileSync(join(setup.dir, "config.toml"), "utf8")).model_catalog_json).toBe(Bun.TOML.parse(config).model_catalog_json);
   }

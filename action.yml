@@ -397,22 +397,23 @@ runs:
         # The catalog shapes how Codex runs, so it comes from the default branch rather than the change under review.
         mkdir -p "$CODEX_HOME"
         error=$(mktemp)
-        trap 'rm -f "$error"' EXIT
+        catalog=$(mktemp "$CODEX_HOME/models.json.XXXXXX")
+        trap 'rm -f "$error" "$catalog"' EXIT
         # Each attempt replaces the file, so an error response cannot prefix a successful retry's JSON.
         bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
-          if gh api "$1" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json" 2> "$2"; then
+          if gh api "$1" -H "Accept: application/vnd.github.raw" > "$3" 2> "$2"; then
             cat "$2" >&2
+            mv "$3" "$CODEX_HOME/models.json"
             echo "loaded=true" >> "$GITHUB_OUTPUT"
           else
             cat "$2" >&2
-            rm -f "$CODEX_HOME/models.json"
             if grep -q "HTTP 404" "$2"; then
               echo "::warning::The model-catalog-file was not found on the default branch; continuing without the catalog override."
             else
               exit 1
             fi
           fi
-        ' _ "repos/${{ github.repository }}/contents/$CATALOG" "$error" </dev/null
+        ' _ "repos/${{ github.repository }}/contents/$CATALOG" "$error" "$catalog" </dev/null
 
     - name: Configure codex
       if: env.SKIP != 'true'
