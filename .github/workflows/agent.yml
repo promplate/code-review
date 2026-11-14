@@ -27,7 +27,7 @@ jobs:
   authorize:
     # The review group holds 100 pending runs and cancels the next one, so a stream of comments the action would
     # skip must never take a slot there: it could push a new head's review out of the queue.
-    uses: ./.github/workflows/authorize.yml
+    uses: $/.github/workflows/authorize.yml
 
   review:
     needs: authorize
@@ -45,7 +45,7 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     steps:
-      - uses: promplate/code-review@main
+      - uses: $/
         with:
           codex-config: ${{ secrets.CODEX_CONFIG }}
           codex-auth: ${{ secrets.CODEX_AUTH }}
