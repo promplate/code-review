@@ -61,6 +61,51 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
   expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
 });
 
+test.each([false, true])("config files preserve the model's session identity and reach Codex (literal override: %s)", (override) => {
+  const setup = fixture({});
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "git", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "codex", "#!/bin/sh\necho codex-cli\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+[ "$OVERRIDE" != true ] || exit 1
+case "$*" in
+  'api repos/owner/repo/contents/.github/config.toml -H Accept: application/vnd.github.raw')
+    if [ ! -f "$RUNNER_TEMP/attempt" ]; then
+      touch "$RUNNER_TEMP/attempt"
+      printf '%s' '{"message":"Service Unavailable"}'
+      exit 1
+    fi
+    printf 'model = "file-model"\\n' ;;
+  'api repos/owner/repo/contents/.github/auth.json -H Accept: application/vnd.github.raw') printf '%s' '{"token":"file"}' ;;
+  'api repos/owner/repo/contents/.github/models.json -H Accept: application/vnd.github.raw') printf '%s' '{"models":[]}' ;;
+  *) exit 1 ;;
+esac
+`);
+  const inputs = {
+    CONFIG_FILE: ".github/config.toml", AUTH_FILE: ".github/auth.json", CATALOG_FILE: ".github/models.json",
+    CODEX_CONFIG: override ? 'model = "literal-model"' : "", CODEX_AUTH: override ? '{"token":"literal"}' : "",
+    CATALOG: override ? '{"models":[{"slug":"literal-model"}]}' : "", MODEL_CATALOG: ".github/models.json",
+    CODEX_CONFIG_FILE: "", CODEX_AUTH_FILE: "", OVERRIDE: String(override), LANGFUSE_PUBLIC_KEY: "",
+    GITHUB_EVENT_NAME: "push", GITHUB_REF_NAME: "main", AGENT: "true",
+  };
+  const emitted = () => Object.fromEntries(readFileSync(join(setup.dir, "github-env"), "utf8").trim().split("\n").map((line) => {
+    const at = line.indexOf("=");
+    return [line.slice(0, at), line.slice(at + 1)];
+  }));
+  expect(run("Resolve the review target", setup, inputs).exitCode).toBe(0);
+  expect(emitted().MODEL_NAME).toBe(override ? "literal-model" : "file-model");
+  expect(run("Fetch config files", setup, { ...inputs, ...emitted() }).exitCode).toBe(0);
+  expect(run("Configure codex", setup, { ...inputs, ...emitted() }).exitCode).toBe(0);
+  const home = emitted().CODEX_HOME;
+  const config = Bun.TOML.parse(readFileSync(join(home, "config.toml"), "utf8"));
+  expect(config.model).toBe(override ? "literal-model" : "file-model");
+  expect(config.model_catalog_json).toBe(join(home, "models.json"));
+  expect(JSON.parse(readFileSync(join(home, "auth.json"), "utf8"))).toEqual({ token: override ? "literal" : "file" });
+  expect(JSON.parse(readFileSync(config.model_catalog_json as string, "utf8"))).toEqual({ models: override ? [{ slug: "literal-model" }] : [] });
+  if (override) expect(existsSync(join(setup.dir, "requests"))).toBe(false);
+});
+
 test("queued PR webhooks resolve the current head while retaining their original activity", () => {
   for (const kind of ["pull_request_target", "pull_request_review"]) {
     const setup = fixture({ action: "synchronize", sender: writer, pull_request: { number: 7, head: { sha: "old" } } });

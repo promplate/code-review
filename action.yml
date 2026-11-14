@@ -71,6 +71,7 @@ runs:
         DISPATCHED_BASE: ${{ github.event.client_payload.base }}
         SESSION_KEY: ${{ inputs.session-key }}
         CODEX_CONFIG: ${{ inputs.codex-config }}
+        CONFIG_FILE: ${{ inputs.codex-config-file }}
       run: |
         # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
@@ -122,6 +123,13 @@ runs:
         fi
         home="${{ runner.temp }}/code-review-homes/${{ github.repository }}/$SESSION_KEY"
         printf 'SESSION_KEY=%s\nCODEX_HOME=%s\n' "$SESSION_KEY" "$home" >> "$GITHUB_ENV"
+        # Resolve the config before restoring snapshots, whose names include its model.
+        if [ -z "$CODEX_CONFIG" ] && [ -n "$CONFIG_FILE" ]; then
+          # The default branch supplies trusted settings; each attempt replaces any failed response.
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$CONFIG_FILE" "$RUNNER_TEMP/config.toml" </dev/null
+          CODEX_CONFIG=$(cat "$RUNNER_TEMP/config.toml")
+          echo "CODEX_CONFIG_FILE=$RUNNER_TEMP/config.toml" >> "$GITHUB_ENV"
+        fi
         # A session belongs to the model that recorded it; resuming it elsewhere is rejected, so each model keeps its own snapshots.
         MODEL=$(sed -n 's/^model *= *"\([^"]*\)".*/\1/p' <<< "$CODEX_CONFIG" | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
@@ -392,24 +400,23 @@ runs:
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Fetch config files
-      if: (inputs.codex-config-file != '' || inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
+      if: (inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
       shell: bash
       env:
-        CONFIG_FILE: ${{ inputs.codex-config-file }}
         AUTH_FILE: ${{ inputs.codex-auth-file }}
         CATALOG_FILE: ${{ inputs.model-catalog-file }}
+        CODEX_AUTH: ${{ inputs.codex-auth }}
+        CATALOG: ${{ inputs.model-catalog }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # These files configure how Codex runs, so they come from the default branch rather than the change under review.
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
         fetch() {
-          [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$1" "$2" </dev/null
+          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$1" "$2" </dev/null
         }
         mkdir -p "$CODEX_HOME"
-        fetch "$CONFIG_FILE" "$RUNNER_TEMP/config.toml"
-        fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json"
-        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json"
-        [ -z "$CONFIG_FILE" ] || echo "CODEX_CONFIG_FILE=$RUNNER_TEMP/config.toml" >> "$GITHUB_ENV"
+        fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
+        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG"
         [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
