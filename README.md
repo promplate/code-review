@@ -121,7 +121,7 @@ on:
   issues:
 ```
 
-A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone; labelling and classifying the issue is its work too, so the trigger delivers every issue event rather than filtering out the ones a run might act on. Such a run posts no check run and no verdict.
+A plain issue is not a review: the agent works on the default branch, keeps one session per issue, and decides for itself whether to check the claim, answer in the thread, open a PR, or leave it alone; labelling and classifying the issue is its work too, so the trigger delivers every issue event rather than filtering out the ones a run might act on. Such a run posts no check run and no verdict. Only issues from users with write access start a session: anyone else's activity still runs the authorization step, which skips the review job, and a closed issue has nothing left to answer, so its events are skipped too.
 
 ## Runtime
 
