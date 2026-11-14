@@ -498,7 +498,8 @@ runs:
         CONTINUE="Continue reviewing $SUBJECT. The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\`, \
              re-check what changed, reply to the activity the hooks report, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
         if [ "$AGENT" = true ]; then
-          SCHEMA=()
+          # An agent turn posts no verdict, but its closing message is what the run page shows as the summary.
+          SCHEMA=(--output-last-message "$RUNNER_TEMP/last-message.md")
           # The event is delivered in the shape the hooks inject into a running review, so both paths read the same context.
           delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, actor: .sender.login, url: (.issue.html_url // .comment.html_url), comment: .comment.body, comment_id: .comment.id} | with_entries(select(.value != null))' "$GITHUB_EVENT_PATH")
           OPEN=$(printf 'New GitHub activity on %s:\n%s\nRead the issue and its discussion with `gh issue view %s --comments`; the checkout is %s at %s. Decide what response, if any, it calls for and do it. %s' \
@@ -706,10 +707,15 @@ runs:
         done
 
     - name: Write review summary
-      if: env.AGENT != 'true' && env.SUPERSEDED != 'true' && env.SKIP != 'true'
+      if: env.SUPERSEDED != 'true' && env.SKIP != 'true'
       shell: bash
       run: |
-        jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
+        # An agent run has no verdict to read, so its closing message is the summary.
+        if [ "$AGENT" = true ]; then
+          [ ! -s "$RUNNER_TEMP/last-message.md" ] || cat "$RUNNER_TEMP/last-message.md" >> "$GITHUB_STEP_SUMMARY"
+        else
+          jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
+        fi
 
     - name: Checkpoint published review
       if: env.SKIP != 'true'
