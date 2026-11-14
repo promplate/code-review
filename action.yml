@@ -387,6 +387,7 @@ runs:
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Install the model catalog
+      id: catalog
       if: inputs.model-catalog-file != '' && env.SKIP != 'true'
       shell: bash
       env:
@@ -395,8 +396,24 @@ runs:
       run: |
         # The catalog shapes how Codex runs, so it comes from the default branch rather than the change under review.
         mkdir -p "$CODEX_HOME"
+        error=$(mktemp)
+        catalog=$(mktemp "$CODEX_HOME/models.json.XXXXXX")
+        trap 'rm -f "$error" "$catalog"' EXIT
         # Each attempt replaces the file, so an error response cannot prefix a successful retry's JSON.
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json"' _ "repos/${{ github.repository }}/contents/$CATALOG" </dev/null
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+          if gh api "$1" -H "Accept: application/vnd.github.raw" > "$3" 2> "$2"; then
+            cat "$2" >&2
+            mv "$3" "$CODEX_HOME/models.json"
+            echo "loaded=true" >> "$GITHUB_OUTPUT"
+          else
+            cat "$2" >&2
+            if grep -q "HTTP 404" "$2"; then
+              echo "::warning::The model-catalog-file was not found on the default branch; continuing without the catalog override."
+            else
+              exit 1
+            fi
+          fi
+        ' _ "repos/${{ github.repository }}/contents/$CATALOG" "$error" "$catalog" </dev/null
 
     - name: Configure codex
       if: env.SKIP != 'true'
@@ -404,7 +421,7 @@ runs:
       env:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
-        MODEL_CATALOG: ${{ inputs.model-catalog-file }}
+        MODEL_CATALOG: ${{ steps.catalog.outputs.loaded }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
