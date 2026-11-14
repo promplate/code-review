@@ -2,7 +2,7 @@
   "type": "object",
   "properties": {
     "conclusion": { "type": "string", "enum": ["success", "failure", "neutral"] },
-    "summary": { "type": "string", "description": "Use judgment to share useful insights, even when they do not change the verdict. Empty when there is nothing useful beyond routine checks or approval to add; a brief LGTM is fine when ready to merge. For failure, name the blocking behavior and consequence. Keep it concise; no verdict restatement, change inventory or routine CI recap." },
+    "summary": { "type": "string", "description": "Use judgment to share useful insights, even when they do not change the verdict. Empty when there is nothing useful beyond routine checks, approval or what you already said in discussion to add, so approval has no body. After a substantive reply, include only additional useful insight; no second recap or generic sign-off such as LGTM. For failure, name the blocking behavior and consequence. Keep it concise; no verdict restatement, change inventory or routine CI recap." },
     "reactions": {
       "type": "array",
       "minItems": 1,
