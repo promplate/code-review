@@ -752,7 +752,7 @@ test("an issue wakes the agent without a verdict schema", () => {
   const { dir, env } = fixture(), run = step("Run codex review").run;
   writeFileSync(join(dir, "issue.json"), JSON.stringify({ action: "labeled", sender: human, issue: { number: 7, html_url: "https://github.com/owner/repo/issues/7" } }));
   const block = run.slice(run.indexOf('if [ "$AGENT" = true ]; then'), run.indexOf("fresh() {")).replaceAll("${{ inputs.service-tier }}", "default");
-  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", block + '\nprintf "%s\\n--schema:%s" "$OPEN" "${#SCHEMA[@]}"'], {
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", block + '\nprintf "%s\\n" "$OPEN" "${SCHEMA[@]}"'], {
     env: { ...env, AGENT: "true", ISSUE_NUMBER: "7", BASE: "main", HEAD_SHA: "abc123", RUNTIME_INFO: "Bun 1.3", GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(dir, "issue.json") },
   });
   expect(result.exitCode).toBe(0);
@@ -762,7 +762,8 @@ test("an issue wakes the agent without a verdict schema", () => {
   expect(out).toContain("gh issue view 7 --comments");
   expect(out).toContain("never invent work");
   expect(out).not.toContain("JSON review");
-  expect(out.endsWith("--schema:0")).toBe(true);
+  expect(out).not.toContain("--output-schema");
+  expect(out).toContain(`--output-last-message\n${join(dir, "last-message.md")}\n`);
 });
 
 test("issue runs propagate Codex failures without requiring a verdict", () => {
