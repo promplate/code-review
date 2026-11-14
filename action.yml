@@ -395,7 +395,8 @@ runs:
       run: |
         # The catalog shapes how Codex runs, so it comes from the default branch rather than the change under review.
         mkdir -p "$CODEX_HOME"
-        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/contents/$CATALOG" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json" </dev/null
+        # Each attempt replaces the file, so an error response cannot prefix a successful retry's JSON.
+        bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$CODEX_HOME/models.json"' _ "repos/${{ github.repository }}/contents/$CATALOG" </dev/null
 
     - name: Configure codex
       if: env.SKIP != 'true'
