@@ -370,7 +370,11 @@ esac
     expect(run("Publish PR review", setup, { GITHUB_EVENT_NAME: "pull_request_target" }).exitCode).toBe(0);
     const published = join(setup.dir, "posted.json");
     expect(existsSync(published)).toBe(posted);
-    if (posted) expect(JSON.parse(readFileSync(published, "utf8")).comments).toHaveLength(comments);
+    if (posted) {
+      const review = JSON.parse(readFileSync(published, "utf8"));
+      expect(review.comments).toHaveLength(comments);
+      if (!comments) expect(review).toEqual({ event: "REQUEST_CHANGES", body: "Boom", comments: [] });
+    }
   }
 });
 

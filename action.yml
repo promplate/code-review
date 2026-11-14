@@ -697,7 +697,9 @@ runs:
               elif $inline == 0 and $lastComment != "" and $body == $lastComment then empty
               else {
             event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end),
-            body: $body,
+            # Restoring a change request still needs a body when every finding already has a thread.
+            body: (if ($issues | length) == 0 and ($body | test("\\S") | not) then
+              [$review.annotations[] | select(.level == "failure") | .message] | join("\n\n") else $body end),
             comments: [$issues[] | select(in_diff) | {path, line, side: "RIGHT", body: .message}]} end
           elif $author == env.BOT_LOGIN then
             if ($review.summary | test("\\S") | not) or $lastComment == $review.summary then empty else {event: "COMMENT", body: $review.summary} end
