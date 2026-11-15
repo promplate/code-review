@@ -668,7 +668,8 @@ runs:
           [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs?head_sha=$sha" \
             --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" = true ] || continue
           # A seeded trigger can name an older push; only a commit ahead of HEAD supersedes this review.
-          if [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/compare/$HEAD_SHA...$sha" \
+          # The comparison needs Contents access, which the App token already has.
+          if [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/compare/$HEAD_SHA...$sha" \
             --jq .status </dev/null)" = ahead ]; then NEWER=$sha; fi
         done
         if [ -z "$NEWER" ] && [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then

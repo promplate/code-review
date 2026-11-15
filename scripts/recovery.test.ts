@@ -469,17 +469,18 @@ test("publication detects a head that moved after the last SSE frame", () => {
   for (const hasRun of [true, false]) {
     const setup = fixture();
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+    executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
     executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
   *'/pulls/7 --jq .head.sha') printf 'newer\\n' ;;
-  *'/actions/runs?head_sha=newer'*) printf '${hasRun}\\n' ;;
-  *'/compare/head...newer'*) printf 'ahead\\n' ;;
+  *'/actions/runs?head_sha=newer'*) [ "$GH_TOKEN" = token ] && printf '${hasRun}\\n' ;;
+  *'/compare/head...newer'*) [ -z "$GH_TOKEN" ] && printf 'ahead\\n' ;;
   *'/check-runs/10 -X PATCH'*) cat > "$RUNNER_TEMP/published.json" ;;
   *) exit 1 ;;
 esac
 `);
     writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ summary: "Reviewed", commits: [{ sha: "head", conclusion: "success" }], annotations: [] }));
-    const result = run("Publish check run", setup);
+    const result = run("Publish check run", setup, { GH_TOKEN: "" });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString().includes("A subsequent review run is needed for that head.")).toBe(!hasRun);
     expect(readFileSync(join(setup.dir, "github-env"), "utf8").includes("SUPERSEDED=true")).toBe(hasRun);
