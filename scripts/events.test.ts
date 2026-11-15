@@ -915,6 +915,44 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
   expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
 });
 
+test("a failure verdict has to name what blocks it", () => {
+  const define = step("Run codex review").run.match(/verdict\(\) \{[\s\S]*?; \}/)![0];
+  const accepts = (verdict: object) => {
+    const { dir, env } = fixture();
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ summary: "", annotations: [], ...verdict }));
+    return Bun.spawnSync(["bash", "-ec", `${define}\nverdict`], { env }).exitCode;
+  };
+  const commits = [{ sha: "head", conclusion: "failure" }];
+  expect(accepts({ commits })).toBe(1);
+  expect(accepts({ commits, summary: "Dropping the lock lets a second writer in." })).toBe(0);
+  expect(accepts({ commits, annotations: [{ path: "a", line: 1, level: "failure", message: "m" }] })).toBe(0);
+  expect(accepts({ commits: [{ sha: "head", conclusion: "success" }] })).toBe(0);
+});
+
+test("an unusable verdict is posted to the PR or reviewed commit", () => {
+  const run = step("Run codex review").run;
+  const define = run.match(/verdict\(\) \{[\s\S]*?; \}/)![0];
+  const report = run.match(/if \[ "\$AGENT" != true \] && ! verdict; then[\s\S]*?\nfi/)![0];
+  for (const [subject, args] of [
+    ["PR", ["pr", "comment", "7", "--body-file", "-"]],
+    ["branch", ["api", "repos/owner/repo/commits/head/comments", "-F", "body=@-"]],
+  ] as const) {
+    const { dir, env } = fixture();
+    const command = run.split("\n").find((line: string) => line.trimStart().startsWith(`SUBJECT="${subject} `))!;
+    executable(dir, "gh", `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.RUNNER_TEMP + "/comment-args", JSON.stringify(process.argv.slice(2)));
+writeFileSync(process.env.RUNNER_TEMP + "/comment-body", await Bun.stdin.text());
+`);
+    writeFileSync(join(dir, "review.json"), "unfinished response");
+    const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${command}\n${define}\n${report}`], { env });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toBe("");
+    expect(JSON.parse(readFileSync(join(dir, "comment-args"), "utf8"))).toEqual(args);
+    expect(readFileSync(join(dir, "comment-body"), "utf8")).toContain("unfinished response");
+  }
+});
+
 test("a session saved under another provider starts a fresh thread", () => {
   const { dir, env } = fixture();
   const block = step("Run codex review").run.match(/\nif grep -Eq[\s\S]*?\nfi\n/)![0];
