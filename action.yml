@@ -43,7 +43,7 @@ runs:
       run: |
         : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Grant the job id-token: write so it can authenticate as the App.}"
         mint() {
-          oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -r .value)
+          oidc=$(bash "$GITHUB_ACTION_PATH/scripts/oidc.sh" "$BROKER")
           curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token"
         }
         save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
@@ -422,18 +422,18 @@ runs:
         catalog=$(mktemp "$CODEX_HOME/models.json.XXXXXX")
         trap 'rm -f "$error" "$catalog"' EXIT
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
-        # A 404 is permanent, so $4 tells apart the two causes: a file only this branch has is a warning, while one nobody has is a wrong input.
+        # A 404 is permanent: a file only this branch has becomes a warning, while one nobody has stays a wrong input.
         fetch() {
-          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
             if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
             cat "$3" >&2; rm -f "$2"
             if [ -n "$4" ] && grep -q "HTTP 404" "$3" && git cat-file -e "HEAD:$5" 2> /dev/null; then echo "::warning::$4"; exit 0; fi
             exit 1
-          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$4" "$1" </dev/null
+          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$3" "$1" </dev/null
         }
-        fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
+        [ -n "$CODEX_AUTH" ] || [ -z "$AUTH_FILE" ] || fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json"
         if [ -z "$CATALOG" ] && [ -n "$CATALOG_FILE" ]; then
-          fetch "$CATALOG_FILE" "$catalog" "$CATALOG" "The model-catalog-file is only on this branch; continuing without the catalog override."
+          fetch "$CATALOG_FILE" "$catalog" "The model-catalog-file is only on this branch; continuing without the catalog override."
           # Only this download enables the override; a missing file leaves any catalog installed by setup intact.
           if [ -f "$catalog" ]; then
             mv "$catalog" "$CODEX_HOME/models.json"
@@ -661,8 +661,8 @@ runs:
             < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         fi
         # Tokens spent on this run, summed over every turn the hooks and the extra ask started.
-        # The line and the three totals come from one pass, so the price judges the same turns the counts describe.
-        { read -r usage; read -r input_tokens cached_tokens output_tokens; } < <(jq -Rrs '
+        # The line and the turns the price reads come from one pass, so the price judges the same turns the counts describe.
+        { read -r usage; read -r turns; } < <(jq -Rrs '
           def h: if . >= 1000000 then "\(. / 100000 | round / 10)M" elif . >= 1000 then "\(. / 100 | round / 10)k" else "\(.)" end;
           [split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] as $turns
           | ($turns | map(.input_tokens) | add // 0) as $input
@@ -670,13 +670,11 @@ runs:
           | ($turns | map(.output_tokens) | add // 0) as $output
           | ($turns | map(.reasoning_output_tokens) | add // 0) as $reasoning
           | ("\($turns | length) turns · \($input | h) input, \(if $input > 0 then $cached * 1000 / $input | round / 10 else 0 end)% cached · \($output | h) output, \(if $output > 0 then $reasoning * 1000 / $output | round / 10 else 0 end)% reasoning",
-             "\($input) \($cached) \($output)")' < "$RUNNER_TEMP/codex.jsonl")
+             ($turns | map({input_tokens, cache_read_tokens: .cached_input_tokens, output_tokens}) | tojson))' < "$RUNNER_TEMP/codex.jsonl")
         # Each turn is priced on its own: a size tier applies per request, so summing first would charge every token at the tier the total reached.
         # The provider is whatever the config points at, and a model the table does not know has no price at all.
         wait "$PRICE_PID" || true
-        price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && TURNS=$(jq -Rsc '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed")
-            | {input_tokens: .usage.input_tokens, cache_read_tokens: .usage.cached_input_tokens, output_tokens: .usage.output_tokens}]' < "$RUNNER_TEMP/codex.jsonl") \
-          bun -e '
+        price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && TURNS="$turns" bun -e '
           import { calcPrice } from "@pydantic/genai-prices";
           // A tier that codex-config sets applies even when this input names none.
           let tier = process.env.SERVICE_TIER;
@@ -753,15 +751,14 @@ runs:
           [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
           exit 0
         fi
-        jq -n --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+        jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+        include "summary";
         ($review.commits[] | select(.sha == $sha)) as $commit | {
         name: "code-review", head_sha: $sha, status: "completed",
         conclusion: $commit.conclusion,
         output: {
           title: (if $commit.conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end),
-          # A verdict with nothing to add still leaves this page saying how it ended.
-          summary: (if $review.summary | test("\\S") then $review.summary
-            else "\(if $commit.conclusion == "failure" then "Changes requested" else "Approved" end) · \($review.annotations | length) annotation\(if ($review.annotations | length) == 1 then "" else "s" end)" end),
+          summary: ($review | summary_line($commit.conclusion)),
           annotations: [$review.annotations[:50][] | {path, start_line: .line, end_line: .line, annotation_level: .level, message}]
         }}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
 
@@ -784,8 +781,7 @@ runs:
             [ "$count" = 0 ] || continue
           fi
           # Commits CI pushed during the review have no check run yet.
-          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r --arg conclusion "$conclusion" 'if .summary | test("\\S") then .summary
-            else "\(if $conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
+          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -L "$GITHUB_ACTION_PATH/scripts" -r --arg conclusion "$conclusion" 'include "summary"; summary_line($conclusion)' "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end), summary: $summary}}' \
             | if [ -n "$id" ]; then jq 'del(.head_sha)' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
               else bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs --input - > /dev/null; fi
@@ -873,8 +869,7 @@ runs:
           summary=$(cat "$RUNNER_TEMP/last-message.md" 2>/dev/null) || summary=
           [ -n "${summary//[[:space:]]/}" ] || summary="This run finished without a closing message."
         else
-          summary=$(jq -r 'if .summary | test("\\S") then .summary
-            else "\(if .conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")
+          summary=$(jq -L "$GITHUB_ACTION_PATH/scripts" -r 'include "summary"; summary_line(.conclusion)' "$RUNNER_TEMP/review.json")
         fi
         printf '%s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
 
@@ -917,7 +912,7 @@ runs:
       run: |
         older=$(bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY" "$SNAPSHOT_ID")
         [ -n "$older" ] || exit 0
-        oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -er .value)
+        oidc=$(bash "$GITHUB_ACTION_PATH/scripts/oidc.sh" "$BROKER")
         jq -cn --argjson saved "$SNAPSHOT_ID" --argjson older "$older" '{saved: $saved, older: $older}' \
           | curl -sS --fail-with-body --retry 5 -H "Authorization: Bearer $oidc" --json @- "$BROKER/prune-snapshots"
 
