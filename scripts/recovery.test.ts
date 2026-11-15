@@ -211,9 +211,17 @@ if (args.includes("GET")) {
 } else {
   const id = Number(endpoint.split("/").at(-1)), found = artifacts.find(artifact => artifact.id === id);
   if (!found) process.exit(1);
-  if (args.includes("DELETE")) await Bun.write(path, JSON.stringify(artifacts.filter(artifact => artifact.id !== id)));
-  else console.log(JSON.stringify(found));
+  if (args.includes("DELETE")) process.exit(1);
+  console.log(JSON.stringify(found));
 }
+`);
+  executable(setup.dir, "curl", `#!${process.execPath}
+const args = process.argv.slice(2), url = args.at(-1);
+if (url === "https://oidc?test=1&audience=https://broker") { console.log('{"value":"oidc"}'); process.exit(0); }
+if (url !== "https://broker/prune-snapshots" || !args.includes("Authorization: Bearer oidc")) process.exit(1);
+const { saved, older } = await Bun.stdin.json(), path = process.env.RUNNER_TEMP + "/artifacts.json", artifacts = await Bun.file(path).json();
+if (!artifacts.some(artifact => artifact.id === saved) || older.includes(saved)) process.exit(1);
+await Bun.write(path, JSON.stringify(artifacts.filter(artifact => !older.includes(artifact.id))));
 `);
   writeFileSync(artifacts, "[]");
   const lookup = (runId: string, extraEnv: Record<string, string> = {}) => {
@@ -221,7 +229,9 @@ if (args.includes("GET")) {
     expect(run("Find codex session snapshot", setup, { GH_TOKEN: "token", GITHUB_RUN_ID: runId, ...extraEnv }).exitCode).toBe(0);
     return Object.fromEntries(readFileSync(output, "utf8").trimEnd().split("\n").map(line => line.split("=")));
   };
-  const cleanup = (id: number, extraEnv: Record<string, string> = {}) => run("Drop older session snapshots", setup, { GH_TOKEN: "token", SNAPSHOT_ID: String(id), ...extraEnv });
+  const cleanup = (id: number, extraEnv: Record<string, string> = {}) => run("Drop older session snapshots", setup, {
+    GH_TOKEN: "token", SNAPSHOT_ID: String(id), BROKER: "https://broker", ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc?test=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ...extraEnv,
+  });
   const artifact = (id: number, name: string, runId: number, second: number, repo = 23, expired = false) =>
     ({ id, name, expired, created_at: `2026-11-13T00:00:${String(second).padStart(2, "0")}Z`, workflow_run: { id: runId, head_repository_id: repo } });
   return { setup, lookup, cleanup, artifact,

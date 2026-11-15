@@ -23,10 +23,10 @@ snapshots=$(lookup "$name") || exit 1
 if [ "$snapshots" = "[]" ]; then snapshots=$(lookup "code-review-session-$key") || exit 1; fi
 if [ -n "${2:-}" ]; then
   # The successor must be visible to the same lookup used for restore before either slot is pruned.
-  jq -r --argjson saved "$2" '
+  jq -c --argjson saved "$2" '
     map(.id) | index($saved) as $index |
-    if $index == null then error("New session snapshot is not listed") else .[:$index][] end
-  ' <<< "$snapshots" | while read -r id; do retry "$endpoint/$id" -X DELETE > /dev/null; done
+    if $index == null then error("New session snapshot is not listed") elif $index > 0 then .[:$index] else empty end
+  ' <<< "$snapshots"
   exit 0
 fi
 

@@ -883,9 +883,15 @@ runs:
       continue-on-error: true
       shell: bash
       env:
+        BROKER: ${{ inputs.broker }}
         GH_TOKEN: ${{ github.token }}
         SNAPSHOT_ID: ${{ steps.save-session.outputs.artifact-id }}
-      run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY" "$SNAPSHOT_ID"
+      run: |
+        older=$(bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY" "$SNAPSHOT_ID")
+        [ -n "$older" ] || exit 0
+        oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -er .value)
+        jq -cn --argjson saved "$SNAPSHOT_ID" --argjson older "$older" '{saved: $saved, older: $older}' \
+          | curl -sS --fail-with-body --retry 5 -H "Authorization: Bearer $oidc" --json @- "$BROKER/prune-snapshots"
 
     - name: Mark forked PRs ready
       # A failed publication skips the snapshot, so the pending list is kept beside the session until every draft is ready.

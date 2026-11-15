@@ -55,7 +55,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
        types: [created, edited, deleted]
 
    permissions:
-     actions: write
+     actions: read
      id-token: write
 
    jobs:
@@ -133,7 +133,7 @@ The action reuses `bun-version` from the runner or installs it, and uses Bun for
 
 The App needs **Contents**, **Pull requests** and **Checks** write access, plus **Issues** write when reviews should open issues for problems they cannot fix. The broker asks for whichever Issues level the installation grants, so a read-only installation still reviews and only loses issue creation.
 
-`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: write` lets it restore session artifacts across workflow runs and drop superseded snapshots.
+`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
 
 To review as your own GitHub App, deploy the broker with that App's credentials and point the `broker` input at it; the action learns which login it acts as from the token it mints, so workflows never name the App.
 
