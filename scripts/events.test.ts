@@ -500,7 +500,7 @@ test("heartbeats do not re-read the API, while a recovery frame does", () => {
 
 test("a dead subscription still reconciles with the API before the deadline", () => {
   const { dir, env } = fixture();
-  executable(dir, "gh", `#!${process.execPath}\nimport { appendFileSync, existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nappendFileSync(dir + "/gh-calls", "call\\n");\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  executable(dir, "gh", `#!${process.execPath}\nimport { existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
   executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => {}, 1000);\n`);
   // The subscriber gave up, so no frame will ever wake the wait again.
   writeFileSync(join(dir, "sse.failed"), "The event stream writer failed.");

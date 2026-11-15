@@ -46,7 +46,10 @@ runs:
           oidc=$(curl -fsS --retry 5 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$BROKER" | jq -r .value)
           curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token"
         }
-        minted=$(mint) || { echo "::error::$minted"; exit 1; }
+        save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
+        # refill mints, saves the token gh and git read, and schedules the next refresh from the expiry the broker reports.
+        refill() { minted=$(mint) && save "$(jq -r .token <<< "$minted")" && interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) )); }
+        refill || { echo "::error::$minted"; exit 1; }
         token=$(jq -r .token <<< "$minted")
         events_url=$(jq -r .events_url <<< "$minted")
         echo "BOT_LOGIN=$(jq -r .bot <<< "$minted")" >> "$GITHUB_ENV"
@@ -54,21 +57,12 @@ runs:
         echo "::add-mask::$events_url"
         echo "token=$token" >> "$GITHUB_OUTPUT"
         echo "EVENTS_URL=$events_url" >> "$GITHUB_ENV"
-        # Installation tokens expire after an hour, which long reviews and merges waiting for CI outlast, so gh and git read the token from a gh config that a background loop keeps fresh.
-        save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
-        mkdir -p "$RUNNER_TEMP/gh"
-        save "$token"
-        # The broker reports when this token dies, so the refresh is scheduled from that expiry instead of a guessed period.
-        interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) ))
-        ( while :; do
-            sleep "$(( interval * 9 / 10 ))"
-            # A failure retries inside the life the old token has left, so a broker that comes back never leaves gh on an expired token.
-            delay=1
-            until minted=$(mint) && save "$(jq -r .token <<< "$minted")"; do
-              sleep "$delay"
-              delay=$(( delay * 2 > 30 ? 30 : delay * 2 ))
-            done
-            interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) ))
+        mkdir -p "$RUNNER_TEMP/gh" && save "$token"
+        export -f mint save refill
+        # Installation tokens expire after an hour, which long reviews and merges waiting for CI outlast, so a background loop keeps the config fresh.
+        ( while sleep "$(( interval * 9 / 10 ))"; do
+            # retry.sh owns the backoff, and the loop keeps asking so a broker that comes back never leaves gh on a dead token.
+            until interval=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'refill > /dev/null && printf %s "$interval"' < /dev/null); do :; done
           done ) >> "$RUNNER_TEMP/token.err" 2>&1 &
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
