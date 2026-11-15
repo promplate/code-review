@@ -915,7 +915,11 @@ runs:
         fi
         left=
         while read -r url; do
-          [ -z "$url" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null || left="$left$url"$'\n'
+          [ -n "$url" ] || continue
+          # A draft closed or released by hand can never become ready here, so it leaves the list instead of being retried on every run.
+          draft=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr view "$url" --json state,isDraft --jq '.state == "OPEN" and .isDraft' </dev/null) || { left="$left$url"$'\n'; continue; }
+          [ "$draft" = true ] || continue
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null || left="$left$url"$'\n'
         done <<< "$pending"
         if [ -z "$left" ]; then rm -f "$CODEX_HOME/sessions/.github-pending-drafts"; else printf '%s' "$left" > "$CODEX_HOME/sessions/.github-pending-drafts"; fi
 
