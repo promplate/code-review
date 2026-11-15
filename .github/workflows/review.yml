@@ -23,6 +23,10 @@ on:
         description: Shell to run on the runner before Codex is installed, for tools the review needs.
         type: string
         default: ""
+      instructions:
+        description: Instructions appended to the review prompt, for rules specific to this repository.
+        type: string
+        default: ""
       model-catalog-file:
         description: Path in this repository to a Codex model catalog, read from the default branch.
         type: string
@@ -75,6 +79,7 @@ jobs:
           service-tier: ${{ inputs.service-tier }}
           session-key: ${{ inputs.session-key }}
           setup: ${{ inputs.setup }}
+          instructions: ${{ inputs.instructions }}
           model-catalog-file: ${{ inputs.model-catalog-file }}
           model-catalog: ${{ inputs.model-catalog }}
           codex-config-file: ${{ inputs.codex-config-file }}
