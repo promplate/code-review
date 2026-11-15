@@ -712,8 +712,8 @@ runs:
             [ "$count" = 0 ] || continue
           fi
           # Commits CI pushed during the review have no check run yet.
-          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r 'if .summary | test("\\S") then .summary
-            else "\(if .conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
+          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r --arg conclusion "$conclusion" 'if .summary | test("\\S") then .summary
+            else "\(if $conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end), summary: $summary}}' \
             | if [ -n "$id" ]; then jq 'del(.head_sha)' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
               else bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs --input - > /dev/null; fi
