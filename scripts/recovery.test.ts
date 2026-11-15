@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const steps = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")).runs.steps;
@@ -30,10 +30,25 @@ function executable(dir: string, name: string, source: string) {
   chmodSync(join(dir, name), 0o755);
 }
 
-function run(name: string, setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
+function run(name: string, setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}, cwd = root) {
   const script = step(name).run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ runner.temp }}", setup.dir)
     .replaceAll("${{ github.event.repository.default_branch }}", "main").replaceAll("${{ steps.check.outputs.id }}", "10").replaceAll("${{ github.token }}", "token").replace(/\$\{\{[^}]+\}\}/g, "");
-  return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { env: { ...setup.env, ...extraEnv }, timeout: 3000 });
+  return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { env: { ...setup.env, ...extraEnv }, cwd, timeout: 3000 });
+}
+
+// A checkout of the change under review, so the step can tell a file this branch adds from a path nothing has.
+function checkout(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "review-checkout-"));
+  homes.push(dir);
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args]);
+  git("init", "-q");
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+  git("add", "-A");
+  git("commit", "-qm", "fixture", "--allow-empty");
+  return dir;
 }
 
 function gate(setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
@@ -72,9 +87,10 @@ echo "$*" >> "$RUNNER_TEMP/requests"
 echo 'gh: Not Found (HTTP 404)' >&2
 exit 1
 `);
-  const fetch = run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" });
+  const branch = checkout({ ".github/codex-models.json": '{"models":[]}' });
+  const fetch = run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" }, branch);
   expect(fetch.exitCode).toBe(0);
-  expect(fetch.stdout.toString()).toContain("::warning::The model-catalog-file is not on the default branch yet");
+  expect(fetch.stdout.toString()).toContain("::warning::The model-catalog-file is only on this branch");
   expect(readFileSync(join(setup.dir, "requests"), "utf8")).toBe("api repos/owner/repo/contents/.github/codex-models.json -H Accept: application/vnd.github.raw\n");
   expect(existsSync(catalog)).toBe(existing);
   if (existing) expect(readFileSync(catalog, "utf8")).toBe(contents);
@@ -99,6 +115,20 @@ test("fetching credentials does not enable an existing model catalog", () => {
   expect(run("Fetch config files", setup, { AUTH_FILE: ".github/auth.json", CATALOG_FILE: "", CATALOG: "", CODEX_AUTH: "" }).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.dir, "auth.json"), "utf8"))).toEqual({ token: "file" });
   expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
+});
+
+test("a catalog path that neither the default branch nor this one has still fails", () => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+`);
+  const branch = checkout({});
+  expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-model.json" }, branch).exitCode).toBe(1);
+  expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
 });
 
 test("other model catalog fetch errors still exhaust retries and fail", () => {
