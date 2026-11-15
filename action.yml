@@ -449,6 +449,7 @@ runs:
       if: env.SKIP != 'true'
       shell: bash
       env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
         CATALOG: ${{ inputs.model-catalog }}
@@ -480,6 +481,7 @@ runs:
         [ -n "$CODEX_CONFIG" ] || [ -z "$CODEX_CONFIG_FILE" ] || CODEX_CONFIG=$(cat "$CODEX_CONFIG_FILE")
         [ -n "$CODEX_CONFIG" ] || { echo "::error::Provide codex-config or codex-config-file."; exit 1; }
         printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
+        bun "$GITHUB_ACTION_PATH/scripts/doc-fallbacks.ts" "$CODEX_HOME/config.toml" "refs/remotes/origin/$DEFAULT_BRANCH"
         [ -z "$CATALOG" ] || printf '%s' "$CATALOG" > "$CODEX_HOME/models.json"
         [ -n "$CODEX_AUTH" ] || [ -z "$CODEX_AUTH_FILE" ] || CODEX_AUTH=$(cat "$CODEX_AUTH_FILE")
         [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
