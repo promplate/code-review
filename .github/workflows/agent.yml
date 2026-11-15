@@ -20,7 +20,7 @@ on:
         description: Issue number to hand the agent; a pull request belongs in `pr`.
 
 permissions:
-  actions: write
+  actions: read
   id-token: write
 
 jobs:
