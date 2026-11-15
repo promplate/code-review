@@ -915,6 +915,20 @@ test("a turn that fails after the verdict keeps the verdict it produced", () => 
   expect(JSON.parse(readFileSync(join(dir, "review.json"), "utf8"))).toEqual(verdict);
 });
 
+test("a failure verdict has to name what blocks it", () => {
+  const define = step("Run codex review").run.match(/verdict\(\) \{[\s\S]*?; \}/)![0];
+  const accepts = (verdict: object) => {
+    const { dir, env } = fixture();
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ summary: "", annotations: [], ...verdict }));
+    return Bun.spawnSync(["bash", "-ec", `${define}\nverdict`], { env }).exitCode;
+  };
+  const commits = [{ sha: "head", conclusion: "failure" }];
+  expect(accepts({ commits })).toBe(1);
+  expect(accepts({ commits, summary: "Dropping the lock lets a second writer in." })).toBe(0);
+  expect(accepts({ commits, annotations: [{ path: "a", line: 1, level: "failure", message: "m" }] })).toBe(0);
+  expect(accepts({ commits: [{ sha: "head", conclusion: "success" }] })).toBe(0);
+});
+
 test("a session saved under another provider starts a fresh thread", () => {
   const { dir, env } = fixture();
   const block = step("Run codex review").run.match(/\nif grep -Eq[\s\S]*?\nfi\n/)![0];

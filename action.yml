@@ -627,7 +627,9 @@ runs:
           < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
         # A turn can end without a verdict, such as when the model stops to report progress; ask once more and let it name what it still does not know.
         # A commit without a conclusion, or without the one being reviewed, would fail the publish step instead of this one.
-        verdict() { jq -e '.summary and (.commits | type == "array" and length > 0) and all(.commits[]; .conclusion == "success" or .conclusion == "failure") and any(.commits[]; .sha == env.HEAD_SHA)' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
+        # A failure that names nothing is unreadable on the pull request, so it is asked again like a missing verdict.
+        verdict() { jq -e '.summary and (.commits | type == "array" and length > 0) and all(.commits[]; .conclusion == "success" or .conclusion == "failure") and any(.commits[]; .sha == env.HEAD_SHA)
+          and (if any(.commits[]; .conclusion == "failure") then (.summary | test("\\S")) or any(.annotations[]; .level == "failure") else true end)' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
         if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; then
           # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
           if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
