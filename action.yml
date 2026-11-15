@@ -406,6 +406,7 @@ runs:
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Fetch config files
+      id: catalog
       if: (inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
       shell: bash
       env:
@@ -416,13 +417,23 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # These files configure how Codex runs, so they come from the default branch rather than the change under review.
+        error=$(mktemp)
+        trap 'rm -f "$error"' EXIT
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
+        # A 404 is a permanent answer, and a caller may be introducing the file on this very PR, so $4 asks for a warning instead.
         fetch() {
-          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$1" "$2" </dev/null
+          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+            if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
+            cat "$3" >&2; rm -f "$2"
+            if [ -n "$4" ] && grep -q "HTTP 404" "$3"; then echo "::warning::$4"; exit 0; fi
+            exit 1
+          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$4" </dev/null
         }
         mkdir -p "$CODEX_HOME"
         fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
-        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG"
+        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG" "The model-catalog-file is not on the default branch yet; continuing without the catalog override."
+        # Only a catalog that landed enables the override, so the config keeps its own model_catalog_json otherwise.
+        [ ! -f "$CODEX_HOME/models.json" ] || echo "loaded=true" >> "$GITHUB_OUTPUT"
         [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
@@ -432,7 +443,8 @@ runs:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
         CATALOG: ${{ inputs.model-catalog }}
-        MODEL_CATALOG: ${{ inputs.model-catalog || inputs.model-catalog-file }}
+        # A literal catalog still wins; only a download that landed enables the file.
+        MODEL_CATALOG: ${{ inputs.model-catalog || steps.catalog.outputs.loaded }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |

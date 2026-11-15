@@ -59,6 +59,41 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
 `);
   expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/models.json" }).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
+  expect(readFileSync(setup.env.GITHUB_OUTPUT, "utf8")).toBe("loaded=true\n");
+});
+
+test("a model catalog missing from the default branch warns once and does not enable the override", () => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+`);
+  const fetch = run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" });
+  expect(fetch.exitCode).toBe(0);
+  expect(fetch.stdout.toString()).toContain("::warning::The model-catalog-file is not on the default branch yet");
+  expect(readFileSync(join(setup.dir, "requests"), "utf8")).toBe("api repos/owner/repo/contents/.github/codex-models.json -H Accept: application/vnd.github.raw\n");
+  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
+  // The config keeps whatever catalog it names, since nothing points Codex at a file that never landed.
+  expect(step("Fetch config files").id).toBe("catalog");
+  expect(step("Configure codex").env.MODEL_CATALOG).toBe("${{ inputs.model-catalog || steps.catalog.outputs.loaded }}");
+});
+
+test("other model catalog fetch errors still exhaust retries and fail", () => {
+  for (const status of [403, 503]) {
+    const setup = fixture();
+    executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+    executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: HTTP ${status}' >&2
+exit 1
+`);
+    expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" }).exitCode).toBe(1);
+    expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+    expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  }
 });
 
 test.each([false, true])("config files preserve the model's session identity and reach Codex (literal override: %s)", (override) => {
