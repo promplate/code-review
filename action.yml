@@ -58,7 +58,12 @@ runs:
         save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
         mkdir -p "$RUNNER_TEMP/gh"
         save "$token"
-        ( while sleep 900; do minted=$(mint) && save "$(jq -r .token <<< "$minted")"; done ) &
+        # The broker reports when this token dies, so the refresh is scheduled from that expiry instead of a guessed period.
+        expires=$(jq -r '.expires_at | fromdateiso8601' <<< "$minted")
+        ( while sleep "$(( (expires - $(date +%s)) * 9 / 10 ))"; do
+            minted=$(mint) || { echo "::error::The installation token could not be refreshed."; exit 1; }
+            save "$(jq -r .token <<< "$minted")" && expires=$(jq -r '.expires_at | fromdateiso8601' <<< "$minted")
+          done ) >> "$RUNNER_TEMP/token.err" 2>&1 &
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
     - name: Resolve the review target
@@ -909,6 +914,7 @@ runs:
       run: |
         kill "$SSE_PID" "$TOKEN_PID" 2>/dev/null || true
         tail -3 "$RUNNER_TEMP/sse.err" 2>/dev/null || true
+        tail -3 "$RUNNER_TEMP/token.err" 2>/dev/null || true
 
     - name: Drop the plugin cache
       if: always()
