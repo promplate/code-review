@@ -510,7 +510,8 @@ test("a dead subscription still reconciles with the API before the deadline", ()
   expectTailReleased(dir);
 });
 
-function parseFrames(input: string) {  const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
+function parseFrames(input: string) {
+  const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
   return result.stdout.toString();
 }
