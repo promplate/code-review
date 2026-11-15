@@ -24,7 +24,8 @@ function fixture() {
   executable(dir, "gh", "#!/usr/bin/env bash\nexit 1\n");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
-    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main" };
+    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main",
+    GITHUB_STEP_SUMMARY: join(dir, "summary.md") };
   return { dir, env };
 }
 
@@ -1277,10 +1278,12 @@ test("each run reports the tokens every turn spent", () => {
     { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 8, output_tokens: 2, reasoning_output_tokens: 1 } },
     { type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0 } },
   ].map((event) => JSON.stringify(event)).join("\n") + "\n");
-  const commands = step("Run codex review").run.match(/usage=\$\(jq[\s\S]*?echo "::notice::ChatGPT usage: \$usage"/)![0];
-  const result = Bun.spawnSync(["bash", "-ec", commands], { env });
+  const commands = step("Run codex review").run.match(/usage=\$\(jq[\s\S]*?>> "\$GITHUB_STEP_SUMMARY"/)![0];
+  const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, MODEL_NAME: "deepseek-flash" } });
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString()).toContain("ChatGPT usage: 15 input (8 cached), 5 output, 1 reasoning");
+  // The model is named because the config decides the provider; cached and reasoning refine the counts they follow.
+  expect(result.stdout.toString()).toContain("deepseek-flash usage: 2 turns · 15 input, 53.3% cached · 5 output, 20% reasoning");
+  expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain("**deepseek-flash usage** — 2 turns · 15 input, 53.3% cached · 5 output, 20% reasoning");
 });
 
 function gateStep() {

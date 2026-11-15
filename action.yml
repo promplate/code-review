@@ -630,9 +630,18 @@ runs:
             < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"
         fi
         # Tokens spent on this run, summed over every turn the hooks and the extra ask started.
-        usage=$(jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] | "\(map(.input_tokens) | add // 0) input (\(map(.cached_input_tokens) | add // 0) cached), \(map(.output_tokens) | add // 0) output, \(map(.reasoning_output_tokens) | add // 0) reasoning"' \
-          < "$RUNNER_TEMP/codex.jsonl")
-        echo "::notice::ChatGPT usage: $usage"
+        usage=$(jq -Rrs '
+          def h: if . >= 1000000 then "\(. / 100000 | round / 10)M" elif . >= 1000 then "\(. / 100 | round / 10)k" else "\(.)" end;
+          [split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] as $turns
+          | ($turns | map(.input_tokens) | add // 0) as $input
+          | ($turns | map(.cached_input_tokens) | add // 0) as $cached
+          | ($turns | map(.output_tokens) | add // 0) as $output
+          | ($turns | map(.reasoning_output_tokens) | add // 0) as $reasoning
+          | "\($turns | length) turns · \($input | h) input, \(if $input > 0 then $cached * 1000 / $input | round / 10 else 0 end)% cached · \($output | h) output, \(if $output > 0 then $reasoning * 1000 / $output | round / 10 else 0 end)% reasoning"
+        ' < "$RUNNER_TEMP/codex.jsonl")
+        # The provider is whatever the config points at, and cached and reasoning are part of the counts they refine.
+        echo "::notice::$MODEL_NAME usage: $usage"
+        echo "**$MODEL_NAME usage** — $usage" >> "$GITHUB_STEP_SUMMARY"
         [ "$AGENT" != true ] || [ "$ran" = 1 ] || { echo "::error::Codex failed before completing the issue run."; exit 1; }
         # Draft fix PRs opened during the review outlive this runner; keep their URLs beside the session so a retry can still mark them ready.
         mkdir -p "$CODEX_HOME/sessions"
