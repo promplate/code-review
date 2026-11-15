@@ -929,6 +929,9 @@ test("a failure verdict has to name what blocks it", () => {
   expect(accepts({ conclusion: "success", commits: [{ sha: "head", conclusion: "success" }] })).toBe(0);
   // Fixed defects retain a failing verdict on the commit that introduced them, while the current approval stays bodyless.
   expect(accepts({ conclusion: "success", commits: [{ sha: "old", conclusion: "failure" }, { sha: "head", conclusion: "success" }] })).toBe(0);
+  // A red check on the head needs the same explanation even when the review as a whole approves, and a change request needs one whatever the head says.
+  expect(accepts({ conclusion: "success", commits })).toBe(1);
+  expect(accepts({ conclusion: "failure", commits: [{ sha: "head", conclusion: "success" }] })).toBe(1);
 });
 
 test("an unusable verdict is posted to the PR or reviewed commit", () => {
