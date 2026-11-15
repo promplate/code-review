@@ -62,10 +62,13 @@ runs:
         interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) ))
         ( while :; do
             sleep "$(( interval * 9 / 10 ))"
-            # A failed refresh retries one interval later rather than never: the token in the config keeps working until then.
-            if minted=$(mint) && save "$(jq -r .token <<< "$minted")"; then
-              interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) ))
-            fi
+            # A failure retries inside the life the old token has left, so a broker that comes back never leaves gh on an expired token.
+            delay=1
+            until minted=$(mint) && save "$(jq -r .token <<< "$minted")"; do
+              sleep "$delay"
+              delay=$(( delay * 2 > 30 ? 30 : delay * 2 ))
+            done
+            interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) ))
           done ) >> "$RUNNER_TEMP/token.err" 2>&1 &
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 

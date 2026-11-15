@@ -498,8 +498,19 @@ test("heartbeats do not re-read the API, while a recovery frame does", () => {
   expectTailReleased(dir);
 });
 
-function parseFrames(input: string) {
-  const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
+test("a dead subscription still reconciles with the API before the deadline", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}\nimport { appendFileSync, existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nappendFileSync(dir + "/gh-calls", "call\\n");\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+  // The subscriber gave up, so no frame will ever wake the wait again.
+  writeFileSync(join(dir, "sse.failed"), "The event stream writer failed.");
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "4" }, timeout: 6000 });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("test: success");
+  expectTailReleased(dir);
+});
+
+function parseFrames(input: string) {  const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);
   return result.stdout.toString();
 }
