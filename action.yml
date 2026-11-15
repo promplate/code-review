@@ -724,7 +724,9 @@ runs:
       run: |
         # The review state carries the verdict; its body is optional for approvals. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
         REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews?per_page=100" </dev/null)
-        LAST=$(jq -r '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last | .state // ""' <<< "$REVIEWS")
+        # The last verdict as a whole, so the state it stands in and the head it judged cannot disagree.
+        VERDICT=$(jq -c '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last // {}' <<< "$REVIEWS")
+        LAST=$(jq -r '.state // ""' <<< "$VERDICT")
         # On the App's own PRs, publish only a nonempty COMMENT review and use its body to avoid repeats.
         LAST_COMMENT=$(jq -r '[.[] | select(.user.login == env.BOT_LOGIN and .state == "COMMENTED")] | last | .body // ""' <<< "$REVIEWS")
         # A comment rarely changes the verdict, and repeating a change request would duplicate its threads.
@@ -742,7 +744,7 @@ runs:
           | jq -cs --arg bot "$BOT_LOGIN" '[.[]?.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false and .comments.nodes[0].author.login == ($bot | rtrimstr("[bot]"))) | {path, line, body: .comments.nodes[0].body}]')
         jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
           --arg blob "$GITHUB_SERVER_URL/${{ github.repository }}/blob/$(git rev-parse HEAD)" \
-          --arg author "$PR_AUTHOR" --arg last "$LAST" --arg lastComment "$LAST_COMMENT" '
+          --argjson verdict "$VERDICT" --arg author "$PR_AUTHOR" --arg last "$LAST" --arg lastComment "$LAST_COMMENT" '
           def in_diff: .line as $line | any($hunks[.path][]?; .[0] <= $line and $line < .[1]);
           # The same wording on the same path is the same finding; a thread GitHub marked outdated keeps only its path and body to compare.
           def reported: . as $issue | any($threads[]; .path == $issue.path and .body == $issue.message and (.line == null or .line == $issue.line));
@@ -754,6 +756,8 @@ runs:
             # Silence only repeats: a new inline finding still publishes even when the body matches, and a human pull request keeps the standing change request only when there is one.
             | if ($inline == 0 and ($issues | length) == 0 and ($review.summary | test("\\S") | not))
                  and ($author == env.BOT_LOGIN or $last == "CHANGES_REQUESTED") then empty
+              # Two runs can review one head; a standing change request with nothing new to say is not worth restating.
+              elif $last == "CHANGES_REQUESTED" and $inline == 0 and ($issues | length) == 0 and $verdict.commit_id == env.HEAD_SHA then empty
               elif $inline == 0 and $lastComment != "" and $body == $lastComment then empty
               else {
             event: (if $author == env.BOT_LOGIN then "COMMENT" else "REQUEST_CHANGES" end),
