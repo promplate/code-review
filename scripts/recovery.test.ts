@@ -62,8 +62,10 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
   expect(readFileSync(setup.env.GITHUB_OUTPUT, "utf8")).toBe("loaded=true\n");
 });
 
-test("a model catalog missing from the default branch warns once and does not enable the override", () => {
+test.each([false, true])("a missing model catalog preserves supplied configuration (existing catalog: %s)", (existing) => {
   const setup = fixture();
+  const catalog = join(setup.dir, "models.json"), contents = '{"models":[{"slug":"setup-model"}]}';
+  if (existing) writeFileSync(catalog, contents);
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
 echo "$*" >> "$RUNNER_TEMP/requests"
@@ -74,11 +76,29 @@ exit 1
   expect(fetch.exitCode).toBe(0);
   expect(fetch.stdout.toString()).toContain("::warning::The model-catalog-file is not on the default branch yet");
   expect(readFileSync(join(setup.dir, "requests"), "utf8")).toBe("api repos/owner/repo/contents/.github/codex-models.json -H Accept: application/vnd.github.raw\n");
-  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  expect(existsSync(catalog)).toBe(existing);
+  if (existing) expect(readFileSync(catalog, "utf8")).toBe(contents);
   expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
   // The config keeps whatever catalog it names, since nothing points Codex at a file that never landed.
   expect(step("Fetch config files").id).toBe("catalog");
   expect(step("Configure codex").env.MODEL_CATALOG).toBe("${{ inputs.model-catalog || steps.catalog.outputs.loaded }}");
+  const output = existsSync(setup.env.GITHUB_OUTPUT) ? readFileSync(setup.env.GITHUB_OUTPUT, "utf8") : "";
+  const loaded = /^loaded=(.*)$/m.exec(output)?.[1] ?? "";
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
+  for (const config of ['model = "m"\n', 'model_catalog_json = "/existing/models.json"\n', `model_catalog_json = "${catalog}"\n`]) {
+    const configured = Bun.spawnSync(["bash", "-ec", region], { env: { ...setup.env, CODEX_CONFIG: config, CATALOG: "", MODEL_CATALOG: loaded, CODEX_AUTH: "", CODEX_AUTH_FILE: "" } });
+    expect(configured.exitCode).toBe(0);
+    expect(Bun.TOML.parse(readFileSync(join(setup.dir, "config.toml"), "utf8")).model_catalog_json).toBe(Bun.TOML.parse(config).model_catalog_json);
+  }
+});
+
+test("fetching credentials does not enable an existing model catalog", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "models.json"), '{"models":[]}');
+  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' '{"token":"file"}'\n`);
+  expect(run("Fetch config files", setup, { AUTH_FILE: ".github/auth.json", CATALOG_FILE: "", CATALOG: "", CODEX_AUTH: "" }).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "auth.json"), "utf8"))).toEqual({ token: "file" });
+  expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
 });
 
 test("other model catalog fetch errors still exhaust retries and fail", () => {

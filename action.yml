@@ -417,8 +417,10 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # These files configure how Codex runs, so they come from the default branch rather than the change under review.
+        mkdir -p "$CODEX_HOME"
         error=$(mktemp)
-        trap 'rm -f "$error"' EXIT
+        catalog=$(mktemp "$CODEX_HOME/models.json.XXXXXX")
+        trap 'rm -f "$error" "$catalog"' EXIT
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
         # A 404 is a permanent answer, and a caller may be introducing the file on this very PR, so $4 asks for a warning instead.
         fetch() {
@@ -429,11 +431,15 @@ runs:
             exit 1
           ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$4" </dev/null
         }
-        mkdir -p "$CODEX_HOME"
         fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
-        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG" "The model-catalog-file is not on the default branch yet; continuing without the catalog override."
-        # Only a catalog that landed enables the override, so the config keeps its own model_catalog_json otherwise.
-        [ ! -f "$CODEX_HOME/models.json" ] || echo "loaded=true" >> "$GITHUB_OUTPUT"
+        if [ -z "$CATALOG" ] && [ -n "$CATALOG_FILE" ]; then
+          fetch "$CATALOG_FILE" "$catalog" "$CATALOG" "The model-catalog-file is not on the default branch yet; continuing without the catalog override."
+          # Only this download enables the override; a missing file leaves any catalog installed by setup intact.
+          if [ -f "$catalog" ]; then
+            mv "$catalog" "$CODEX_HOME/models.json"
+            echo "loaded=true" >> "$GITHUB_OUTPUT"
+          fi
+        fi
         [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
