@@ -789,6 +789,51 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
 
 const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
 
+test("token setup creates its config and refreshes through a transient failure", () => {
+  const { dir, env } = fixture();
+  executable(dir, "curl", `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const marker = process.env.RUNNER_TEMP + "/mints";
+if (process.argv.at(-1).includes("/oidc")) { console.log('{"value":"fixture-oidc"}'); process.exit(0); }
+const count = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
+writeFileSync(marker, String(count));
+if (count === 2) process.exit(22);
+console.log(JSON.stringify({ token: count === 1 ? "initial-token" : "renewed-token", events_url: "https://example.test/events", bot: "reviewer[bot]", expires_at: new Date(Date.now() + 3600000).toISOString().replace(/\\.\\d{3}Z$/, "Z") }));
+`);
+  executable(dir, "sleep", `#!/usr/bin/env bash
+if [ "$1" -gt 30 ]; then
+  [ ! -f "$RUNNER_TEMP/refreshed" ] || exit 1
+  touch "$RUNNER_TEMP/refreshed"
+else echo "$1" >> "$RUNNER_TEMP/backoff"; fi
+`);
+  const run = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.id === "app-token").run;
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", run + '\nwait "$!"'], {
+    env: { ...env, BROKER: "https://example.test", ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.test/oidc?fixture=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-token", GITHUB_OUTPUT: join(dir, "github-output") }, timeout: 3000,
+  });
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(dir, "mints"), "utf8")).toBe("3");
+  expect(readFileSync(join(dir, "backoff"), "utf8")).toBe("1\n");
+  const token = Bun.spawnSync([Bun.which("gh")!, "auth", "token", "--hostname", "github.com"], {
+    env: { ...env, GH_CONFIG_DIR: join(dir, "gh"), GH_TOKEN: "", GITHUB_TOKEN: "", GH_ENTERPRISE_TOKEN: "", GITHUB_ENTERPRISE_TOKEN: "" },
+  });
+  expect(token.exitCode).toBe(0);
+  expect(token.stdout.toString().trim()).toBe("renewed-token");
+});
+
+test("a failed initial credential write does not print the minted token", () => {
+  const { dir, env } = fixture();
+  mkdirSync(join(dir, "gh/hosts.new"), { recursive: true });
+  executable(dir, "curl", '#!/usr/bin/env bash\nprintf \'{"value":"fixture-oidc","token":"private-fixture-token","events_url":"private-fixture-events"}\\n\'\n');
+  const run = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.id === "app-token").run;
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", run], {
+    env: { ...env, BROKER: "https://example.test", ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.test/oidc?fixture=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-token" }, timeout: 3000,
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("::error::");
+  expect(result.stdout.toString()).not.toContain("private-fixture-token");
+  expect(result.stdout.toString()).not.toContain("private-fixture-events");
+});
+
 test("review instructions reach the prompt as one shell string", () => {
   const { env } = fixture();
   const commands = `. "${join(root, "scripts/instructions.sh")}"\nINSTRUCTIONS="$REVIEW_INSTRUCTIONS"`;
