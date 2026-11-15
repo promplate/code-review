@@ -687,7 +687,9 @@ runs:
         conclusion: $commit.conclusion,
         output: {
           title: (if $commit.conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end),
-          summary: $review.summary,
+          # A verdict with nothing to add still leaves this page saying how it ended.
+          summary: (if $review.summary | test("\\S") then $review.summary
+            else "\(if $commit.conclusion == "failure" then "Changes requested" else "Approved" end) · \($review.annotations | length) annotation\(if ($review.annotations | length) == 1 then "" else "s" end)" end),
           annotations: [$review.annotations[:50][] | {path, start_line: .line, end_line: .line, annotation_level: .level, message}]
         }}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
 
@@ -710,7 +712,8 @@ runs:
             [ "$count" = 0 ] || continue
           fi
           # Commits CI pushed during the review have no check run yet.
-          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r .summary "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
+          jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$(jq -r 'if .summary | test("\\S") then .summary
+            else "\(if .conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")" '{name: "code-review", head_sha: $sha, status: "completed", conclusion: $conclusion, output: {
             title: (if $conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end), summary: $summary}}' \
             | if [ -n "$id" ]; then jq 'del(.head_sha)' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH --input -
               else bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs --input - > /dev/null; fi
@@ -793,12 +796,15 @@ runs:
       if: env.SUPERSEDED != 'true' && env.SKIP != 'true'
       shell: bash
       run: |
-        # An agent run has no verdict to read, so its closing message is the summary.
+        # An agent run has no verdict to read, so its closing message is the summary; either way the page says how the run ended.
         if [ "$AGENT" = true ]; then
-          [ ! -s "$RUNNER_TEMP/last-message.md" ] || cat "$RUNNER_TEMP/last-message.md" >> "$GITHUB_STEP_SUMMARY"
+          summary=$(cat "$RUNNER_TEMP/last-message.md" 2>/dev/null) || summary=
+          [ -n "${summary//[[:space:]]/}" ] || summary="This run finished without a closing message."
         else
-          jq -r .summary "$RUNNER_TEMP/review.json" >> "$GITHUB_STEP_SUMMARY"
+          summary=$(jq -r 'if .summary | test("\\S") then .summary
+            else "\(if .conclusion == "failure" then "Changes requested" else "Approved" end) · \(.annotations | length) annotation\(if (.annotations | length) == 1 then "" else "s" end)" end' "$RUNNER_TEMP/review.json")
         fi
+        printf '%s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Checkpoint published review
       if: env.SKIP != 'true'
