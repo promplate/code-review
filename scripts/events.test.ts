@@ -183,6 +183,20 @@ test("the job names of this run are looked up only once", () => {
   expect(readFileSync(join(dir, "gh-calls"), "utf8")).toBe("call\n");
 });
 
+test("check runs without a details URL do not prevent activity delivery", () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.jsonl"), [
+    frame("check_run", { action: "completed", check_run: check({ conclusion: "failure" }) }),
+    frame("issue_comment", { issue: { number: 7 }, comment: { body: "Please check this regression" } }),
+  ].join(""));
+  executable(dir, "gh", `#!/usr/bin/env bash\nprintf '%s\\n' '{"check_runs":[{"name":"external","details_url":null}]}'\n`);
+  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.stdout.toString()).toContain("failure");
+  expect(result.stdout.toString()).toContain("Please check this regression");
+});
+
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
   const log = [
     frame("check_run", { action: "completed", check_run: check({ head_sha: "other" }) }, "other"),

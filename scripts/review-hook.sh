@@ -32,7 +32,7 @@ if grep -q '"event":"check_run"' "$RUNNER_TEMP/sse.jsonl"; then
   if [ ! -s "$RUNNER_TEMP/own-check-names" ]; then
     # A failed lookup stays uncached so the next round asks again; until then nothing is filtered.
     page=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100" --paginate </dev/null) \
-      && jq -cs --arg run "$GITHUB_RUN_ID" '[.[].check_runs[] | select(.details_url | contains("/actions/runs/" + $run + "/")) | .name] | unique' <<< "$page" > "$RUNNER_TEMP/own-check-names"
+      && jq -cs --arg run "$GITHUB_RUN_ID" '[.[].check_runs[] | select(.details_url // "" | contains("/actions/runs/" + $run + "/")) | .name] | unique' <<< "$page" > "$RUNNER_TEMP/own-check-names"
   fi
   own=$(cat "$RUNNER_TEMP/own-check-names" 2>/dev/null || echo '[]')
 fi
