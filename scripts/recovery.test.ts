@@ -407,7 +407,7 @@ esac
 });
 
 test("a failure review does not reopen a thread an unresolved review already covers", () => {
-  for (const [resolved, line, login, last, posted, comments] of [
+  for (const row of [
     [false, 12, "reviewer", "CHANGES_REQUESTED", false, 0],
     [false, null, "reviewer", "CHANGES_REQUESTED", false, 0],
     [true, 12, "reviewer", "CHANGES_REQUESTED", true, 1],
@@ -415,19 +415,22 @@ test("a failure review does not reopen a thread an unresolved review already cov
     [false, 12, "another-reviewer", "CHANGES_REQUESTED", true, 1],
     // A standing approval says nothing about the open finding, so the change request is restated.
     [false, 12, "reviewer", "APPROVED", true, 0],
+    // A second run of the same head with nothing new to say keeps the standing change request as it is.
+    [false, 12, "reviewer", "CHANGES_REQUESTED", false, 0, "Boom", "head"],
   ] as const) {
+    const [resolved, line, login, last, posted, comments, summary = "", commit = ""] = row;
     const setup = fixture();
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
     executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  *'/reviews?'*) printf '%s\\n' '${JSON.stringify([{ user: { login: "reviewer[bot]" }, state: last, body: "" }])}' ;;
+  *'/reviews?'*) printf '%s\\n' '${JSON.stringify([{ user: { login: "reviewer[bot]" }, state: last, body: "", commit_id: commit }])}' ;;
   *'/files?'*) printf '%s\\n' '{"a.py":[[10,14]]}' ;;
   *'api graphql'*) printf '%s\\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":${resolved},"path":"a.py","line":${line},"comments":{"nodes":[{"author":{"login":"${login}"},"body":"Boom"}]}}]}}}}}' ;;
   *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
   *) cat > /dev/null; printf '{}\\n' ;;
 esac
 `);
-    writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "", annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
+    writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary, annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
     expect(run("Publish PR review", setup, { GITHUB_EVENT_NAME: "pull_request_target" }).exitCode).toBe(0);
     const published = join(setup.dir, "posted.json");
     expect(existsSync(published)).toBe(posted);
@@ -437,23 +440,6 @@ esac
       if (!comments) expect(review).toEqual({ event: "REQUEST_CHANGES", body: "Boom", comments: [] });
     }
   }
-});
-
-test("a second run does not restate a verdict the first already published", () => {
-  const setup = fixture();
-  executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
-  executable(setup.dir, "gh", `#!/bin/sh
-case "$*" in
-  *'/reviews?'*) printf '%s\\n' '${JSON.stringify([{ user: { login: "reviewer[bot]" }, state: "CHANGES_REQUESTED", body: "Boom" }])}' ;;
-  *'/files?'*) printf '%s\\n' '{"a.py":[[10,14]]}' ;;
-  *'api graphql'*) printf '%s\\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"a.py","line":12,"comments":{"nodes":[{"author":{"login":"reviewer"},"body":"Boom"}]}}]}}}}}' ;;
-  *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
-  *) cat > /dev/null; printf '{}\\n' ;;
-esac
-`);
-  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "Boom", annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
-  expect(run("Publish PR review", setup, { GITHUB_EVENT_NAME: "pull_request_target" }).exitCode).toBe(0);
-  expect(existsSync(join(setup.dir, "posted.json"))).toBe(false);
 });
 
 test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
