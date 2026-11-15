@@ -496,6 +496,25 @@ test("a dead subscription still reconciles with the API before the deadline", ()
   expect(result.stdout.toString()).toContain("test: success");
 });
 
+test("a dead subscription and closed tail delay API retries", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const path = process.env.RUNNER_TEMP + "/calls";
+const calls = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [];
+calls.push(Date.now()); writeFileSync(path, JSON.stringify(calls));
+console.log(JSON.stringify({ check_runs: calls.length >= 4 ? [${JSON.stringify(check())}] : [] }));
+`);
+  executable(dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\ncat "$RUNNER_TEMP/sse.jsonl"\n`);
+  writeFileSync(join(dir, "sse.jsonl"), `event: subscription_recovery\n` + frame("subscription_recovery", { reason: "subscription_failed", status: "1" }, "stopped"));
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "6" }, timeout: 8000 });
+  expect(result.exitCode).toBe(0);
+  const calls = JSON.parse(readFileSync(join(dir, "calls"), "utf8"));
+  expect(calls).toHaveLength(4);
+  expect(calls[3] - calls[2]).toBeGreaterThanOrEqual(1000);
+  expectTailReleased(dir);
+});
+
 function parseFrames(input: string) {
   const result = Bun.spawnSync(["awk", "-f", join(scripts, "sse-frames.awk")], { stdin: Buffer.from(input) });
   expect(result.exitCode).toBe(0);

@@ -50,7 +50,11 @@ while true; do
     else
       status=$?
       [ "$SECONDS" -lt "$deadline" ] || expired
-      [ -n "$dead" ] || [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+      if [ "$status" -le 128 ]; then
+        [ -n "$dead" ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+        # EOF is immediate on every read, so a closed tail needs the delay the read would otherwise supply.
+        sleep "$window"
+      fi
       break
     fi
   done
