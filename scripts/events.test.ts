@@ -1347,7 +1347,7 @@ test("codex is configured with the gh MCP server and the token config dir", () =
     expect(result.exitCode).toBe(0);
     return Bun.TOML.parse(readFileSync(join(env.CODEX_HOME, "config.toml"), "utf8")) as any;
   };
-  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] });
   // A supplied config that already names the server keeps its own definition instead of a duplicate table.
   expect(run('[mcp_servers.gh]\ncommand = "custom"\n').mcp_servers.gh).toEqual({ command: "custom" });
   expect(run('mcp_servers.gh = { command = "custom" }\n').mcp_servers.gh).toEqual({ command: "custom" });
@@ -1360,7 +1360,7 @@ test("codex is configured with the gh MCP server and the token config dir", () =
   for (const key of ["mcp_servers", "  mcp_servers", "\tmcp_servers", '"mcp_servers"', "'mcp_servers'", '"mcp_\\u0073ervers"']) {
     expect(run(`${key} = { other = { command = "x" } }\n`).mcp_servers).toEqual({ other: { command: "x" } });
   }
-  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] } });
+  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] } });
 });
 
 test("the catalog input overrides TOML keys without changing other values", () => {
@@ -1374,7 +1374,7 @@ test("the catalog input overrides TOML keys without changing other values", () =
     expect(actual.model_catalog_json).toBe(join(env.CODEX_HOME, "models.json"));
     expect(actual.developer_instructions).toBe((Bun.TOML.parse(config) as any).developer_instructions);
     expect(actual.mcp_servers.other).toEqual({ command: "custom" });
-    expect(actual.mcp_servers.gh).toEqual({ command: "gh-mcp", env_vars: ["GH_CONFIG_DIR"] });
+    expect(actual.mcp_servers.gh).toEqual({ command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] });
     expect(actual.hooks.Stop[0].hooks[0].command).toBe(`bash ${root}/scripts/review-hook.sh`);
   }
 });
