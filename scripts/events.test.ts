@@ -488,8 +488,8 @@ test.each(["heartbeat", "silence"])("CI deadline remains bounded during %s", (mo
 
 test("heartbeats do not re-read the API, while a recovery frame does", () => {
   const { dir, env } = fixture();
-  executable(dir, "gh", `#!${process.execPath}\nimport { appendFileSync, existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nappendFileSync(dir + "/gh-calls", "call\\n");\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
-  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nlet pings = 0;\nsetInterval(() => console.log(++pings === 3 ? "event: subscription_recovery" : ": ping"), 50);\n`);
+  executable(dir, "gh", `#!${process.execPath}\nimport { appendFileSync, existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nif (existsSync(marker) && !existsSync(dir + "/recovery")) { console.error("API read before recovery"); process.exit(1); }\nappendFileSync(dir + "/gh-calls", "call\\n");\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nlet pings = 0;\nsetInterval(() => { if (++pings === 3) { writeFileSync(process.env.RUNNER_TEMP + "/recovery", "yes"); console.log("event: subscription_recovery"); } else console.log(": ping"); }, 50);\n`);
   const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "2" }, timeout: 4000 });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("test: success");
