@@ -647,10 +647,13 @@ runs:
              "\($input) \($cached) \($output)")' < "$RUNNER_TEMP/codex.jsonl")
         # Each turn is priced on its own: a size tier applies per request, so summing first would charge every token at the tier the total reached.
         # The provider is whatever the config points at, and a model the table does not know has no price at all.
+        # A tier that codex-config sets applies even when this input names none.
+        tier=${SERVICE_TIER:-}
+        case $tier in ''|default) tier=; [ ! -f "$CODEX_HOME/config.toml" ] || tier=$(sed -n 's/^service_tier *= *"\(.*\)"/\1/p' "$CODEX_HOME/config.toml" | tail -1);; esac
         wait "$PRICE_PID" || true
         price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && TURNS=$(jq -Rsc '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed")
             | {input_tokens: .usage.input_tokens, cache_read_tokens: .usage.cached_input_tokens, output_tokens: .usage.output_tokens}]' < "$RUNNER_TEMP/codex.jsonl") \
-          bun -e '
+          SERVICE_TIER=$tier bun -e '
           import { calcPrice } from "@pydantic/genai-prices";
           const options = ["", "default"].includes(process.env.SERVICE_TIER) ? undefined : { priceContext: { service_tier: process.env.SERVICE_TIER } };
           const turns = JSON.parse(process.env.TURNS);
