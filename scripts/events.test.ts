@@ -149,9 +149,8 @@ test("consumption receipts cover delivered activity, never filtered events or la
 });
 
 test("check runs whose suite belongs to a sibling run of this workflow stay out of the context", () => {
-  const { dir, env } = fixture();
   const own = ".github/workflows/agent.yml";
-  writeFileSync(join(dir, "sse.jsonl"), [
+  const { output } = runHook([
     // The sibling run announces its check suite before its jobs finish.
     frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: "agent invoke", path: own, head_sha: "head", check_suite_id: 500 } }, "sibling-run"),
     frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / agent", conclusion: "skipped", check_suite: { id: 500 } }) }, "sibling"),
@@ -160,9 +159,6 @@ test("check runs whose suite belongs to a sibling run of this workflow stay out 
     // A suite no workflow run announced stays: unknown provenance must never hide failed CI.
     frame("check_run", { action: "completed", check_run: check({ id: 93, name: "test", check_suite: { id: 502 } }) }, "ci"),
   ].join(""));
-  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
-  expect(result.exitCode).toBe(0);
-  const output = result.stdout.toString();
   expect(output).not.toContain("agent / agent");
   expect(output).toContain("agent / tests");
   expect(output).toContain("test");
@@ -179,17 +175,12 @@ test("workflow runs are identified by their path, not their display name", () =>
 });
 
 test("check runs without a details URL do not prevent activity delivery", () => {
-  const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.jsonl"), [
+  const { output } = runHook([
     frame("check_run", { action: "completed", check_run: check({ conclusion: "failure" }) }),
     frame("issue_comment", { issue: { number: 7 }, comment: { body: "Please check this regression" } }),
   ].join(""));
-  executable(dir, "gh", `#!/usr/bin/env bash\nprintf '%s\\n' '{"check_runs":[{"name":"external","details_url":null}]}'\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
-  expect(result.exitCode).toBe(0);
-  expect(result.stderr.toString()).toBe("");
-  expect(result.stdout.toString()).toContain("failure");
-  expect(result.stdout.toString()).toContain("Please check this regression");
+  expect(output).toContain("failure");
+  expect(output).toContain("Please check this regression");
 });
 
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
