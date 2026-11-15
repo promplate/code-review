@@ -29,14 +29,12 @@ while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
   # An empty list usually means the checks have not appeared yet, except for callers that may proceed without any.
   if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
-  recheck=$((SECONDS + ${WAIT_CI_RECHECK:-30}))
   while true; do
-    # Heartbeats cannot postpone either the deadline or the API fallback for a missed webhook.
+    # Heartbeats cannot postpone the deadline; the API is read again only when a frame says events may have been missed.
     [ "$SECONDS" -lt "$deadline" ] || expired
-    [ "$SECONDS" -lt "$recheck" ] || break
-    remaining=$(((deadline < recheck ? deadline : recheck) - SECONDS))
-    [ "$remaining" -gt 0 ] || continue
-    if IFS= read -r -t "$remaining" line <&3; then
+    if IFS= read -r -t "$((deadline - SECONDS))" line <&3; then
+      # The subscription reports every interruption, so a recovery frame is the signal to re-read instead of polling.
+      [[ "$line" != *subscription_recovery* ]] || break
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
       [[ "$line" == *"$SHA"* ]] || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
@@ -44,7 +42,6 @@ while true; do
     else
       status=$?
       [ "$SECONDS" -lt "$deadline" ] || expired
-      [ "$SECONDS" -lt "$recheck" ] || break
       [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
       break
     fi
