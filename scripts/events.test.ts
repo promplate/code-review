@@ -20,6 +20,8 @@ function fixture() {
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
   writeFileSync(join(dir, "injected.log"), "");
+  // No test reaches the API by accident; the ones that need it replace this.
+  executable(dir, "gh", "#!/usr/bin/env bash\nexit 1\n");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12" };
@@ -144,6 +146,23 @@ test("consumption receipts cover delivered activity, never filtered events or la
   expect(output).not.toContain("other PR");
   writeFileSync(join(dir, "sse.jsonl"), one + two + frame("status", { sha: "head", state: "failure" }, "later", false));
   expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("first\n");
+});
+
+test("check runs from sibling runs of this workflow stay out of the context", () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.jsonl"), [
+    frame("check_run", { action: "completed", check_run: check({ id: 90, name: "agent / agent", conclusion: "skipped" }) }, "sibling"),
+    frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / authorize / Check write access" }) }, "sibling-authorize"),
+    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "test" }) }, "ci"),
+  ].join(""));
+  // The job's own check run is the only place that spells out the prefix every run of this workflow shares.
+  executable(dir, "gh", `#!/usr/bin/env bash\n[ "$2" = "repos/owner/repo/check-runs/11" ] || exit 1\nprintf '{"name":"agent / agent"}\\n'\n`);
+  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString();
+  expect(output).not.toContain("agent / agent");
+  expect(output).not.toContain("Check write access");
+  expect(output).toContain("test");
 });
 
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
