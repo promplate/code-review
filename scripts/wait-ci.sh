@@ -24,6 +24,7 @@ trap 'exec 3<&-; kill "$tail_pid" 2>/dev/null || true; wait "$tail_pid" 2>/dev/n
 trap 'exit 130' INT
 trap 'exit 143' TERM
 deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
+dead=
 expired() { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
 while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
@@ -32,13 +33,14 @@ while true; do
   while true; do
     # Heartbeats cannot postpone the deadline; the API is read again only when a frame says events may have been missed.
     [ "$SECONDS" -lt "$deadline" ] || expired
-    # A terminal subscriber failure leaves no more frames to wait for, so the API is re-read before the deadline runs out.
+    # A subscription that reported its own end will send nothing more, so the API is re-read before the deadline runs out.
     window=$((deadline - SECONDS))
-    if [ -f "$RUNNER_TEMP/sse.failed" ]; then
+    if [ -n "$dead" ]; then
       window=$((window / 2 < 30 ? window / 2 : 30))
       [ "$window" -gt 0 ] || window=1
     fi
     if IFS= read -r -t "$window" line <&3; then
+      [[ "$line" != *subscription_failed* ]] || dead=1
       # The subscription reports every interruption, so a recovery frame is the signal to re-read instead of polling.
       [[ "$line" != *subscription_recovery* ]] || break
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
@@ -48,7 +50,7 @@ while true; do
     else
       status=$?
       [ "$SECONDS" -lt "$deadline" ] || expired
-      [ -f "$RUNNER_TEMP/sse.failed" ] || [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+      [ -n "$dead" ] || [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
       break
     fi
   done
