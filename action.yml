@@ -28,6 +28,8 @@ inputs:
     description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
   setup:
     description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`.
+  instructions:
+    description: Instructions appended to the review prompt, for rules specific to this repository.
   model-catalog:
     description: Contents of a Codex model catalog; name it in `model-catalog-file` instead to keep it in the repository.
   model-catalog-file:
@@ -540,6 +542,7 @@ runs:
         LANGFUSE_CODEX_ENVIRONMENT: code-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ env.PR_NUMBER || ''null'' }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ env.HEAD_SHA }}"}'
         SERVICE_TIER: ${{ inputs.service-tier }}
+        EXTRA_INSTRUCTIONS: ${{ inputs.instructions }}
       run: |
         # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
         # Start it in this step so the shell that reports usage can wait for its own child.
@@ -580,6 +583,8 @@ runs:
         # The run script is a template with a 21 kB limit, so the prompts live beside the other scripts.
         . "$GITHUB_ACTION_PATH/scripts/instructions.sh"
         if [ "$AGENT" = true ]; then INSTRUCTIONS="$AGENT_INSTRUCTIONS"; else INSTRUCTIONS="$REVIEW_INSTRUCTIONS"; fi
+        # The caller appends repository rules after the built-in prompt, so they can override it without replacing it.
+        [ -z "$EXTRA_INSTRUCTIONS" ] || INSTRUCTIONS="$INSTRUCTIONS"$'\n\n'"$EXTRA_INSTRUCTIONS"
         # Production reviews may opt into a faster provider tier; workflows that do not ask for one keep the provider default.
         tier=()
         case "${{ inputs.service-tier }}" in
