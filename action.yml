@@ -512,7 +512,7 @@ runs:
           }
           if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
           // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
-          const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
+          const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nenv_vars = [\"GH_CONFIG_DIR\", \"UV_CACHE_DIR\", \"UV_TOOL_DIR\", \"UV_PYTHON_INSTALL_DIR\"]\n";
           try { Bun.TOML.parse(config); }
           catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
           await Bun.write(path, config);
