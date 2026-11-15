@@ -36,13 +36,21 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
   ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
     # Receipts survive cached sessions; a local failure belongs to this execution, including retries of the same run.
     + (if $failure == "" then [] else [{event: "subscription_recovery", delivery: "subscription:failed:\(env.GITHUB_RUN_ID):\(env.GITHUB_RUN_ATTEMPT // "1")", body: ({reason: "subscription_failed", error: $failure} | tojson)}] end)) as $frames
+  # Every webhook starts a sibling run of this workflow, and its job check runs describe the review system rather than the CI of the pull request.
+  # A check run names no workflow, but it does name its check suite, and a workflow run reports that suite beside the workflow file it came from.
+  | ((env.GITHUB_WORKFLOW_REF // "") | split("@")[0] // "" | sub("^[^/]+/[^/]+/"; "")) as $own_path
+  | ([$frames[] | select(.event == "workflow_run") | (.body | fromjson? // empty)
+      | select(.workflow_run.path == $own_path) | .workflow_run.check_suite_id | tostring] | unique) as $own_suites
   | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
         ($frame.event == "subscription_recovery")
         or ($frame.event == "check_run" and $body.action == "completed" and $body.check_run.head_sha == env.HEAD_SHA
-          and $body.check_run.name != "code-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // ""))
-        or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // ""))
+          and $body.check_run.name != "code-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // "")
+          # A suite that never announced itself stays: unknown provenance must not hide failed CI.
+          and ($own_suites | index($body.check_run.check_suite.id | tostring) == null))
+        or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // "")
+          and ($own_path == "" or $body.workflow_run.path != $own_path))
         or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
         or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH) and $body.after != env.HEAD_SHA)
         or (if $pr == "" then $frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA

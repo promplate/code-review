@@ -20,9 +20,11 @@ function fixture() {
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
   writeFileSync(join(dir, "injected.log"), "");
+  // No test reaches the API by accident; the ones that need it replace this.
+  executable(dir, "gh", "#!/usr/bin/env bash\nexit 1\n");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
-    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12" };
+    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main" };
   return { dir, env };
 }
 
@@ -144,6 +146,41 @@ test("consumption receipts cover delivered activity, never filtered events or la
   expect(output).not.toContain("other PR");
   writeFileSync(join(dir, "sse.jsonl"), one + two + frame("status", { sha: "head", state: "failure" }, "later", false));
   expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("first\n");
+});
+
+test("check runs whose suite belongs to a sibling run of this workflow stay out of the context", () => {
+  const own = ".github/workflows/agent.yml";
+  const { output } = runHook([
+    // The sibling run announces its check suite before its jobs finish.
+    frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: "agent invoke", path: own, head_sha: "head", check_suite_id: 500 } }, "sibling-run"),
+    frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / agent", conclusion: "skipped", check_suite: { id: 500 } }) }, "sibling"),
+    // Another workflow may name its job the same way; its suite is its own.
+    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "agent / tests", conclusion: "failure", check_suite: { id: 501 } }) }, "other-workflow"),
+    // A suite no workflow run announced stays: unknown provenance must never hide failed CI.
+    frame("check_run", { action: "completed", check_run: check({ id: 93, name: "test", check_suite: { id: 502 } }) }, "ci"),
+  ].join(""));
+  expect(output).not.toContain("agent / agent");
+  expect(output).toContain("agent / tests");
+  expect(output).toContain("test");
+});
+
+test("workflow runs are identified by their path, not their display name", () => {
+  const workflow = (path?: string) => ({ id: 90, head_sha: "head", name: "agent invoke", path, conclusion: "failure" });
+  const env = { GITHUB_WORKFLOW: "agent invoke" };
+  expect(runHook(frame("workflow_run", { action: "completed", workflow_run: workflow(".github/workflows/agent.yml") }), env).output).toBe("");
+  for (const path of [".github/workflows/ci.yml", undefined]) {
+    const { output } = runHook(frame("workflow_run", { action: "completed", workflow_run: workflow(path) }), env);
+    expect(output).toContain("failure");
+  }
+});
+
+test("check runs without a details URL do not prevent activity delivery", () => {
+  const { output } = runHook([
+    frame("check_run", { action: "completed", check_run: check({ conclusion: "failure" }) }),
+    frame("issue_comment", { issue: { number: 7 }, comment: { body: "Please check this regression" } }),
+  ].join(""));
+  expect(output).toContain("failure");
+  expect(output).toContain("Please check this regression");
 });
 
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
