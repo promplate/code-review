@@ -1278,12 +1278,14 @@ test("each run reports the tokens every turn spent", () => {
     { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 8, output_tokens: 2, reasoning_output_tokens: 1 } },
     { type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0 } },
   ].map((event) => JSON.stringify(event)).join("\n") + "\n");
-  const commands = step("Run codex review").run.match(/usage=\$\(jq[\s\S]*?>> "\$GITHUB_STEP_SUMMARY"/)![0];
+  // The line and the totals come out of the same jq pass; the price is optional and absent without the table.
+  const commands = step("Run codex review").run.match(/\{ read -r usage[\s\S]*?>> "\$GITHUB_STEP_SUMMARY"/)![0];
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, MODEL_NAME: "deepseek-flash" } });
   expect(result.exitCode).toBe(0);
   // The model is named because the config decides the provider; cached and reasoning refine the counts they follow.
   expect(result.stdout.toString()).toContain("deepseek-flash usage: 2 turns · 15 input, 53.3% cached · 5 output, 20% reasoning");
   expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain("**deepseek-flash usage** — 2 turns · 15 input, 53.3% cached · 5 output, 20% reasoning");
+  expect(result.stdout.toString()).not.toContain(" · $");
 });
 
 function gateStep() {
