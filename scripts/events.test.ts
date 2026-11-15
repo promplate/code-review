@@ -919,14 +919,16 @@ test("a failure verdict has to name what blocks it", () => {
   const define = step("Run codex review").run.match(/verdict\(\) \{[\s\S]*?; \}/)![0];
   const accepts = (verdict: object) => {
     const { dir, env } = fixture();
-    writeFileSync(join(dir, "review.json"), JSON.stringify({ summary: "", annotations: [], ...verdict }));
+    writeFileSync(join(dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "", annotations: [], ...verdict }));
     return Bun.spawnSync(["bash", "-ec", `${define}\nverdict`], { env }).exitCode;
   };
   const commits = [{ sha: "head", conclusion: "failure" }];
   expect(accepts({ commits })).toBe(1);
   expect(accepts({ commits, summary: "Dropping the lock lets a second writer in." })).toBe(0);
   expect(accepts({ commits, annotations: [{ path: "a", line: 1, level: "failure", message: "m" }] })).toBe(0);
-  expect(accepts({ commits: [{ sha: "head", conclusion: "success" }] })).toBe(0);
+  expect(accepts({ conclusion: "success", commits: [{ sha: "head", conclusion: "success" }] })).toBe(0);
+  // Fixed defects retain a failing verdict on the commit that introduced them, while the current approval stays bodyless.
+  expect(accepts({ conclusion: "success", commits: [{ sha: "old", conclusion: "failure" }, { sha: "head", conclusion: "success" }] })).toBe(0);
 });
 
 test("an unusable verdict is posted to the PR or reviewed commit", () => {
