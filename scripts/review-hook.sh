@@ -30,7 +30,7 @@ seen='[]'
 own=''
 if grep -q '"event":"check_run"' "$RUNNER_TEMP/sse.jsonl"; then
   if [ ! -s "$RUNNER_TEMP/own-check-prefix" ]; then
-    gh api "repos/$GITHUB_REPOSITORY/check-runs/$JOB_CHECK_RUN_ID" </dev/null | jq -r '.name | capture("^(?<prefix>.* / )").prefix' > "$RUNNER_TEMP/own-check-prefix"
+    gh api "repos/$GITHUB_REPOSITORY/check-runs/$JOB_CHECK_RUN_ID" </dev/null | jq -r '.name | capture("^(?<prefix>.* / )").prefix // ""' > "$RUNNER_TEMP/own-check-prefix"
   fi
   own=$(cat "$RUNNER_TEMP/own-check-prefix")
 fi

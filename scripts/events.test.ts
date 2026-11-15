@@ -165,6 +165,20 @@ test("check runs from sibling runs of this workflow stay out of the context", ()
   expect(output).toContain("test");
 });
 
+test("a job without a caller prefix is looked up only once", () => {
+  const { dir, env } = fixture();
+  writeFileSync(join(dir, "sse.jsonl"), frame("check_run", { action: "completed", check_run: check() }));
+  executable(dir, "gh", `#!/usr/bin/env bash\nprintf 'call\\n' >> "$RUNNER_TEMP/gh-calls"\nprintf '{"name":"review"}\\n'\n`);
+  const run = () => Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
+  const first = run();
+  expect(first.exitCode).toBe(0);
+  expect(first.stdout.toString()).toContain("test");
+  const second = run();
+  expect(second.exitCode).toBe(0);
+  expect(second.stdout.toString()).toBe("");
+  expect(readFileSync(join(dir, "gh-calls"), "utf8")).toBe("call\n");
+});
+
 test("Stop excludes other heads, nonterminal CI, suites, its App and this workflow run", () => {
   const log = [
     frame("check_run", { action: "completed", check_run: check({ head_sha: "other" }) }, "other"),
