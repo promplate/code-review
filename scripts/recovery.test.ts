@@ -439,6 +439,23 @@ esac
   }
 });
 
+test("a second run does not restate a verdict the first already published", () => {
+  const setup = fixture();
+  executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *'/reviews?'*) printf '%s\\n' '${JSON.stringify([{ user: { login: "reviewer[bot]" }, state: "CHANGES_REQUESTED", body: "Boom" }])}' ;;
+  *'/files?'*) printf '%s\\n' '{"a.py":[[10,14]]}' ;;
+  *'api graphql'*) printf '%s\\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":false,"path":"a.py","line":12,"comments":{"nodes":[{"author":{"login":"reviewer"},"body":"Boom"}]}}]}}}}}' ;;
+  *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
+  *) cat > /dev/null; printf '{}\\n' ;;
+esac
+`);
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "failure", summary: "Boom", annotations: [{ path: "a.py", line: 12, level: "failure", message: "Boom" }] }));
+  expect(run("Publish PR review", setup, { GITHUB_EVENT_NAME: "pull_request_target" }).exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "posted.json"))).toBe(false);
+});
+
 test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
