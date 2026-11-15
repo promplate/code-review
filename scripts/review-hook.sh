@@ -50,7 +50,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(c
           # A suite that never announced itself stays: unknown provenance must not hide failed CI.
           and ($own_suites | index($body.check_run.check_suite.id | tostring) == null))
         or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // "")
-          and $body.workflow_run.name != (env.GITHUB_WORKFLOW // ""))
+          and ($own_path == "" or $body.workflow_run.path != $own_path))
         or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
         or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH) and $body.after != env.HEAD_SHA)
         or (if $pr == "" then $frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA

@@ -168,6 +168,16 @@ test("check runs whose suite belongs to a sibling run of this workflow stay out 
   expect(output).toContain("test");
 });
 
+test("workflow runs are identified by their path, not their display name", () => {
+  const workflow = (path?: string) => ({ id: 90, head_sha: "head", name: "agent invoke", path, conclusion: "failure" });
+  const env = { GITHUB_WORKFLOW: "agent invoke" };
+  expect(runHook(frame("workflow_run", { action: "completed", workflow_run: workflow(".github/workflows/agent.yml") }), env).output).toBe("");
+  for (const path of [".github/workflows/ci.yml", undefined]) {
+    const { output } = runHook(frame("workflow_run", { action: "completed", workflow_run: workflow(path) }), env);
+    expect(output).toContain("failure");
+  }
+});
+
 test("check runs without a details URL do not prevent activity delivery", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "sse.jsonl"), [
