@@ -510,6 +510,7 @@ runs:
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
         LANGFUSE_CODEX_ENVIRONMENT: code-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ env.PR_NUMBER || ''null'' }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ env.HEAD_SHA }}"}'
+        SERVICE_TIER: ${{ inputs.service-tier }}
       run: |
         # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
         # Start it in this step so the shell that reports usage can wait for its own child.
@@ -644,14 +645,22 @@ runs:
           | ($turns | map(.reasoning_output_tokens) | add // 0) as $reasoning
           | ("\($turns | length) turns · \($input | h) input, \(if $input > 0 then $cached * 1000 / $input | round / 10 else 0 end)% cached · \($output | h) output, \(if $output > 0 then $reasoning * 1000 / $output | round / 10 else 0 end)% reasoning",
              "\($input) \($cached) \($output)")' < "$RUNNER_TEMP/codex.jsonl")
-        # The provider is whatever the config points at; cached and reasoning are part of the counts they refine.
-        # A model the table does not know has no price, which is the only thing a missing table may cost.
+        # Each turn is priced on its own: a size tier applies per request, so summing first would charge every token at the tier the total reached.
+        # The provider is whatever the config points at, and a model the table does not know has no price at all.
         wait "$PRICE_PID" || true
-        price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && INPUT_TOKENS=$input_tokens CACHED_TOKENS=$cached_tokens OUTPUT_TOKENS=$output_tokens bun -e '
+        price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && TURNS=$(jq -Rsc '[split("\n")[] | fromjson? // empty | select(.type == "turn.completed")
+            | {input_tokens: .usage.input_tokens, cache_read_tokens: .usage.cached_input_tokens, output_tokens: .usage.output_tokens}]' < "$RUNNER_TEMP/codex.jsonl") \
+          bun -e '
           import { calcPrice } from "@pydantic/genai-prices";
-          const usage = { input_tokens: +process.env.INPUT_TOKENS, cache_read_tokens: +process.env.CACHED_TOKENS, output_tokens: +process.env.OUTPUT_TOKENS };
-          const price = calcPrice(usage, process.env.MODEL_NAME);
-          if (price) console.log(`$${price.total_price.toFixed(price.total_price < 1 ? 3 : 2)}`);
+          const options = ["", "default"].includes(process.env.SERVICE_TIER) ? undefined : { priceContext: { service_tier: process.env.SERVICE_TIER } };
+          const turns = JSON.parse(process.env.TURNS);
+          const prices = turns.map((usage) => calcPrice(usage, process.env.MODEL_NAME, options));
+          // An unknown model prices nothing, and a size tier makes the total an estimate of requests this log cannot separate.
+          if (prices.length && prices.every(Boolean)) {
+            const total = prices.reduce((sum, price) => sum + price.total_price, 0);
+            const tiered = prices.some(({ model_price }) => [model_price.input_mtok, model_price.output_mtok].some((rate) => rate !== null && typeof rate === "object"));
+            console.log(`${tiered ? "~" : ""}$${total.toFixed(total < 1 ? 3 : 2)}`);
+          }
         ') || { echo "::warning::The price table could not be read; reporting usage without a price."; price=""; }
         detail="$usage${price:+ · $price}"
         echo "::notice::$MODEL_NAME usage: $detail"
