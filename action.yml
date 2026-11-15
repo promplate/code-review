@@ -684,8 +684,9 @@ runs:
         [ ! -s "$RUNNER_TEMP/forked-prs" ] || cat "$RUNNER_TEMP/forked-prs" >> "$CODEX_HOME/sessions/.github-pending-drafts"
         # Failing here leaves a red check the author cannot read, so the response that failed is posted where they do read.
         if [ "$AGENT" != true ] && ! verdict; then
+          # Branch instructions leave the commit to the reviewer; this diagnostic belongs to the reviewed head.
           [ ! -s "$RUNNER_TEMP/review.json" ] || printf 'This review ended without a usable verdict. The reviewer returned:\n\n```json\n%s\n```\n' \
-            "$(head -c 2000 "$RUNNER_TEMP/review.json")" | $COMMENT || true
+            "$(head -c 2000 "$RUNNER_TEMP/review.json")" | ${COMMENT//<sha>/$HEAD_SHA} || true
           echo "::error::Codex returned no verdict: $(head -c 300 "$RUNNER_TEMP/review.json" 2>/dev/null)"
           exit 1
         fi
