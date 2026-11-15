@@ -605,7 +605,7 @@ test("a failed publication releases only drafts an earlier run left pending", ()
   const setup = fixture();
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/9\n");
-  executable(setup.dir, "gh", '#!/bin/sh\n[ "$1 $2" = "pr ready" ] || exit 1\necho "$3" >> "$RUNNER_TEMP/ready"\n');
+  executable(setup.dir, "gh", '#!/bin/sh\ncase "$1 $2" in\n  "pr view") echo true ;;\n  "pr ready") echo "$3" >> "$RUNNER_TEMP/ready" ;;\n  *) exit 1 ;;\nesac\n');
   const result = run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "" });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("stay draft");
@@ -624,6 +624,7 @@ test.each([
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
   *actions/artifacts/27*) echo true ;;
+  "pr view "*) echo true ;;
   "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
@@ -641,6 +642,7 @@ test("new draft handoffs preserve pending drafts restored from the session", () 
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
   *actions/artifacts/27*) echo true ;;
+  "pr view "*) echo true ;;
   "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
@@ -651,7 +653,7 @@ esac
 
 test("a consumed retry still releases its cached pending drafts", () => {
   const setup = fixture();
-  executable(setup.dir, "gh", '#!/bin/sh\ncase "$*" in\n  *collaborators*) printf "write\\n" ;;\n  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;\n  *) exit 1 ;;\nesac\n');
+  executable(setup.dir, "gh", '#!/bin/sh\ncase "$*" in\n  *collaborators*) printf "write\\n" ;;\n  "pr view "*) echo true ;;\n  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;\n  *) exit 1 ;;\nesac\n');
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([delivery]));
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
@@ -683,10 +685,27 @@ test("draft release checks the exact snapshot with the job token and keeps the A
   executable(setup.dir, "gh", `#!/bin/sh
 case "$1 $2" in
   "api repos/owner/repo/actions/artifacts/27") [ "$GH_TOKEN" = token ] && echo true ;;
+  "pr view") [ -z "$GH_TOKEN" ] && echo true ;;
   "pr ready") [ -z "$GH_TOKEN" ] && echo "$3" >> "$RUNNER_TEMP/ready" ;;
   *) exit 1 ;;
 esac
 `);
   expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "27", GH_TOKEN: "" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${url}\n`);
+});
+
+test("drafts that are closed or already ready leave the pending list without a release attempt", () => {
+  const setup = fixture(), base = "https://github.com/owner/repo/pull";
+  writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), `${base}/3\n${base}/4\n${base}/8\n`);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  "pr view ${base}/8 "*) echo true ;;
+  "pr view "*) echo false ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "" }).exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${base}/8\n`);
+  expect(existsSync(join(setup.dir, "sessions/.github-pending-drafts"))).toBe(false);
 });
