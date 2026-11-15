@@ -400,6 +400,15 @@ runs:
         uv tool install --force gh-mcp==0.3.9
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+    - name: Install the price table
+      if: env.SKIP != 'true'
+      shell: bash
+      run: |
+        # Prices come from https://github.com/pydantic/genai-prices, which tracks providers this repository has no business copying.
+        # An install that fails only costs the price on the usage line.
+        mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices@0.2.3 \
+          || echo "::warning::The price table could not be installed; usage will be reported without a price."
+
     - name: Fetch config files
       if: (inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
       shell: bash
@@ -640,8 +649,17 @@ runs:
           | "\($turns | length) turns · \($input | h) input, \(if $input > 0 then $cached * 1000 / $input | round / 10 else 0 end)% cached · \($output | h) output, \(if $output > 0 then $reasoning * 1000 / $output | round / 10 else 0 end)% reasoning"
         ' < "$RUNNER_TEMP/codex.jsonl")
         # The provider is whatever the config points at, and cached and reasoning are part of the counts they refine.
-        echo "::notice::$MODEL_NAME usage: $usage"
-        echo "**$MODEL_NAME usage** — $usage" >> "$GITHUB_STEP_SUMMARY"
+        # A model the price table does not know has no price, which is the only thing a missing table can cost.
+        price=$(cd "$RUNNER_TEMP/prices" 2>/dev/null && CODEX_LOG="$RUNNER_TEMP/codex.jsonl" bun -e '
+          import { calcPrice } from "@pydantic/genai-prices";
+          import { readFileSync } from "node:fs";
+          const turns = readFileSync(process.env.CODEX_LOG, "utf8").split("\n").map((line) => { try { return JSON.parse(line) } catch { return null } }).filter((event) => event?.type === "turn.completed");
+          const sum = (key) => turns.reduce((total, turn) => total + (turn.usage?.[key] ?? 0), 0);
+          const price = calcPrice({ input_tokens: sum("input_tokens"), cache_read_tokens: sum("cached_input_tokens"), output_tokens: sum("output_tokens") }, process.env.MODEL_NAME);
+          if (price) console.log(`$${price.total_price.toFixed(price.total_price < 1 ? 3 : 2)}`);
+        ' 2>/dev/null) || price=""
+        echo "::notice::$MODEL_NAME usage: $usage${price:+ · $price}"
+        echo "**$MODEL_NAME usage** — $usage${price:+ · $price}" >> "$GITHUB_STEP_SUMMARY"
         [ "$AGENT" != true ] || [ "$ran" = 1 ] || { echo "::error::Codex failed before completing the issue run."; exit 1; }
         # Draft fix PRs opened during the review outlive this runner; keep their URLs beside the session so a retry can still mark them ready.
         mkdir -p "$CODEX_HOME/sessions"
