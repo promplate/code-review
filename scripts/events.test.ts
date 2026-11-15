@@ -153,22 +153,25 @@ test("check runs from sibling runs of this workflow stay out of the context", ()
   writeFileSync(join(dir, "sse.jsonl"), [
     frame("check_run", { action: "completed", check_run: check({ id: 90, name: "agent / agent", conclusion: "skipped" }) }, "sibling"),
     frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / authorize / Check write access" }) }, "sibling-authorize"),
-    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "test" }) }, "ci"),
+    // Another workflow may name a job the same way; only this run's own job names identify the workflow.
+    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "agent / tests", conclusion: "failure" }) }, "other-workflow"),
+    frame("check_run", { action: "completed", check_run: check({ id: 93, name: "test" }) }, "ci"),
   ].join(""));
-  // The job's own check run is the only place that spells out the prefix every run of this workflow shares.
-  executable(dir, "gh", `#!/usr/bin/env bash\n[ "$2" = "repos/owner/repo/check-runs/11" ] || exit 1\nprintf '{"name":"agent / agent"}\\n'\n`);
+  // This run's own jobs are the check runs whose details_url points at its run id.
+  executable(dir, "gh", `#!/usr/bin/env bash\n[ "$2" = "repos/owner/repo/commits/head/check-runs?filter=latest&per_page=100" ] || exit 1\nprintf '%s\\n' '{"check_runs":[{"name":"agent / agent","details_url":"https://github.com/owner/repo/actions/runs/12/job/1"},{"name":"agent / authorize / Check write access","details_url":"https://github.com/owner/repo/actions/runs/12/job/2"},{"name":"test","details_url":"https://github.com/owner/repo/actions/runs/90/job/3"}]}'\n`);
   const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   expect(result.exitCode).toBe(0);
   const output = result.stdout.toString();
   expect(output).not.toContain("agent / agent");
   expect(output).not.toContain("Check write access");
+  expect(output).toContain("agent / tests");
   expect(output).toContain("test");
 });
 
-test("a job without a caller prefix is looked up only once", () => {
+test("the job names of this run are looked up only once", () => {
   const { dir, env } = fixture();
   writeFileSync(join(dir, "sse.jsonl"), frame("check_run", { action: "completed", check_run: check() }));
-  executable(dir, "gh", `#!/usr/bin/env bash\nprintf 'call\\n' >> "$RUNNER_TEMP/gh-calls"\nprintf '{"name":"review"}\\n'\n`);
+  executable(dir, "gh", `#!/usr/bin/env bash\nprintf 'call\\n' >> "$RUNNER_TEMP/gh-calls"\nprintf '%s\\n' '{"check_runs":[]}'\n`);
   const run = () => Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   const first = run();
   expect(first.exitCode).toBe(0);
@@ -176,6 +179,7 @@ test("a job without a caller prefix is looked up only once", () => {
   const second = run();
   expect(second.exitCode).toBe(0);
   expect(second.stdout.toString()).toBe("");
+  // An empty page still answers the question, so the cache holds and the API is asked once.
   expect(readFileSync(join(dir, "gh-calls"), "utf8")).toBe("call\n");
 });
 

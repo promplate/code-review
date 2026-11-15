@@ -26,16 +26,18 @@ SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
 # Every webhook starts a sibling run of this workflow, and its job check runs describe the review system rather than the pull request's CI.
-# Those jobs share the caller's job prefix, which this run's own job check run spells out — nothing else in a check run payload says which workflow made it.
-own=''
+# A check run never names the workflow that made it, but its details_url names the run, and this run's own jobs are listed under the same run id.
+own='[]'
 if grep -q '"event":"check_run"' "$RUNNER_TEMP/sse.jsonl"; then
-  if [ ! -s "$RUNNER_TEMP/own-check-prefix" ]; then
-    gh api "repos/$GITHUB_REPOSITORY/check-runs/$JOB_CHECK_RUN_ID" </dev/null | jq -r '.name | capture("^(?<prefix>.* / )").prefix // ""' > "$RUNNER_TEMP/own-check-prefix"
+  if [ ! -s "$RUNNER_TEMP/own-check-names" ]; then
+    # A failed lookup stays uncached so the next round asks again; until then nothing is filtered.
+    page=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100" --paginate </dev/null) \
+      && jq -cs --arg run "$GITHUB_RUN_ID" '[.[].check_runs[] | select(.details_url | contains("/actions/runs/" + $run + "/")) | .name] | unique' <<< "$page" > "$RUNNER_TEMP/own-check-names"
   fi
-  own=$(cat "$RUNNER_TEMP/own-check-prefix")
+  own=$(cat "$RUNNER_TEMP/own-check-names" 2>/dev/null || echo '[]')
 fi
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
-result=$(jq -Rrs --arg pr "$PR_NUMBER" --arg own "$own" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
+result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson own "$own" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
   # Reviewers must know when they are judging part of a description; a silent cut would hide the actual change.
   def clip($n): if . == null then null else length as $len
     | if $len > $n then .[0:$n] + "…[truncated at \($n) of \($len) characters; read the full text from the PR]" else . end end;
@@ -51,7 +53,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --arg own "$own" --argjson seen "$seen" -
         ($frame.event == "subscription_recovery")
         or ($frame.event == "check_run" and $body.action == "completed" and $body.check_run.head_sha == env.HEAD_SHA
           and $body.check_run.name != "code-review" and ($body.check_run.id | tostring) != (env.JOB_CHECK_RUN_ID // "") and ($body.check_run.id | tostring) != (env.CHECK_ID // "")
-          and ($own == "" or ($body.check_run.name | startswith($own) | not)))
+          and ($own | index($body.check_run.name) == null))
         or ($frame.event == "workflow_run" and $body.action == "completed" and $body.workflow_run.head_sha == env.HEAD_SHA and ($body.workflow_run.id | tostring) != (env.GITHUB_RUN_ID // "")
           and $body.workflow_run.name != (env.GITHUB_WORKFLOW // ""))
         or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
