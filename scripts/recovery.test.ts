@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const steps = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")).runs.steps;
@@ -30,10 +30,25 @@ function executable(dir: string, name: string, source: string) {
   chmodSync(join(dir, name), 0o755);
 }
 
-function run(name: string, setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
+function run(name: string, setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}, cwd = root) {
   const script = step(name).run.replaceAll("${{ github.repository }}", "owner/repo").replaceAll("${{ runner.temp }}", setup.dir)
     .replaceAll("${{ github.event.repository.default_branch }}", "main").replaceAll("${{ steps.check.outputs.id }}", "10").replaceAll("${{ github.token }}", "token").replace(/\$\{\{[^}]+\}\}/g, "");
-  return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { env: { ...setup.env, ...extraEnv }, timeout: 3000 });
+  return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { env: { ...setup.env, ...extraEnv }, cwd, timeout: 3000 });
+}
+
+// A checkout of the change under review, so the step can tell a file this branch adds from a path nothing has.
+function checkout(files: Record<string, string>) {
+  const dir = mkdtempSync(join(tmpdir(), "review-checkout-"));
+  homes.push(dir);
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args]);
+  git("init", "-q");
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), content);
+  }
+  git("add", "-A");
+  git("commit", "-qm", "fixture", "--allow-empty");
+  return dir;
 }
 
 function gate(setup: ReturnType<typeof fixture>, extraEnv: Record<string, string> = {}) {
@@ -59,6 +74,76 @@ printf '%s' '{"models":[{"slug":"review-model"}]}'
 `);
   expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/models.json" }).exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.dir, "models.json"), "utf8"))).toEqual({ models: [{ slug: "review-model" }] });
+  expect(readFileSync(setup.env.GITHUB_OUTPUT, "utf8")).toBe("loaded=true\n");
+});
+
+test.each([false, true])("a missing model catalog preserves supplied configuration (existing catalog: %s)", (existing) => {
+  const setup = fixture();
+  const catalog = join(setup.dir, "models.json"), contents = '{"models":[{"slug":"setup-model"}]}';
+  if (existing) writeFileSync(catalog, contents);
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+`);
+  const branch = checkout({ ".github/codex-models.json": '{"models":[]}' });
+  const fetch = run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" }, branch);
+  expect(fetch.exitCode).toBe(0);
+  expect(fetch.stdout.toString()).toContain("::warning::The model-catalog-file is only on this branch");
+  expect(readFileSync(join(setup.dir, "requests"), "utf8")).toBe("api repos/owner/repo/contents/.github/codex-models.json -H Accept: application/vnd.github.raw\n");
+  expect(existsSync(catalog)).toBe(existing);
+  if (existing) expect(readFileSync(catalog, "utf8")).toBe(contents);
+  expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
+  // The config keeps whatever catalog it names, since nothing points Codex at a file that never landed.
+  expect(step("Fetch config files").id).toBe("catalog");
+  expect(step("Configure codex").env.MODEL_CATALOG).toBe("${{ inputs.model-catalog || steps.catalog.outputs.loaded }}");
+  const output = existsSync(setup.env.GITHUB_OUTPUT) ? readFileSync(setup.env.GITHUB_OUTPUT, "utf8") : "";
+  const loaded = /^loaded=(.*)$/m.exec(output)?.[1] ?? "";
+  const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
+  for (const config of ['model = "m"\n', 'model_catalog_json = "/existing/models.json"\n', `model_catalog_json = "${catalog}"\n`]) {
+    const configured = Bun.spawnSync(["bash", "-ec", region], { env: { ...setup.env, CODEX_CONFIG: config, CATALOG: "", MODEL_CATALOG: loaded, CODEX_AUTH: "", CODEX_AUTH_FILE: "" } });
+    expect(configured.exitCode).toBe(0);
+    expect(Bun.TOML.parse(readFileSync(join(setup.dir, "config.toml"), "utf8")).model_catalog_json).toBe(Bun.TOML.parse(config).model_catalog_json);
+  }
+});
+
+test("fetching credentials does not enable an existing model catalog", () => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "models.json"), '{"models":[]}');
+  executable(setup.dir, "gh", `#!/bin/sh\nprintf '%s' '{"token":"file"}'\n`);
+  expect(run("Fetch config files", setup, { AUTH_FILE: ".github/auth.json", CATALOG_FILE: "", CATALOG: "", CODEX_AUTH: "" }).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "auth.json"), "utf8"))).toEqual({ token: "file" });
+  expect(existsSync(setup.env.GITHUB_OUTPUT)).toBe(false);
+});
+
+test("a catalog path that neither the default branch nor this one has still fails", () => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: Not Found (HTTP 404)' >&2
+exit 1
+`);
+  const branch = checkout({});
+  expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-model.json" }, branch).exitCode).toBe(1);
+  expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+  expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+});
+
+test("other model catalog fetch errors still exhaust retries and fail", () => {
+  for (const status of [403, 503]) {
+    const setup = fixture();
+    executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+    executable(setup.dir, "gh", `#!/bin/sh
+echo "$*" >> "$RUNNER_TEMP/requests"
+echo 'gh: HTTP ${status}' >&2
+exit 1
+`);
+    expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" }).exitCode).toBe(1);
+    expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+    expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
+  }
 });
 
 test.each([false, true])("config files preserve the model's session identity and reach Codex (literal override: %s)", (override) => {

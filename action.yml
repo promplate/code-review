@@ -406,6 +406,7 @@ runs:
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
     - name: Fetch config files
+      id: catalog
       if: (inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true'
       shell: bash
       env:
@@ -416,13 +417,29 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
         # These files configure how Codex runs, so they come from the default branch rather than the change under review.
-        # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
-        fetch() {
-          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$1" "$2" </dev/null
-        }
         mkdir -p "$CODEX_HOME"
+        error=$(mktemp)
+        catalog=$(mktemp "$CODEX_HOME/models.json.XXXXXX")
+        trap 'rm -f "$error" "$catalog"' EXIT
+        # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
+        # A 404 is permanent, so $4 tells apart the two causes: a file only this branch has is a warning, while one nobody has is a wrong input.
+        fetch() {
+          [ -n "$3" ] || [ -z "$1" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+            if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
+            cat "$3" >&2; rm -f "$2"
+            if [ -n "$4" ] && grep -q "HTTP 404" "$3" && git cat-file -e "HEAD:$5" 2> /dev/null; then echo "::warning::$4"; exit 0; fi
+            exit 1
+          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$4" "$1" </dev/null
+        }
         fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json" "$CODEX_AUTH"
-        fetch "$CATALOG_FILE" "$CODEX_HOME/models.json" "$CATALOG"
+        if [ -z "$CATALOG" ] && [ -n "$CATALOG_FILE" ]; then
+          fetch "$CATALOG_FILE" "$catalog" "$CATALOG" "The model-catalog-file is only on this branch; continuing without the catalog override."
+          # Only this download enables the override; a missing file leaves any catalog installed by setup intact.
+          if [ -f "$catalog" ]; then
+            mv "$catalog" "$CODEX_HOME/models.json"
+            echo "loaded=true" >> "$GITHUB_OUTPUT"
+          fi
+        fi
         [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
@@ -432,7 +449,8 @@ runs:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CODEX_AUTH: ${{ inputs.codex-auth }}
         CATALOG: ${{ inputs.model-catalog }}
-        MODEL_CATALOG: ${{ inputs.model-catalog || inputs.model-catalog-file }}
+        # A literal catalog still wins; only a download that landed enables the file.
+        MODEL_CATALOG: ${{ inputs.model-catalog || steps.catalog.outputs.loaded }}
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
