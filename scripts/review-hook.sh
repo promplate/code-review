@@ -26,16 +26,15 @@ SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
 # Anyone can comment on public repositories, so only comments and reviews from people with write access steer the review.
-result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" --arg failure "$(cat "$RUNNER_TEMP/sse.failed" 2>/dev/null || true)" '
+result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
   # Reviewers must know when they are judging part of a description; a silent cut would hide the actual change.
   def clip($n): if . == null then null else length as $len
     | if $len > $n then .[0:$n] + "…[truncated at \($n) of \($len) characters; read the full text from the PR]" else . end end;
   # The review already knows its repository, so links inside it lose the prefix and external links stay absolute.
   def repo_url: ("https://github.com/" + env.GITHUB_REPOSITORY) as $base
     | if . != null and (. == $base or startswith($base + "/")) then .[($base | length):] else . end;
-  ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]
-    # Receipts survive cached sessions; a local failure belongs to this execution, including retries of the same run.
-    + (if $failure == "" then [] else [{event: "subscription_recovery", delivery: "subscription:failed:\(env.GITHUB_RUN_ID):\(env.GITHUB_RUN_ATTEMPT // "1")", body: ({reason: "subscription_failed", error: $failure} | tojson)}] end)) as $frames
+  # The subscription reports its own end as a frame, so a failure needs no second channel here.
+  ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]) as $frames
   # Every webhook starts a sibling run of this workflow, and its job check runs describe the review system rather than the CI of the pull request.
   # A check run names no workflow, but it does name its check suite, and a workflow run reports that suite beside the workflow file it came from.
   | ((env.GITHUB_WORKFLOW_REF // "") | split("@")[0] // "" | sub("^[^/]+/[^/]+/"; "")) as $own_path

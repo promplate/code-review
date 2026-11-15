@@ -8,14 +8,14 @@ cleanup() {
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$pipe_dir" ] || { rm -f "$pipe_dir/stream" "$pipe_dir/response" "$pipe_dir/reconnect"; rmdir "$pipe_dir"; }
+  # The same channel that reports interruptions reports the end of them, so a wait blocked on the stream wakes instead of timing out.
   if [ "$status" != 0 ] && [ "$status" != 130 ] && [ "$status" != 143 ]; then
-    printf 'The GitHub event subscription stopped with status %s.\n' "$status" > "$RUNNER_TEMP/sse.failed"
+    recovery subscription_failed "$status" >> "$RUNNER_TEMP/sse.jsonl"
   fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-rm -f "$RUNNER_TEMP/sse.failed"
 pipe_dir=$(mktemp -d "$RUNNER_TEMP/sse.XXXXXX")
 mkfifo "$pipe_dir/stream"
 recovery() {

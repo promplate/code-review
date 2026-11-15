@@ -24,19 +24,25 @@ trap 'exec 3<&-; kill "$tail_pid" 2>/dev/null || true; wait "$tail_pid" 2>/dev/n
 trap 'exit 130' INT
 trap 'exit 143' TERM
 deadline=$((SECONDS + ${WAIT_CI_TIMEOUT:-1800}))
+dead=
 expired() { echo "No CI checks matching \"$NAME\" completed on $SHA within ${WAIT_CI_TIMEOUT:-1800}s" >&2; exit 1; }
 while true; do
   current=$(checks) || { echo "Could not read CI checks for $SHA" >&2; exit 1; }
   # An empty list usually means the checks have not appeared yet, except for callers that may proceed without any.
   if jq -e '(length > 0 or env.WAIT_CI_ALLOW_EMPTY == "1") and all(.status == "completed")' <<< "$current" > /dev/null; then break; fi
-  recheck=$((SECONDS + ${WAIT_CI_RECHECK:-30}))
   while true; do
-    # Heartbeats cannot postpone either the deadline or the API fallback for a missed webhook.
+    # Heartbeats cannot postpone the deadline; the API is read again only when a frame says events may have been missed.
     [ "$SECONDS" -lt "$deadline" ] || expired
-    [ "$SECONDS" -lt "$recheck" ] || break
-    remaining=$(((deadline < recheck ? deadline : recheck) - SECONDS))
-    [ "$remaining" -gt 0 ] || continue
-    if IFS= read -r -t "$remaining" line <&3; then
+    # A subscription that reported its own end will send nothing more, so the API is re-read before the deadline runs out.
+    window=$((deadline - SECONDS))
+    if [ -n "$dead" ]; then
+      window=$((window / 2 < 30 ? window / 2 : 30))
+      [ "$window" -gt 0 ] || window=1
+    fi
+    if IFS= read -r -t "$window" line <&3; then
+      [[ "$line" != *subscription_failed* ]] || dead=1
+      # The subscription reports every interruption, so a recovery frame is the signal to re-read instead of polling.
+      [[ "$line" != *subscription_recovery* ]] || break
       # Most frames are for other commits, and jq per line costs more than the match that rejects them.
       [[ "$line" == *"$SHA"* ]] || continue
       if jq -eR 'select(startswith("data: ")) | .[6:] | fromjson? | .event as $event | .body | fromjson
@@ -44,8 +50,11 @@ while true; do
     else
       status=$?
       [ "$SECONDS" -lt "$deadline" ] || expired
-      [ "$SECONDS" -lt "$recheck" ] || break
-      [ "$status" -gt 128 ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+      if [ "$status" -le 128 ]; then
+        [ -n "$dead" ] || { echo "CI event stream closed before checks completed" >&2; exit 1; }
+        # EOF is immediate on every read, so a closed tail needs the delay the read would otherwise supply.
+        sleep "$window"
+      fi
       break
     fi
   done

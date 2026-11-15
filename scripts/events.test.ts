@@ -20,8 +20,6 @@ function fixture() {
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
   writeFileSync(join(dir, "injected.log"), "");
-  // No test reaches the API by accident; the ones that need it replace this.
-  executable(dir, "gh", "#!/usr/bin/env bash\nexit 1\n");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main" };
@@ -109,22 +107,12 @@ test("an interrupted subscription requests GitHub reconciliation once without tr
 });
 
 test("a stopped subscriber cannot silently leave the review on a stale snapshot", () => {
-  const { dir, run } = runHook("");
-  writeFileSync(join(dir, "sse.failed"), "The event stream writer failed.");
-  const result = run();
-  expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString()).toContain("subscription_failed");
-});
-
-test("a cached failure receipt cannot hide a stopped subscription in a later run", () => {
-  const { dir, env, run } = runHook("");
-  writeFileSync(join(dir, "sse.failed"), "The event stream writer failed.");
-  expect(run().stdout.toString()).toContain("subscription_failed");
-  expect(run().stdout.toString()).toBe("");
-  for (const [GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT] of [["13", "1"], ["13", "2"]]) {
-    const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: { ...env, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT }, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
-    expect(retry.exitCode).toBe(0); expect(retry.stdout.toString()).toContain("subscription_failed");
-  }
+  const { env, output } = runHook(frame("subscription_recovery", { reason: "subscription_failed", status: "1" }, "stopped"));
+  expect(output).toContain("subscription_failed");
+  // The stop travels on the stream, so it is delivered once: a later run has already been told.
+  const retry = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: { ...env, GITHUB_RUN_ID: "13" }, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+  expect(retry.exitCode).toBe(0);
+  expect(retry.stdout.toString()).toBe("");
 });
 
 test("subscription control frames do not break CI waiting or publishing newer heads", () => {
@@ -486,13 +474,44 @@ test.each(["heartbeat", "silence"])("CI deadline remains bounded during %s", (mo
   expectTailReleased(dir);
 });
 
-test("heartbeats do not postpone the fallback CI check after a missed webhook", () => {
+test("heartbeats do not re-read the API, while a recovery frame does", () => {
   const { dir, env } = fixture();
-  executable(dir, "gh", `#!${process.execPath}\nimport { existsSync, writeFileSync } from "node:fs";\nconst marker = process.env.RUNNER_TEMP + "/checked";\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
-  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nsetInterval(() => console.log(": ping"), 50);\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "2", WAIT_CI_RECHECK: "1" }, timeout: 4000 });
+  executable(dir, "gh", `#!${process.execPath}\nimport { appendFileSync, existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nif (existsSync(marker) && !existsSync(dir + "/recovery")) { console.error("API read before recovery"); process.exit(1); }\nappendFileSync(dir + "/gh-calls", "call\\n");\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  executable(dir, "tail", `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(process.env.RUNNER_TEMP + "/tail-pid", String(process.pid));\nlet pings = 0;\nsetInterval(() => { if (++pings === 3) { writeFileSync(process.env.RUNNER_TEMP + "/recovery", "yes"); console.log("event: subscription_recovery"); } else console.log(": ping"); }, 50);\n`);
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "2" }, timeout: 4000 });
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("test: success");
+  // Only the opening read and the one the recovery frame asks for reach the API.
+  expect(readFileSync(join(dir, "gh-calls"), "utf8").trim().split("\n")).toHaveLength(2);
+  expectTailReleased(dir);
+});
+
+test("a dead subscription still reconciles with the API before the deadline", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}\nimport { existsSync, writeFileSync } from "node:fs";\nconst dir = process.env.RUNNER_TEMP;\nconst marker = dir + "/checked";\nconsole.log(JSON.stringify({ check_runs: existsSync(marker) ? [${JSON.stringify(check())}] : [] }));\nwriteFileSync(marker, "yes");\n`);
+  // The subscriber gave up and said so on the stream; nothing will announce the checks it never delivered.
+  writeFileSync(join(dir, "sse.jsonl"), frame("subscription_recovery", { reason: "subscription_failed", status: "1" }, "stopped"));
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "4" }, timeout: 6000 });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("test: success");
+});
+
+test("a dead subscription and closed tail delay API retries", () => {
+  const { dir, env } = fixture();
+  executable(dir, "gh", `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const path = process.env.RUNNER_TEMP + "/calls";
+const calls = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : [];
+calls.push(Date.now()); writeFileSync(path, JSON.stringify(calls));
+console.log(JSON.stringify({ check_runs: calls.length >= 4 ? [${JSON.stringify(check())}] : [] }));
+`);
+  executable(dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\ncat "$RUNNER_TEMP/sse.jsonl"\n`);
+  writeFileSync(join(dir, "sse.jsonl"), `event: subscription_recovery\n` + frame("subscription_recovery", { reason: "subscription_failed", status: "1" }, "stopped"));
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head"], { env: { ...env, WAIT_CI_TIMEOUT: "6" }, timeout: 8000 });
+  expect(result.exitCode).toBe(0);
+  const calls = JSON.parse(readFileSync(join(dir, "calls"), "utf8"));
+  expect(calls).toHaveLength(4);
+  expect(calls[3] - calls[2]).toBeGreaterThanOrEqual(1000);
   expectTailReleased(dir);
 });
 
@@ -565,7 +584,7 @@ test("the subscription survives 360 HTTP failures and stops all its own children
       expect(alive).toBe(false);
     }
     for (const pipe of pipes) expect(existsSync(join(dir, pipe))).toBe(false);
-    expect(existsSync(join(dir, "sse.failed"))).toBe(false);
+    expect(readFileSync(join(dir, "sse.jsonl"), "utf8")).not.toContain("subscription_failed");
   } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; server.stop(true); }
 }, 20_000);
 
@@ -575,7 +594,7 @@ test.each([false, true])("a failed stream writer records a visible terminal fail
   executable(dir, "awk", "#!/usr/bin/env bash\nexit 1\n");
   const child = Bun.spawnSync(["bash", join(scripts, "subscribe.sh")], { env: { ...env, EVENTS_URL: "https://example.test/?fixture=1" }, timeout: 3000 });
   expect(child.exitCode).toBe(1);
-  expect(readFileSync(join(dir, "sse.failed"), "utf8")).toContain("status 1");
+  expect(readFileSync(join(dir, "sse.jsonl"), "utf8")).toContain("subscription_failed");
 });
 
 test("a live reconnect reconciles the whole outage and a later disconnect is fresh activity", async () => {
@@ -702,7 +721,7 @@ test("TERM interrupts a long retry delay after the failure becomes visible", asy
     child.kill("SIGTERM");
     expect(await Promise.race([child.exited, Bun.sleep(2000).then(() => "timed out")])).toBe(143);
     expect(() => process.kill(sleeper, 0)).toThrow();
-    expect(existsSync(join(dir, "sse.failed"))).toBe(false);
+    expect(readFileSync(join(dir, "sse.jsonl"), "utf8")).not.toContain("subscription_failed");
   } finally { if (child.exitCode === null) child.kill("SIGTERM"); await child.exited; }
 });
 
@@ -774,6 +793,51 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
 });
 
 const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
+
+test("token setup creates its config and refreshes through a transient failure", () => {
+  const { dir, env } = fixture();
+  executable(dir, "curl", `#!${process.execPath}
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const marker = process.env.RUNNER_TEMP + "/mints";
+if (process.argv.at(-1).includes("/oidc")) { console.log('{"value":"fixture-oidc"}'); process.exit(0); }
+const count = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
+writeFileSync(marker, String(count));
+if (count === 2) process.exit(22);
+console.log(JSON.stringify({ token: count === 1 ? "initial-token" : "renewed-token", events_url: "https://example.test/events", bot: "reviewer[bot]", expires_at: new Date(Date.now() + 3600000).toISOString().replace(/\\.\\d{3}Z$/, "Z") }));
+`);
+  executable(dir, "sleep", `#!/usr/bin/env bash
+if [ "$1" -gt 30 ]; then
+  [ ! -f "$RUNNER_TEMP/refreshed" ] || exit 1
+  touch "$RUNNER_TEMP/refreshed"
+else echo "$1" >> "$RUNNER_TEMP/backoff"; fi
+`);
+  const run = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.id === "app-token").run;
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", run + '\nwait "$!"'], {
+    env: { ...env, BROKER: "https://example.test", ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.test/oidc?fixture=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-token", GITHUB_OUTPUT: join(dir, "github-output") }, timeout: 3000,
+  });
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(dir, "mints"), "utf8")).toBe("3");
+  expect(readFileSync(join(dir, "backoff"), "utf8")).toBe("1\n");
+  const token = Bun.spawnSync([Bun.which("gh")!, "auth", "token", "--hostname", "github.com"], {
+    env: { ...env, GH_CONFIG_DIR: join(dir, "gh"), GH_TOKEN: "", GITHUB_TOKEN: "", GH_ENTERPRISE_TOKEN: "", GITHUB_ENTERPRISE_TOKEN: "" },
+  });
+  expect(token.exitCode).toBe(0);
+  expect(token.stdout.toString().trim()).toBe("renewed-token");
+});
+
+test("a failed initial credential write does not print the minted token", () => {
+  const { dir, env } = fixture();
+  mkdirSync(join(dir, "gh/hosts.new"), { recursive: true });
+  executable(dir, "curl", '#!/usr/bin/env bash\nprintf \'{"value":"fixture-oidc","token":"private-fixture-token","events_url":"private-fixture-events"}\\n\'\n');
+  const run = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.id === "app-token").run;
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", run], {
+    env: { ...env, BROKER: "https://example.test", ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.test/oidc?fixture=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-token" }, timeout: 3000,
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("::error::");
+  expect(result.stdout.toString()).not.toContain("private-fixture-token");
+  expect(result.stdout.toString()).not.toContain("private-fixture-events");
+});
 
 test("review instructions reach the prompt as one shell string", () => {
   const { env } = fixture();
