@@ -1309,6 +1309,36 @@ fi
   expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain(" · $0.123");
 });
 
+test("usage reads the root TOML tier and marks requested-tier prices as estimates", () => {
+  const { dir, env } = fixture();
+  const pkg = join(dir, "prices/node_modules/@pydantic/genai-prices");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@pydantic/genai-prices", type: "module", main: "index.js" }));
+  // Flat rates isolate tier selection from the separate approximation for context-size tiers.
+  writeFileSync(join(pkg, "index.js"), `export function calcPrice(usage, model, options) {
+    const tier = options?.priceContext?.service_tier;
+    return { total_price: tier === "flex" ? 0.2 : tier === "priority" ? 0.6 : 0.4, model_price: { input_mtok: 1, output_mtok: 1 } };
+  }`);
+  writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "turn.completed", usage: { input_tokens: 100000, cached_input_tokens: 0, output_tokens: 10000 } }));
+  const report = step("Run codex review").run.match(/\{ read -r usage[\s\S]*?>> "\$GITHUB_STEP_SUMMARY"/)![0];
+  for (const config of [
+    'service_tier = "flex"\n',
+    "service_tier = 'flex'\n",
+    '  "service_tier" = "flex" # "requested tier"\n',
+    'service_tier = "flex"\n[unrelated]\nservice_tier = "priority"\n',
+  ]) {
+    writeFileSync(join(dir, "config.toml"), config);
+    for (const [input, price] of [["", "~$0.200"], ["default", "~$0.200"], ["priority", "~$0.600"]]) {
+      writeFileSync(join(dir, "summary.md"), "");
+      const result = Bun.spawnSync(["bash", "-ec", `true & PRICE_PID=$!\n${report}`], { env: { ...env, MODEL_NAME: "test-model", SERVICE_TIER: input } });
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.toString()).toBe("");
+      expect(result.stdout.toString()).toContain(` · ${price}`);
+      expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain(` · ${price}`);
+    }
+  }
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }
