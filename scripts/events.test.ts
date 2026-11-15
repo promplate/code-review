@@ -24,7 +24,7 @@ function fixture() {
   executable(dir, "gh", "#!/usr/bin/env bash\nexit 1\n");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
-    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12" };
+    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main" };
   return { dir, env };
 }
 
@@ -148,39 +148,24 @@ test("consumption receipts cover delivered activity, never filtered events or la
   expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("first\n");
 });
 
-test("check runs from sibling runs of this workflow stay out of the context", () => {
+test("check runs whose suite belongs to a sibling run of this workflow stay out of the context", () => {
   const { dir, env } = fixture();
+  const own = ".github/workflows/agent.yml";
   writeFileSync(join(dir, "sse.jsonl"), [
-    frame("check_run", { action: "completed", check_run: check({ id: 90, name: "agent / agent", conclusion: "skipped" }) }, "sibling"),
-    frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / authorize / Check write access" }) }, "sibling-authorize"),
-    // Another workflow may name a job the same way; only this run's own job names identify the workflow.
-    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "agent / tests", conclusion: "failure" }) }, "other-workflow"),
-    frame("check_run", { action: "completed", check_run: check({ id: 93, name: "test" }) }, "ci"),
+    // The sibling run announces its check suite before its jobs finish.
+    frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: "agent invoke", path: own, head_sha: "head", check_suite_id: 500 } }, "sibling-run"),
+    frame("check_run", { action: "completed", check_run: check({ id: 91, name: "agent / agent", conclusion: "skipped", check_suite: { id: 500 } }) }, "sibling"),
+    // Another workflow may name its job the same way; its suite is its own.
+    frame("check_run", { action: "completed", check_run: check({ id: 92, name: "agent / tests", conclusion: "failure", check_suite: { id: 501 } }) }, "other-workflow"),
+    // A suite no workflow run announced stays: unknown provenance must never hide failed CI.
+    frame("check_run", { action: "completed", check_run: check({ id: 93, name: "test", check_suite: { id: 502 } }) }, "ci"),
   ].join(""));
-  // This run's own jobs are the check runs whose details_url points at its run id.
-  executable(dir, "gh", `#!/usr/bin/env bash\n[ "$2" = "repos/owner/repo/commits/head/check-runs?filter=latest&per_page=100" ] || exit 1\nprintf '%s\\n' '{"check_runs":[{"name":"agent / agent","details_url":"https://github.com/owner/repo/actions/runs/12/job/1"},{"name":"agent / authorize / Check write access","details_url":"https://github.com/owner/repo/actions/runs/12/job/2"},{"name":"test","details_url":"https://github.com/owner/repo/actions/runs/90/job/3"}]}'\n`);
   const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   expect(result.exitCode).toBe(0);
   const output = result.stdout.toString();
   expect(output).not.toContain("agent / agent");
-  expect(output).not.toContain("Check write access");
   expect(output).toContain("agent / tests");
   expect(output).toContain("test");
-});
-
-test("the job names of this run are looked up only once", () => {
-  const { dir, env } = fixture();
-  writeFileSync(join(dir, "sse.jsonl"), frame("check_run", { action: "completed", check_run: check() }));
-  executable(dir, "gh", `#!/usr/bin/env bash\nprintf 'call\\n' >> "$RUNNER_TEMP/gh-calls"\nprintf '%s\\n' '{"check_runs":[]}'\n`);
-  const run = () => Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
-  const first = run();
-  expect(first.exitCode).toBe(0);
-  expect(first.stdout.toString()).toContain("test");
-  const second = run();
-  expect(second.exitCode).toBe(0);
-  expect(second.stdout.toString()).toBe("");
-  // An empty page still answers the question, so the cache holds and the API is asked once.
-  expect(readFileSync(join(dir, "gh-calls"), "utf8")).toBe("call\n");
 });
 
 test("check runs without a details URL do not prevent activity delivery", () => {
