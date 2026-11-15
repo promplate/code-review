@@ -14,8 +14,8 @@ inputs:
   codex-auth-file:
     description: Path in this repository to a Codex auth.json, read from the default branch. `codex-auth` takes precedence.
   codex-version:
-    description: "@openai/codex version to install when the runner has no codex."
-    default: 0.169.0
+    description: "@openai/codex version to install when the runner has no codex; empty installs the latest."
+    default: ""
   bun-version:
     description: Bun version to reuse or install for the Codex launcher and hooks.
     default: 1.4.4
@@ -395,15 +395,16 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
-    - name: Install gh-mcp
+    - name: Install uv
       if: env.SKIP != 'true'
       shell: bash
       run: |
-        # Codex starts the MCP server while it initializes, too early for uvx to resolve the package there.
-        export PATH="$HOME/.local/bin:$PATH"
-        command -v uv > /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
-        uv tool install --force gh-mcp==0.3.9
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # Everything uv downloads or builds stays under the job's temp directory, so a runner reused by other jobs keeps what it already had.
+        printf 'UV_CACHE_DIR=%s\nUV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/cache" "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
+        if ! command -v uv > /dev/null; then
+          curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
+          echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
+        fi
 
     - name: Fetch config files
       id: catalog
@@ -461,8 +462,10 @@ runs:
         git config --replace-all credential.https://github.com.helper ""
         git config --add credential.https://github.com.helper "!gh auth git-credential"
         if ! command -v codex > /dev/null; then
-          bun install --global "@openai/codex@$CODEX_VERSION"
-          export PATH="$(bun pm bin -g):$PATH"
+          # A reused runner may already carry Codex; otherwise it is installed inside the job instead of the runner's global bin.
+          mkdir -p "$RUNNER_TEMP/codex"
+          bun add --cwd "$RUNNER_TEMP/codex" --silent "@openai/codex${CODEX_VERSION:+@$CODEX_VERSION}"
+          export PATH="$RUNNER_TEMP/codex/node_modules/.bin:$PATH"
         fi
         CODEX_BIN=$(command -v codex)
         CODEX_RUNTIME=
@@ -508,7 +511,8 @@ runs:
             await Bun.write(path, text);
           }
           if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
-          const config = text + "\n[mcp_servers.gh]\ncommand = \"gh-mcp\"\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
+          // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
+          const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
           try { Bun.TOML.parse(config); }
           catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
           await Bun.write(path, config);
@@ -537,7 +541,7 @@ runs:
       run: |
         # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
         # Start it in this step so the shell that reports usage can wait for its own child.
-        (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices@0.2.3 > install.log 2>&1) &
+        (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices > install.log 2>&1) &
         PRICE_PID=$!
         [ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
