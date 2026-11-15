@@ -1288,6 +1288,27 @@ test("each run reports the tokens every turn spent", () => {
   expect(result.stdout.toString()).not.toContain(" · $");
 });
 
+test("usage waits for the price table installed by its own step", () => {
+  const { dir, env } = fixture(), run = step("Run codex review").run;
+  writeFileSync(join(dir, "codex.jsonl"), JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 1 } }));
+  executable(dir, "bun", `#!/usr/bin/env bash
+if [ "$1" = add ]; then
+  '${realSleep}' 0.1
+  touch "$RUNNER_TEMP/installed"
+else
+  [ -f "$RUNNER_TEMP/installed" ] || exit 1
+  echo '$0.123'
+fi
+`);
+  const install = run.match(/\(mkdir -p[\s\S]*?PRICE_PID=\$!/)?.[0] || "";
+  const report = run.match(/\{ read -r usage[\s\S]*?>> "\$GITHUB_STEP_SUMMARY"/)![0];
+  const result = Bun.spawnSync(["bash", "-ec", `${install}\n${report}`], { env: { ...env, MODEL_NAME: "test-model" } });
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr.toString()).toBe("");
+  expect(result.stdout.toString()).toContain(" · $0.123");
+  expect(readFileSync(join(dir, "summary.md"), "utf8")).toContain(" · $0.123");
+});
+
 function gateStep() {
   return step("Skip activity another review already handled").run.replaceAll("${{ github.repository }}", "owner/repo");
 }

@@ -431,9 +431,6 @@ runs:
         CODEX_VERSION: ${{ inputs.codex-version }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
-        (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices@0.2.3 > install.log 2>&1) &
-        PRICE_PID=$!
         [ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Setting up Codex…" -f "output[summary]=Installing Codex and the review hooks." </dev/null > /dev/null
         # The checkout keeps no credentials, so git fetches with the refreshed token as well; the empty helper skips credentials the runner's own helpers hold.
@@ -514,6 +511,10 @@ runs:
         LANGFUSE_CODEX_ENVIRONMENT: code-review
         LANGFUSE_CODEX_METADATA: '{"repository": "${{ github.repository }}", "pr": ${{ env.PR_NUMBER || ''null'' }}, "run_id": ${{ github.run_id }}, "head_sha": "${{ env.HEAD_SHA }}"}'
       run: |
+        # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
+        # Start it in this step so the shell that reports usage can wait for its own child.
+        (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices@0.2.3 > install.log 2>&1) &
+        PRICE_PID=$!
         [ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$CHECK_ID -X PATCH \
           -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
         jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
