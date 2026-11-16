@@ -1560,3 +1560,15 @@ test("hosted enrollment skips every action step before saving credentials", () =
   expect(existsSync(join(dir,"gh/hosts.yml"))).toBe(false);
   for(const step of steps.slice(1)) expect(step.if).toContain("steps.app-token.outputs.hosted != 'true'");
 });
+
+test("check suite identities retain their suite id and reviewed head", () => {
+  const {dir}=fixture(), path=join(dir,"event.json");
+  const ids=[];
+  for(const [id,head] of [[1,"a"],[2,"a"],[2,"b"]]) {
+    writeFileSync(path,JSON.stringify({action:"completed",check_suite:{id,head_sha:head},sender:human}));
+    const actual=/ACTIVITY_ID=(.*)/.exec(runGate(dir,{GITHUB_EVENT_NAME:"check_suite",GITHUB_EVENT_PATH:path}))![1];
+    expect(actual).toBe(new Bun.CryptoHasher("sha256").update(`check_suite:completed:${id}:${head}:`).digest("hex").slice(0,40));
+    ids.push(actual);
+  }
+  expect(new Set(ids).size).toBe(3);
+});
