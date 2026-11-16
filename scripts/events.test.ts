@@ -545,6 +545,24 @@ test("a failed SSE write fails the parser", async () => {
   expect(await child.exited).not.toBe(0);
 });
 
+test("SSE frames reach readers while the connection remains open", async () => {
+  const { dir, env } = fixture(), response = join(dir, "response");
+  const event = frame("status", { sha: "head", state: "success" }, "live");
+  const child = Bun.spawn(["bash", join(scripts, "sse-frames.sh"), response], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  child.stdin.write("HTTP/2 200\r\ncontent-type: text/event-stream\r\n\r\n" + event);
+  child.stdin.flush();
+  try {
+    const reader = child.stdout.getReader();
+    const output = (async () => { let text = ""; while (!text.includes(event)) { const chunk = await reader.read(); if (chunk.done) break; text += new TextDecoder().decode(chunk.value); } return text; })();
+    expect(await Promise.race([output, Bun.sleep(3000).then(() => "timeout")])).toBe(event);
+    expect(readFileSync(response, "utf8")).toBe("200 text/event-stream\n");
+  } finally {
+    child.stdin.end();
+    child.kill();
+    await child.exited;
+  }
+});
+
 test("HTTP framing skips informational headers before accepting an HTTP/2 event stream", () => {
   const { dir, env } = fixture(), response = join(dir, "response");
   const event = frame("status", { sha: "head", state: "success" }, "accepted");
