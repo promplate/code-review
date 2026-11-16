@@ -103,5 +103,4 @@ EYES_REACTION_ID= EYES_REACTION_PATH=
 printf '%s\n' "$ACTIVITY_ID" >> "$RUNNER_TEMP/injected-deliveries.log"
 bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 published=true
-[ "$PR_AUTHOR" = "$BOT_LOGIN" ] || bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
 result completed
