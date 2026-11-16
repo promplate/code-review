@@ -70,7 +70,13 @@ export CHECK_ID
 . "$GITHUB_ACTION_PATH/scripts/mark-review.sh"
 jq -nr --arg event "$GITHUB_EVENT_NAME" --arg delivery "$ACTIVITY_ID" --argjson writer "${ACTIVITY_WRITER:-false}" --rawfile body "$GITHUB_EVENT_PATH" \
   '"id: \($delivery)\nevent: \($event)\ndata: \(({receivedAt: (now * 1000 | floor), event: $event, delivery: $delivery, body: $body, writer: $writer} | tojson))\n"' > "$RUNNER_TEMP/sse.jsonl"
-if [ -n "${EVENTS_URL:-}" ]; then bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" > "$RUNNER_TEMP/sse.err" 2>&1 & SSE_PID=$!; fi
+if [ -n "${EVENTS_URL:-}" ]; then
+  bash "$GITHUB_ACTION_PATH/scripts/subscribe.sh" > "$RUNNER_TEMP/sse.err" 2>&1 & SSE_PID=$!
+else
+  # The shared CI waiter falls back to polling after a terminal subscription failure.
+  jq -nr --arg delivery "subscription:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:unavailable" \
+    '"event: subscription_recovery\ndata: \(({event: "subscription_recovery", delivery: $delivery, writer: false, body: ({reason: "subscription_failed", status: "not_configured"} | tojson)} | tojson))\n"' >> "$RUNNER_TEMP/sse.jsonl"
+fi
 . "$GITHUB_ACTION_PATH/scripts/configure-review.sh"
 export MODEL_NAME="$(bun -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
 bash "$GITHUB_ACTION_PATH/scripts/run-review.sh"
@@ -82,6 +88,8 @@ bash "$GITHUB_ACTION_PATH/scripts/publish-pr.sh"
 if [ -f "$RUNNER_TEMP/superseded" ]; then result superseded "$(cat "$RUNNER_TEMP/superseded")"; exit 0; fi
 bash "$GITHUB_ACTION_PATH/scripts/finish-reactions.sh"
 EYES_REACTION_ID= EYES_REACTION_PATH=
+# Opened/reopened events are already in the initial prompt and are filtered by live hooks.
+printf '%s\n' "$ACTIVITY_ID" >> "$RUNNER_TEMP/injected-deliveries.log"
 bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 published=true
 [ "$PR_AUTHOR" = "$BOT_LOGIN" ] || bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"

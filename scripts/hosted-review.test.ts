@@ -50,7 +50,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
   const env={...process.env, PATH:`${bin}:${process.env.PATH}`, TEST_MODE:mode, GITHUB_ACTION_PATH:root,GITHUB_REPOSITORY:"owner/repo",PR_NUMBER:"7", HEAD_SHA:head, CODEX_HOME:state,
     RUNNER_TEMP:temp, GH_CONFIG_DIR:join(dir,"gh"),BOT_LOGIN:"reviewer[bot]", GITHUB_EVENT_PATH:event,ACTIVITY_ID:"delivery",DETAILS_URL:"https://platform.example/reviews/run",DEFAULT_BRANCH:"main",
     CODEX_CONFIG_FILE:config,CODEX_AUTH_FILE:auth,REVIEW_RUN_ID:"job-id",EVENT_NAME:"pull_request",EYES_REACTION_ID:"",EYES_REACTION_PATH:""};
-  return {head,state,temp, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
+  return {head,state,temp,env,bin, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
 
 test("hosted entry runs shared review, publishes at the exact head and returns refreshed credentials", () => {
@@ -101,6 +101,25 @@ test("a consumed delivery preserves the existing published check", () => {
   const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(calls).toHaveLength(1);
   expect(calls[0]).toEqual(["api","repos/owner/repo/pulls/7"]);
+});
+
+test.each(["opened", "reopened"])("a published %s delivery is skipped when replayed", action => {
+  const setup=fixture();
+  writeFileSync(setup.env.GITHUB_EVENT_PATH,JSON.stringify({action,sender:{login:"author",type:"User"},pull_request:{number:7,head:{sha:setup.head}}}));
+  expect(setup.run().exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.state,"sessions/.github-deliveries.json"),"utf8"))).toContain("delivery");
+  expect(setup.run().exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"skipped"});
+});
+
+test("a hosted run without SSE lets the CI waiter poll completed checks", () => {
+  const tail=Bun.which("tail")!, setup=fixture();
+  expect(setup.run({EVENTS_URL:""}).exitCode).toBe(0);
+  writeFileSync(join(setup.bin,"tail"),`#!/bin/sh\nexec '${tail}' "$@"\n`);
+  writeFileSync(join(setup.bin,"gh"),`#!${process.execPath}\nconst path=process.env.RUNNER_TEMP+'/poll-count';const count=await Bun.file(path).exists()?Number(await Bun.file(path).text()):0;await Bun.write(path,String(count+1));console.log(JSON.stringify({check_runs:[{id:99,name:'format',status:count?'completed':'in_progress',conclusion:count?'success':null,app:{slug:'ci'}}]}));\n`);
+  const result=Bun.spawnSync(["bash",join(root,"scripts/wait-ci.sh"),setup.head,"format","pass"],{env:{...setup.env,ACTIONS_TOKEN:"",CHECK_ID:"10",WAIT_CI_TIMEOUT:"4"},timeout:6000});
+  expect(result.exitCode).toBe(0);
+  expect(Number(readFileSync(join(setup.temp,"poll-count"),"utf8"))).toBeGreaterThan(1);
 });
 
 
