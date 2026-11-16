@@ -3,7 +3,7 @@
 set -euo pipefail
 export SHA=$1 NAME=${2:-.}
 # Other runs of this workflow are review status, not CI: one queued behind this job can never start, so waiting for it would deadlock.
-# The App token has no Actions access, so the Merge step hands over the job token for these two lookups.
+# The review step hands over the job token for these two lookups.
 WORKFLOW_ID=
 [ -z "${ACTIONS_TOKEN:-}" ] || WORKFLOW_ID=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --paginate < /dev/null | jq -r .workflow_id) || WORKFLOW_ID=
 [ -n "$WORKFLOW_ID" ] || [ -z "${ACTIONS_TOKEN:-}" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."

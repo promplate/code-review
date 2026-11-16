@@ -536,6 +536,7 @@ runs:
       if: env.SKIP != 'true'
       shell: bash
       env:
+        ACTIONS_TOKEN: ${{ github.token }}
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         FORK_KEY: ${{ (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
