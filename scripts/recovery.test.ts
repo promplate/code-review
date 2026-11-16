@@ -5,7 +5,15 @@ import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const steps = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")).runs.steps;
-const step = (name: string) => steps.find((entry: any) => entry.name === name);
+const expanded = new WeakSet();
+const expandStep = (entry: any) => {
+  if (entry?.run && !expanded.has(entry)) {
+    entry.run = entry.run.replace(/^(?:bash|\.) "\$GITHUB_ACTION_PATH\/scripts\/([^"]+)"$/m, (_, file) => readFileSync(join(root, "scripts", file), "utf8"));
+    expanded.add(entry);
+  }
+  return entry;
+};
+const step = (name: string) => expandStep(steps.find((entry: any) => entry.name === name));
 const homes: string[] = [];
 const writer = { login: "writer", type: "User" };
 const comment = { action: "created", sender: writer, issue: { number: 7, pull_request: {} }, comment: { id: 1 } };
@@ -17,10 +25,10 @@ function fixture(event: object = comment) {
   mkdirSync(join(dir, "sessions"));
   for (const file of ["github-env", "sse.jsonl", "check-runs.jsonl"]) writeFileSync(join(dir, file), "");
   writeFileSync(join(dir, "event.json"), JSON.stringify(event));
-  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
+  const env = { ...process.env, REVIEW_HOSTED: "", PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
     GITHUB_REPOSITORY: "owner/repo", GITHUB_REPOSITORY_ID: "23", GITHUB_ENV: join(dir, "github-env"), GITHUB_OUTPUT: join(dir, "github-output"),
     GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: "issue_comment", MODEL_NAME: "deepseek-flash", SESSION_KEY: "pr-7",
-    PR_NUMBER: "7", HEAD_SHA: "head", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
+    PR_NUMBER: "7", HEAD_SHA: "head", CHECK_ID: "10", REVIEW_ACTIONS_TOKEN: "token", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
     EYES_REACTION_ID: "", EYES_REACTION_PATH: "", DEFAULT_BRANCH: "main" };
   return { dir, env };
 }
@@ -276,9 +284,9 @@ test("every publication precedes checkpointing and snapshot upload, while merge 
   expect(step("Checkpoint published review").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
-  expect(step("Drop older session snapshots").if).toBe("steps.save-session.outputs.artifact-id");
+  expect(step("Drop older session snapshots").if).toBe("steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)");
   // A failed publication skips the snapshot, but earlier saved drafts can still be released.
-  expect(step("Mark forked PRs ready").if).toBe("always()");
+  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.skip != 'true' && (always())");
 });
 
 function sessionSnapshots() {
@@ -389,7 +397,7 @@ test("a fork retries the download only after the opener prunes its selected snap
   const old = artifact(20, name, 10, 10), next = artifact(19, name + "-next", 11, 11);
   const output = join(setup.dir, "github-output");
   expect(step("Restore the session to fork")["continue-on-error"]).toBe(true);
-  expect(step(find).if).toBe("steps.restore-fork.outcome == 'failure'");
+  expect(step(find).if).toBe("steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'failure')");
   expect(step(restore).with).toMatchObject({
     "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
     path: "${{ env.CODEX_HOME }}/fork",
@@ -658,7 +666,7 @@ test("a consumed retry still releases its cached pending drafts", () => {
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
   expect(gate(setup)).toContain("SKIP=true");
-  expect(step("Mark forked PRs ready").if).toBe("always()");
+  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.skip != 'true' && (always())");
   expect(run("Mark forked PRs ready", setup, { SKIP: "true", SNAPSHOT_ID: "" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });

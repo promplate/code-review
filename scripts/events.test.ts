@@ -20,10 +20,12 @@ function fixture() {
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
   writeFileSync(join(dir, "injected.log"), "");
+  writeFileSync(join(dir, "event.json"), "{}");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main",
     GITHUB_STEP_SUMMARY: join(dir, "summary.md"), DEFAULT_BRANCH: "main" };
+  Object.assign(env, { GITHUB_EVENT_PATH: join(dir, "event.json") });
   return { dir, env };
 }
 
@@ -793,7 +795,15 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   expect(review.env.ACTIVITY).toBeUndefined();
 });
 
-const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
+const expanded = new WeakSet();
+const expandStep = (entry: any) => {
+  if (entry?.run && !expanded.has(entry)) {
+    entry.run = entry.run.replace(/^(?:bash|\.) "\$GITHUB_ACTION_PATH\/scripts\/([^"]+)"$/m, (_, file) => readFileSync(join(root, "scripts", file), "utf8"));
+    expanded.add(entry);
+  }
+  return entry;
+};
+const step = (name: string) => expandStep((Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name));
 
 test("token setup creates its config and refreshes through a transient failure", () => {
   const { dir, env } = fixture();
@@ -892,7 +902,7 @@ test("forking a review copies its conversation but not another PRs consumption p
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
   for (const name of [".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
-  const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
+  const commands = step("Run codex review").run.match(/fork=\$RUNNER_TEMP[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
@@ -1540,4 +1550,39 @@ test("a run skips activity another review consumed, and strangers, but never a n
   const push = runGate(setup.dir, { GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: join(setup.dir, "push.json") });
   expect(push).toContain("ACTIVITY_ID=");
   expect(push).not.toContain("SKIP=true");
+});
+
+test("a broker skip response skips every action step before saving credentials", () => {
+  const {dir,env}=fixture(), output=join(dir,"github-output");
+  executable(dir,"curl",`#!/bin/sh\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"skip":true}' ;; esac\n`);
+  const steps=Bun.YAML.parse(readFileSync(join(root,"action.yml"),"utf8")).runs.steps;
+  const result=Bun.spawnSync(["bash","-eo","pipefail","-c",steps[0].run],{env:{...env,GITHUB_OUTPUT:output,ACTIONS_ID_TOKEN_REQUEST_URL:"https://example.test/oidc?fixture=1",ACTIONS_ID_TOKEN_REQUEST_TOKEN:"fixture",BROKER:"https://example.test"},timeout:3000});
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(output,"utf8")).toBe("skip=true\n");
+  expect(existsSync(join(dir,"gh/hosts.yml"))).toBe(false);
+  for(const step of steps.slice(1)) expect(step.if).toContain("steps.app-token.outputs.skip != 'true'");
+});
+
+test("token requests identify PR targets without treating issue or branch jobs as PRs", () => {
+  const steps=Bun.YAML.parse(readFileSync(join(root,"action.yml"),"utf8")).runs.steps;
+  for (const [event,body,pr,target] of [["pull_request",{pull_request:{number:7}},"","pull_request"],["issue_comment",{issue:{pull_request:{}}},"","pull_request"],["repository_dispatch",{},"7","pull_request"],["issue_comment",{issue:{number:7}},"","other"],["push",{ref:"refs/heads/main"},"","other"],["issues",{issue:{number:7}},"","other"],["workflow_dispatch",{},"","other"],["check_run",{check_run:{pull_requests:[{number:7}]}},"","pull_request"],["workflow_run",{},"","pull_request"],["unknown",{},"","pull_request"]] as const) {
+    const {dir,env}=fixture();
+    writeFileSync(join(dir,"event.json"),JSON.stringify(body));
+    executable(dir,"curl",`#!/bin/sh\nprintf '%s\\n' "$@" >> "$RUNNER_TEMP/curl-args"\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"skip":true}' ;; esac\n`);
+    const result=Bun.spawnSync(["bash","-eo","pipefail","-c",steps[0].run],{env:{...env,GITHUB_EVENT_NAME:event,DISPATCHED_PR:pr,GITHUB_OUTPUT:join(dir,"github-output"),ACTIONS_ID_TOKEN_REQUEST_URL:"https://example.test/oidc?fixture=1",ACTIONS_ID_TOKEN_REQUEST_TOKEN:"fixture",BROKER:"https://example.test"},timeout:3000});
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(join(dir,"curl-args"),"utf8")).toContain(`X-Review-Target: ${target}\n`);
+  }
+});
+
+test("check suite identities retain their suite id and reviewed head", () => {
+  const {dir}=fixture(), path=join(dir,"event.json");
+  const ids=[];
+  for(const [id,head] of [[1,"a"],[2,"a"],[2,"b"]]) {
+    writeFileSync(path,JSON.stringify({action:"completed",check_suite:{id,head_sha:head},sender:human}));
+    const actual=/ACTIVITY_ID=(.*)/.exec(runGate(dir,{GITHUB_EVENT_NAME:"check_suite",GITHUB_EVENT_PATH:path}))![1];
+    expect(actual).toBe(new Bun.CryptoHasher("sha256").update(`check_suite:completed:${id}:${head}:`).digest("hex").slice(0,40));
+    ids.push(actual);
+  }
+  expect(new Set(ids).size).toBe(3);
 });

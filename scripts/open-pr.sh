@@ -8,4 +8,4 @@ bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/che
   -f "output[title]=Waiting for the review that opened this PR" -f "output[summary]=This review continues the Codex session that opened the PR." < /dev/null > /dev/null
 jq -n --arg head "$1" --arg base "$BASE" --arg title "$2" --arg body "$3" '{head: $head, base: $base, title: $title, body: $body, draft: true}' \
   | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls" --input - --jq .html_url | tee -a "$RUNNER_TEMP/forked-prs"
-echo "FORKED_PRS=true" >> "$GITHUB_ENV"
+[ -z "${GITHUB_ENV:-}" ] || echo "FORKED_PRS=true" >> "$GITHUB_ENV"
