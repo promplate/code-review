@@ -141,6 +141,8 @@ The App needs **Contents**, **Pull requests** and **Checks** write access, plus 
 
 To review as your own GitHub App, deploy the broker with that App's credentials and set `with.broker` on the action or reusable workflow to its HTTPS origin, such as `https://review-broker.example.com`. Both default to `https://cf-webhook-sse-poc.admin-c9f.workers.dev`. The action learns which login it acts as from the token it mints, so workflows never name the App.
 
+A broker may return `{ "skip": true }` from its token endpoint to skip this invocation. An ordinary token response follows the existing review flow. Routing and any external execution service belong to the broker; the action needs only its broker URL.
+
 Choose a broker operator you trust: the job sends it a GitHub OIDC token with the broker URL as its audience, and trusts its installation token and event stream. The current broker does not provide snapshot encryption keys; session and debug artifacts remain unencrypted. Broker-managed encryption would protect downloaded artifacts from repository readers, not from the broker operator or the authorized runner.
 
 Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the job's `env` to trace reviews to Langfuse with [langfuse/codex-observability-plugin](https://github.com/langfuse/codex-observability-plugin "Langfuse observability plugin for Codex").
