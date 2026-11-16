@@ -21,6 +21,7 @@ function fixture(mode = "success") {
 import {appendFileSync, readFileSync} from 'node:fs';
 const args=process.argv.slice(2), path=args[1], mode=process.env.TEST_MODE;
 appendFileSync(process.env.RUNNER_TEMP+'/calls', JSON.stringify(args)+'\\n');
+if(args[0]==='pr' && path==='merge' && mode==='merge-fails') process.exit(1);
 if(path?.endsWith('/pulls/7') && !args.includes('-X')) {
  if(mode==='initial-read-fails') process.exit(1);
  if(args.includes('--jq')) {const query=args[args.indexOf('--jq')+1];console.log(query==='.user.login'?'author':query.includes('.state')?'open '+process.env.HEAD_SHA:mode==='moved' ? 'new-head' : process.env.HEAD_SHA); process.exit(0);}
@@ -39,7 +40,7 @@ else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') await
   executable("codex", `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('codex 0.169.0'); process.exit(0);}
 if(process.env.TEST_MODE==='codex-fails') process.exit(1);
-const verdict={conclusion:'success',summary:'',reactions:['+1'],commits:[{sha:process.env.HEAD_SHA,conclusion:'success'}],merge:process.env.TEST_MODE==='merge'?{method:'squash',subject:'Fixture',body:''}:null,annotations:[]};
+const verdict={conclusion:'success',summary:'',reactions:['+1'],commits:[{sha:process.env.HEAD_SHA,conclusion:'success'}],merge:process.env.TEST_MODE.startsWith('merge')?{method:'squash',subject:'Fixture',body:''}:null,annotations:[]};
 await Bun.write(process.argv[process.argv.indexOf('--output-last-message')+1],JSON.stringify(verdict));
 await Bun.write(process.env.CODEX_HOME+'/auth.json',JSON.stringify({tokens:{refresh_token:'refreshed'}}));
 console.log(JSON.stringify({type:'thread.started',thread_id:'test-thread'}));
@@ -91,14 +92,16 @@ test("hosted draft release waits for a persisted session and preserves failed re
   expect(readFileSync(pending,"utf8")).toBe("https://github.com/owner/repo/pull/9\n");
 });
 
-test("hosted merge waits for the caller to persist the published session", () => {
-  const setup=fixture("merge");
+test.each(["merge", "merge-fails"])("hosted %s waits for persistence and preserves the completed review", mode => {
+  const setup=fixture(mode);
   expect(setup.run().exitCode).toBe(0);
   const calls=()=>readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(calls().some(args=>args[0]==="pr"&&args[1]==="merge")).toBe(false);
   const finish=Bun.spawnSync(["bash",join(root,"scripts/finish-hosted-review.sh")],{env:setup.env});
   expect(finish.exitCode).toBe(0);
-  expect(calls().filter(args=>args[0]==="pr"&&args[1]==="merge")).toHaveLength(1);
+  expect(calls().filter(args=>args[0]==="pr"&&args[1]==="merge").length).toBeGreaterThan(0);
+  expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"completed",published:true});
+  if (mode==="merge-fails") expect(finish.stdout.toString()).toContain("::warning::");
 });
 
 test("a consumed delivery preserves the existing published check", () => {

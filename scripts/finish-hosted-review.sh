@@ -17,8 +17,8 @@ if [ -s "$pending" ]; then
   done < "$pending"
   if [ -s "$left" ]; then mv "$left" "$pending"; else rm -f "$pending"; fi
 fi
-# Merge has the same durable-session boundary as draft release. A failed merge can be retried without rerunning Codex.
+# Merge has the same durable-session boundary as draft release. A refusal leaves the completed review intact.
 if [ -f "${RUNNER_TEMP:-}/result.json" ] && jq -e '.status == "completed" and .published == true' "$RUNNER_TEMP/result.json" >/dev/null; then
-  PR_AUTHOR=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .user.login </dev/null)
-  [ "$PR_AUTHOR" = "$BOT_LOGIN" ] || bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
+  PR_AUTHOR=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .user.login </dev/null) &&
+    { [ "$PR_AUTHOR" = "$BOT_LOGIN" ] || bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"; } || echo '::warning::The review was published, but its merge could not be completed.'
 fi
