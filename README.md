@@ -168,4 +168,4 @@ The entry writes `$RUNNER_TEMP/result.json` with `status` (`completed`, `superse
 
 After persisting a successful publication, call `scripts/finish-hosted-review.sh` with the same environment to mark any fix PRs ready and perform an approved merge. Save the updated pending-draft list afterward. This ordering lets the child review restore its opening conversation before it starts and keeps the merged review's session durable. Stop the sandbox in a `finally` block, including after command failure, and inspect the command's exit code.
 
-Hosted execution links each review check to its run details.
+Hosted execution links each review check to its authenticated run details.
