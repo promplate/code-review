@@ -22,6 +22,7 @@ import {appendFileSync, readFileSync} from 'node:fs';
 const args=process.argv.slice(2), path=args[1], mode=process.env.TEST_MODE;
 appendFileSync(process.env.RUNNER_TEMP+'/calls', JSON.stringify(args)+'\\n');
 if(path?.endsWith('/pulls/7') && !args.includes('-X')) {
+ if(mode==='initial-read-fails') process.exit(1);
  if(args.includes('--jq')) {console.log(mode==='moved' ? 'new-head' : process.env.HEAD_SHA); process.exit(0);}
  console.log(JSON.stringify({head:{sha:process.env.HEAD_SHA,ref:'feature',repo:{full_name:'owner/repo'}},base:{ref:'main'},user:{login:'author'},draft:false}));
 } else if(path?.startsWith('repos/') && path.includes('/pulls/7/reviews')) {
@@ -100,4 +101,18 @@ test("a consumed delivery preserves the existing published check", () => {
   const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(calls).toHaveLength(1);
   expect(calls[0]).toEqual(["api","repos/owner/repo/pulls/7"]);
+});
+
+
+test("initial lookup failures leave supplied published checks untouched", () => {
+  const setup=fixture("initial-read-fails");
+  mkdirSync(join(setup.state,"sessions"));
+  writeFileSync(join(setup.state,"sessions/.github-published-head"),setup.head+"\n");
+  writeFileSync(join(setup.state,"sessions/.github-deliveries.json"),'["delivery"]');
+  const result=setup.run({CHECK_ID:"42"});
+  expect(result.exitCode).not.toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"failed",checkId:"42",published:false});
+  const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every(args=>args[0]==="api"&&args[1]==="repos/owner/repo/pulls/7")).toBe(true);
 });

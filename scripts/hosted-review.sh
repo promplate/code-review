@@ -20,7 +20,7 @@ export UV_CACHE_DIR="$RUNNER_TEMP/uv/cache" UV_TOOL_DIR="$RUNNER_TEMP/uv/tools" 
 mkdir -p "$CODEX_HOME/sessions" "$RUNNER_TEMP"
 umask 077
 rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json"
-SSE_PID= published=false check_published=false
+SSE_PID= published=false check_published=false check_started=false
 retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "$@"; }
 result() {
   jq -n --arg status "$1" --arg sha "$HEAD_SHA" --arg current "${2:-}" --arg check "${CHECK_ID:-}" --argjson published "$published" \
@@ -32,7 +32,8 @@ cleanup() {
   [ -z "$SSE_PID" ] || { kill "$SSE_PID" 2>/dev/null || true; wait "$SSE_PID" 2>/dev/null || true; }
   if [ "$code" != 0 ]; then
     result failed
-    if [ -n "${CHECK_ID:-}" ] && [ "$check_published" != true ]; then
+    # A supplied check may hold an earlier verdict until this attempt successfully starts it.
+    if [ "$check_started" = true ] && [ "$check_published" != true ]; then
       retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
         -f 'output[title]=Review failed' -f 'output[summary]=The hosted review failed before completing publication. See the platform run for details.' </dev/null >/dev/null || true
     fi
@@ -64,6 +65,7 @@ if [ -z "${CHECK_ID:-}" ]; then
 else
   retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=in_progress -f details_url="$DETAILS_URL" </dev/null >/dev/null
 fi
+check_started=true
 export CHECK_ID
 . "$GITHUB_ACTION_PATH/scripts/mark-review.sh"
 jq -nr --arg event "$GITHUB_EVENT_NAME" --arg delivery "$ACTIVITY_ID" --argjson writer "${ACTIVITY_WRITER:-false}" --rawfile body "$GITHUB_EVENT_PATH" \
