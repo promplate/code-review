@@ -49,7 +49,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
   const env={...process.env, PATH:`${bin}:${process.env.PATH}`, TEST_MODE:mode, GITHUB_ACTION_PATH:root,GITHUB_REPOSITORY:"owner/repo",PR_NUMBER:"7", HEAD_SHA:head, CODEX_HOME:state,
     RUNNER_TEMP:temp, GH_CONFIG_DIR:join(dir,"gh"),BOT_LOGIN:"reviewer[bot]", GITHUB_EVENT_PATH:event,ACTIVITY_ID:"delivery",DETAILS_URL:"https://platform.example/reviews/run",DEFAULT_BRANCH:"main",
     CODEX_CONFIG_FILE:config,CODEX_AUTH_FILE:auth,REVIEW_RUN_ID:"job-id",EVENT_NAME:"pull_request"};
-  return {head,state,temp, run:()=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env,timeout:15000})};
+  return {head,state,temp, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
 
 test("hosted entry runs shared review, publishes at the exact head and returns refreshed credentials", () => {
@@ -87,4 +87,18 @@ test("hosted draft release waits for a persisted session and preserves failed re
   const result=Bun.spawnSync(["bash",join(root,"scripts/finish-hosted-review.sh")],{env:{...process.env,PATH:`${bin}:${process.env.PATH}`,GITHUB_ACTION_PATH:root,CODEX_HOME:setup.state,GH_CONFIG_DIR:setup.temp,GITHUB_REPOSITORY:"owner/repo"}});
   expect(result.exitCode).toBe(0);
   expect(readFileSync(pending,"utf8")).toBe("https://github.com/owner/repo/pull/9\n");
+});
+
+
+test("a consumed delivery preserves the existing published check", () => {
+  const setup=fixture();
+  mkdirSync(join(setup.state,"sessions"));
+  writeFileSync(join(setup.state,"sessions/.github-published-head"),setup.head+"\n");
+  writeFileSync(join(setup.state,"sessions/.github-deliveries.json"),'["delivery"]');
+  const result=setup.run({CHECK_ID:"42"});
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"skipped",checkId:"42"});
+  const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toEqual(["api","repos/owner/repo/pulls/7"]);
 });

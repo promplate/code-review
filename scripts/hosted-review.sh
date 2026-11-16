@@ -56,8 +56,6 @@ export TRIGGER_SENDER="$(jq -r '.sender.login // "unknown"' "$GITHUB_EVENT_PATH"
 # A matching checkpoint only consumes a repeated delivery; new discussion still gets a fresh pass.
 if [ "$(cat "$CODEX_HOME/sessions/.github-published-head" 2>/dev/null || true)" = "$HEAD_SHA" ] && \
   [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ] && jq -e --arg id "$ACTIVITY_ID" 'index($id)' "$CODEX_HOME/sessions/.github-deliveries.json" >/dev/null; then
-  [ -z "${CHECK_ID:-}" ] || retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
-    -f 'output[title]=Activity already reviewed' -f 'output[summary]=An earlier published review consumed this delivery.' </dev/null >/dev/null
   result skipped; exit 0
 fi
 if [ -z "${CHECK_ID:-}" ]; then
