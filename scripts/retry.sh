@@ -9,6 +9,19 @@ for attempt in 1 2 3 4 5 6 7 8; do
   cat "$err" >&2
   # A DELETE whose response was lost has already taken effect, so the retry's 404 means it is done.
   [[ " $* " != *" -X DELETE "* ]] || ! grep -q 'HTTP 404' "$err" || exit 0
+  # gh reports HTTP statuses in parentheses; git/curl use "returned error: NNN".
+  # A response takes precedence over transport-looking words in its message.
+  error=$(cat "$err")
+  if [[ "$error" =~ (HTTP\ |returned\ error:\ )([0-9]{3})([^0-9]|$) ]]; then
+    status=${BASH_REMATCH[2]}
+    [[ "$status" = 429 || "$status" = 5?? ]] || exit 1
+  else
+    # GraphQL validation, local command errors and unknown failures are terminal.
+    grep -Eiq \
+      -e 'i/o timeout|TLS handshake timeout|Client.Timeout|context deadline exceeded|connection timed out|operation timed out' \
+      -e 'connection (reset|refused|aborted)|could not resolve (host|proxy)|could not connect|failed to connect|error connecting to ' \
+      -e 'no such host|temporary failure in name resolution|network is unreachable|(^|[^[:alnum:]])(unexpected )?EOF([^[:alnum:]]|$)' "$err" || exit 1
+  fi
   [ "$attempt" = 8 ] || sleep "$delay"
   delay=$((delay * 2 > 30 ? 30 : delay * 2))
 done
