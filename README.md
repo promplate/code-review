@@ -160,7 +160,7 @@ Run it from a full checkout of the scheduled PR head with the default branch fet
 - `CODEX_HOME`, `RUNNER_TEMP`, `GH_CONFIG_DIR`: isolated absolute paths for the session, this attempt and the repository-scoped `gh` credential.
 - `GITHUB_EVENT_PATH`, `EVENT_NAME`, `ACTIVITY_ID`, `ACTIVITY_WRITER`: the verified webhook body, event name, stable delivery identity and permission result.
 - `CODEX_CONFIG_FILE`, `CODEX_AUTH_FILE`: trusted configuration and credentials, unless supplied directly through `CODEX_CONFIG` and `CODEX_AUTH`.
-- `DETAILS_URL`: the authenticated run page. `EVENTS_URL` supplies live SSE updates in the broker's existing format.
+- `DETAILS_URL`: the authenticated run page linked from the review check. `EVENTS_URL` supplies live SSE updates in the broker's existing format.
 
 Optional `CHECK_ID` reuses a check owned by the hosting service. `REVIEW_RUN_ID` and `REVIEW_RUN_ATTEMPT` identify an attempt for subscription recovery. `DEFAULT_BRANCH`, `SERVICE_TIER`, `EXTRA_INSTRUCTIONS`, `CATALOG` and `MODEL_CATALOG` use the same meanings as the action. To fork an opening review's conversation, restore its state into `$CODEX_HOME/fork` and set `FORK_KEY` to its session key.
 
