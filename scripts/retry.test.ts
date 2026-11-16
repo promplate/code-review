@@ -49,7 +49,6 @@ test.each([
 });
 
 test.each([
-  'gh: Too Many Requests (HTTP 429)',
   ...[500, 502, 503, 504].map(status => `gh: request failed (HTTP ${status})`),
   'curl: (22) The requested URL returned error: 503',
   'fatal: unable to access remote: The requested URL returned error: 502',
@@ -62,6 +61,7 @@ test.each([
   'error connecting to api.github.com',
   'Post "https://api.github.com/graphql": unexpected EOF',
   'fatal: unable to access remote: Could not resolve host: github.com',
+  'fatal: the remote end hung up unexpectedly',
 ])("transient failure retries and replays stdin: %s", error => {
   const setup = fixture([error]);
   const args = ["api", "graphql", "--input", "-"];
@@ -72,6 +72,35 @@ test.each([
   expect(result.stderr.toString()).toBe(error + "\nsuccess diagnostic\n");
   expect(setup.calls()).toEqual([{ args, input }, { args, input }]);
   expect(setup.delays()).toEqual([1]);
+});
+
+test.each([
+  'gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)',
+  'gh: API rate limit exceeded for installation ID 123. (HTTP 403)',
+  'gh: Too Many Requests (HTTP 429)',
+])("rate limits retry after at least a minute and replay stdin: %s", error => {
+  const setup = fixture([error]);
+  const args = ["api", "graphql", "--input", "-"];
+  const input = '{"query":"mutation { example }"}';
+  const result = setup.run(args, input);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("ok\n");
+  expect(setup.calls()).toEqual([{ args, input }, { args, input }]);
+  expect(setup.delays()).toEqual([60]);
+});
+
+test("persistent rate limits exhaust eight attempts with capped backoff", () => {
+  const setup = fixture(Array(8).fill("gh: You have exceeded a secondary rate limit. (HTTP 403)"));
+  expect(setup.run().exitCode).toBe(1);
+  expect(setup.calls()).toHaveLength(8);
+  expect(setup.delays()).toEqual([60, 120, 240, 300, 300, 300, 300]);
+});
+
+test("a permission error after a rate limit stops further retries", () => {
+  const setup = fixture(['gh: You have exceeded a secondary rate limit. (HTTP 403)', 'gh: Resource not accessible by integration (HTTP 403)']);
+  expect(setup.run().exitCode).toBe(1);
+  expect(setup.calls()).toHaveLength(2);
+  expect(setup.delays()).toEqual([60]);
 });
 
 test("transient failures stop after eight attempts with capped backoff", () => {
