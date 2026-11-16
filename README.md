@@ -146,3 +146,22 @@ Choose a broker operator you trust: the job sends it a GitHub OIDC token with th
 Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the job's `env` to trace reviews to Langfuse with [langfuse/codex-observability-plugin](https://github.com/langfuse/codex-observability-plugin "Langfuse observability plugin for Codex").
 
 `login/` serves the same device login in a browser, for whoever cannot install Codex themselves: `bun login/index.ts`, open the page, and copy the returned `auth.json` into the secret.
+
+## Hosted execution
+
+`scripts/hosted-review.sh` runs the same configuration, Codex invocation, live-event hooks, publication and merge helpers that the action calls. It runs inside a prepared Linux environment such as Vercel Sandbox, with Bash 5.1+, Bun, Codex, uv, gh, git, jq and curl. The hosting service owns authorization, a serialized queue per repository/session, installation-token renewal, sandbox cleanup and durable session storage.
+
+Run it from a full checkout of the scheduled PR head with the default branch fetched under `refs/remotes/origin/`. Supply these environment variables:
+
+- `GITHUB_ACTION_PATH`: an absolute path to this repository at a pinned revision.
+- `GITHUB_REPOSITORY`, `PR_NUMBER`, `HEAD_SHA`, `BOT_LOGIN`: the authorized repository, pull request, scheduled commit and GitHub App login.
+- `CODEX_HOME`, `RUNNER_TEMP`, `GH_CONFIG_DIR`: isolated absolute paths for the session, this attempt and the repository-scoped `gh` credential.
+- `GITHUB_EVENT_PATH`, `EVENT_NAME`, `ACTIVITY_ID`, `ACTIVITY_WRITER`: the verified webhook body, event name, stable delivery identity and permission result.
+- `CODEX_CONFIG_FILE`, `CODEX_AUTH_FILE`: trusted configuration and credentials, unless supplied directly through `CODEX_CONFIG` and `CODEX_AUTH`.
+- `DETAILS_URL`: the authenticated run page. `EVENTS_URL` supplies live SSE updates in the broker's existing format.
+
+Optional `CHECK_ID` reuses a check owned by the hosting service. `REVIEW_RUN_ID` and `REVIEW_RUN_ATTEMPT` identify an attempt for subscription recovery. `DEFAULT_BRANCH`, `SERVICE_TIER`, `EXTRA_INSTRUCTIONS`, `CATALOG` and `MODEL_CATALOG` use the same meanings as the action. To fork an opening review's conversation, restore its state into `$CODEX_HOME/fork` and set `FORK_KEY` to its session key.
+
+The entry writes `$RUNNER_TEMP/result.json` with `status` (`completed`, `superseded`, `skipped` or `failed`), `headSha`, `currentHead`, `checkId` and `published`. A superseded result tells the scheduler which head needs another run. It never treats receiving an event as a completed publication. Persist `sessions/`, `last-thread-id` and `check-runs.jsonl` from `CODEX_HOME`, and save any refreshed `auth.json` back to the encrypted credential store. Auth belongs to the repository credential store, separately from conversation snapshots.
+
+After persisting a successful publication, call `scripts/finish-hosted-review.sh` with the same environment to mark any fix PRs ready. Save the updated pending-draft list afterward. This ordering lets the child review restore its opening conversation before it starts. Stop the sandbox in a `finally` block, including after command failure, and inspect the command's exit code.

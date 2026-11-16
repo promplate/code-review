@@ -5,7 +5,15 @@ import { dirname, join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const steps = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")).runs.steps;
-const step = (name: string) => steps.find((entry: any) => entry.name === name);
+const expanded = new WeakSet();
+const expandStep = (entry: any) => {
+  if (entry?.run && !expanded.has(entry)) {
+    entry.run = entry.run.replace(/^(?:bash|\.) "\$GITHUB_ACTION_PATH\/scripts\/([^"]+)"$/m, (_, file) => readFileSync(join(root, "scripts", file), "utf8"));
+    expanded.add(entry);
+  }
+  return entry;
+};
+const step = (name: string) => expandStep(steps.find((entry: any) => entry.name === name));
 const homes: string[] = [];
 const writer = { login: "writer", type: "User" };
 const comment = { action: "created", sender: writer, issue: { number: 7, pull_request: {} }, comment: { id: 1 } };
@@ -20,7 +28,7 @@ function fixture(event: object = comment) {
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
     GITHUB_REPOSITORY: "owner/repo", GITHUB_REPOSITORY_ID: "23", GITHUB_ENV: join(dir, "github-env"), GITHUB_OUTPUT: join(dir, "github-output"),
     GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_EVENT_NAME: "issue_comment", MODEL_NAME: "deepseek-flash", SESSION_KEY: "pr-7",
-    PR_NUMBER: "7", HEAD_SHA: "head", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
+    PR_NUMBER: "7", HEAD_SHA: "head", CHECK_ID: "10", REVIEW_ACTIONS_TOKEN: "token", BOT_LOGIN: "reviewer[bot]", PR_AUTHOR: "writer", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW: "review", GITHUB_SERVER_URL: "https://github.com",
     EYES_REACTION_ID: "", EYES_REACTION_PATH: "", DEFAULT_BRANCH: "main" };
   return { dir, env };
 }

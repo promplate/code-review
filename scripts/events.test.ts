@@ -793,7 +793,15 @@ test("the trigger webhook is seeded in the same shape the broker relays", () => 
   expect(review.env.ACTIVITY).toBeUndefined();
 });
 
-const step = (name: string) => (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name);
+const expanded = new WeakSet();
+const expandStep = (entry: any) => {
+  if (entry?.run && !expanded.has(entry)) {
+    entry.run = entry.run.replace(/^(?:bash|\.) "\$GITHUB_ACTION_PATH\/scripts\/([^"]+)"$/m, (_, file) => readFileSync(join(root, "scripts", file), "utf8"));
+    expanded.add(entry);
+  }
+  return entry;
+};
+const step = (name: string) => expandStep((Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name));
 
 test("token setup creates its config and refreshes through a transient failure", () => {
   const { dir, env } = fixture();
@@ -892,7 +900,7 @@ test("forking a review copies its conversation but not another PRs consumption p
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
   for (const name of [".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
-  const commands = step("Run codex review").run.match(/fork=\$\{\{ runner.temp \}\}[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
+  const commands = step("Run codex review").run.match(/fork=\$RUNNER_TEMP[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");
