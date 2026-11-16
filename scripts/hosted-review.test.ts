@@ -24,7 +24,7 @@ appendFileSync(process.env.RUNNER_TEMP+'/calls', JSON.stringify(args)+'\\n');
 if(path?.endsWith('/pulls/7') && !args.includes('-X')) {
  if(mode==='initial-read-fails') process.exit(1);
  if(args.includes('--jq')) {console.log(mode==='moved' ? 'new-head' : process.env.HEAD_SHA); process.exit(0);}
- console.log(JSON.stringify({head:{sha:process.env.HEAD_SHA,ref:'feature',repo:{full_name:'owner/repo'}},base:{ref:'main'},user:{login:'author'},draft:false}));
+ console.log(JSON.stringify({head:{sha:mode==='initial-moved'?'new-head':process.env.HEAD_SHA,ref:'feature',repo:{full_name:'owner/repo'}},base:{ref:'main'},user:{login:'author'},draft:false}));
 } else if(path?.startsWith('repos/') && path.includes('/pulls/7/reviews')) {
  if(args.includes('--input')) { const body=readFileSync(args[args.indexOf('--input')+1],'utf8'); appendFileSync(process.env.RUNNER_TEMP+'/reviews',body); if(mode==='publish-fails') process.exit(1); }
  else console.log('[]');
@@ -33,6 +33,7 @@ else if(path==='graphql') console.log(JSON.stringify({data:{repository:{pullRequ
 else if(path?.includes('/reactions?')) console.log('[]');
 else if(path?.endsWith('/reactions')) console.log('9');
 else if(path?.endsWith('/check-runs') && args.includes('--jq')) console.log('10');
+else if(path?.endsWith('/check-runs/42') && !args.includes('-X')) console.log(process.env.TEST_CHECK_STATUS||'completed');
 else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') await Bun.stdin.text();
 `);
   executable("codex", `#!${process.execPath}
@@ -99,8 +100,24 @@ test("a consumed delivery preserves the existing published check", () => {
   expect(result.exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"skipped",checkId:"42"});
   const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
-  expect(calls).toHaveLength(1);
+  expect(calls).toHaveLength(2);
   expect(calls[0]).toEqual(["api","repos/owner/repo/pulls/7"]);
+  expect(calls[1]).toEqual(["api","repos/owner/repo/check-runs/42","--jq",".status"]);
+});
+
+test.each(["queued", "in_progress", "completed"])("early supersession finalizes only unfinished supplied checks (%s)", status => {
+  const setup=fixture("initial-moved"), result=setup.run({CHECK_ID:"42",TEST_CHECK_STATUS:status});
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"superseded",currentHead:"new-head",checkId:"42",published:false});
+  const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
+  const patches=calls.filter(args=>args.includes("PATCH"));
+  expect(patches).toHaveLength(status==="completed"?0:1);
+  if (patches.length) {
+    expect(patches[0][1]).toBe("repos/owner/repo/check-runs/42");
+    expect(patches[0]).toContain("status=completed");
+    expect(patches[0]).toContain("conclusion=neutral");
+  }
+  expect(calls).toHaveLength(status==="completed"?2:3);
 });
 
 test.each(["opened", "reopened"])("a published %s delivery is skipped when replayed", action => {

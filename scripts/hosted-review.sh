@@ -26,6 +26,17 @@ result() {
   jq -n --arg status "$1" --arg sha "$HEAD_SHA" --arg current "${2:-}" --arg check "${CHECK_ID:-}" --argjson published "$published" \
     '{status: $status, headSha: $sha, currentHead: (if $current == "" then null else $current end), checkId: $check, published: $published}' > "$RUNNER_TEMP/result.json"
 }
+finish_without_review() {
+  if [ -n "${CHECK_ID:-}" ]; then
+    # A caller may queue a check before scheduling us; preserve completed verdicts while closing unused pending checks.
+    status=$(retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" --jq .status </dev/null)
+    if [ "$status" != completed ]; then
+      retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
+        -f 'output[title]=Hosted review skipped' -f 'output[summary]=The scheduled review is no longer needed for this pull request.' </dev/null >/dev/null
+    fi
+  fi
+  result "$@"
+}
 cleanup() {
   code=$?
   trap - EXIT
@@ -45,10 +56,10 @@ cleanup() {
 trap cleanup EXIT
 pr=$(retry gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" </dev/null)
 current=$(jq -r .head.sha <<< "$pr")
-if ! jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" >/dev/null; then result skipped; exit 0; fi
-if [ "$current" != "$HEAD_SHA" ]; then result superseded "$current"; exit 0; fi
+if ! jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" >/dev/null; then finish_without_review skipped; exit 0; fi
+if [ "$current" != "$HEAD_SHA" ]; then finish_without_review superseded "$current"; exit 0; fi
 export HEAD_BRANCH="$(jq -r .head.ref <<< "$pr")" BASE="$(jq -r .base.ref <<< "$pr")" PR_AUTHOR="$(jq -r .user.login <<< "$pr")"
-if [ "$PR_AUTHOR" = "$BOT_LOGIN" ] && [ "$(jq -r .draft <<< "$pr")" = true ]; then result skipped; exit 0; fi
+if [ "$PR_AUTHOR" = "$BOT_LOGIN" ] && [ "$(jq -r .draft <<< "$pr")" = true ]; then finish_without_review skipped; exit 0; fi
 if [ -z "${DEFAULT_BRANCH:-}" ]; then DEFAULT_BRANCH=$(retry gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch </dev/null); fi
 export DEFAULT_BRANCH
 export TRIGGER_SENDER="$(jq -r '.sender.login // "unknown"' "$GITHUB_EVENT_PATH")" TRIGGER_TYPE="$(jq -r '.sender.type // "unknown"' "$GITHUB_EVENT_PATH")"
@@ -57,7 +68,7 @@ export TRIGGER_SENDER="$(jq -r '.sender.login // "unknown"' "$GITHUB_EVENT_PATH"
 # A matching checkpoint only consumes a repeated delivery; new discussion still gets a fresh pass.
 if [ "$(cat "$CODEX_HOME/sessions/.github-published-head" 2>/dev/null || true)" = "$HEAD_SHA" ] && \
   [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ] && jq -e --arg id "$ACTIVITY_ID" 'index($id)' "$CODEX_HOME/sessions/.github-deliveries.json" >/dev/null; then
-  result skipped; exit 0
+  finish_without_review skipped; exit 0
 fi
 if [ -z "${CHECK_ID:-}" ]; then
   CHECK_ID=$(retry gh api "repos/$GITHUB_REPOSITORY/check-runs" -f name=code-review -f head_sha="$HEAD_SHA" -f status=in_progress \
