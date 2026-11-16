@@ -1550,15 +1550,15 @@ test("a run skips activity another review consumed, and strangers, but never a n
   expect(push).not.toContain("SKIP=true");
 });
 
-test("hosted enrollment skips every action step before saving credentials", () => {
+test("a broker skip response skips every action step before saving credentials", () => {
   const {dir,env}=fixture(), output=join(dir,"github-output");
-  executable(dir,"curl",`#!/bin/sh\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"hosted":true}' ;; esac\n`);
+  executable(dir,"curl",`#!/bin/sh\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"skip":true}' ;; esac\n`);
   const steps=Bun.YAML.parse(readFileSync(join(root,"action.yml"),"utf8")).runs.steps;
   const result=Bun.spawnSync(["bash","-eo","pipefail","-c",steps[0].run],{env:{...env,GITHUB_OUTPUT:output,ACTIONS_ID_TOKEN_REQUEST_URL:"https://example.test/oidc?fixture=1",ACTIONS_ID_TOKEN_REQUEST_TOKEN:"fixture",BROKER:"https://example.test"},timeout:3000});
   expect(result.exitCode).toBe(0);
-  expect(readFileSync(output,"utf8")).toBe("hosted=true\n");
+  expect(readFileSync(output,"utf8")).toBe("skip=true\n");
   expect(existsSync(join(dir,"gh/hosts.yml"))).toBe(false);
-  for(const step of steps.slice(1)) expect(step.if).toContain("steps.app-token.outputs.hosted != 'true'");
+  for(const step of steps.slice(1)) expect(step.if).toContain("steps.app-token.outputs.skip != 'true'");
 });
 
 test("check suite identities retain their suite id and reviewed head", () => {

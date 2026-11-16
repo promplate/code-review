@@ -11,7 +11,7 @@ set -eo pipefail
 : "${BOT_LOGIN:?GitHub App login}"
 : "${GITHUB_EVENT_PATH:?Verified event payload}"
 : "${ACTIVITY_ID:?Stable event identity}"
-: "${DETAILS_URL:?Authenticated platform run page}"
+: "${DETAILS_URL:?Authenticated hosted run page}"
 export REVIEW_HOSTED=true GITHUB_SERVER_URL=https://github.com AGENT=false
 export GITHUB_EVENT_NAME="${EVENT_NAME:-pull_request}" SESSION_KEY="${SESSION_KEY:-pr-$PR_NUMBER}"
 export GITHUB_RUN_ID="${REVIEW_RUN_ID:-$ACTIVITY_ID}" GITHUB_RUN_ATTEMPT="${REVIEW_RUN_ATTEMPT:-1}"
@@ -35,7 +35,7 @@ cleanup() {
     # A supplied check may hold an earlier verdict until this attempt successfully starts it.
     if [ "$check_started" = true ] && [ "$check_published" != true ]; then
       retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
-        -f 'output[title]=Review failed' -f 'output[summary]=The hosted review failed before completing publication. See the platform run for details.' </dev/null >/dev/null || true
+        -f 'output[title]=Review failed' -f 'output[summary]=The hosted review failed before completing publication. See the hosted run for details.' </dev/null >/dev/null || true
     fi
   fi
   [ -z "${EYES_REACTION_PATH:-}" ] || retry gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null >/dev/null || true

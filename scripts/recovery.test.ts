@@ -284,9 +284,9 @@ test("every publication precedes checkpointing and snapshot upload, while merge 
   expect(step("Checkpoint published review").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session").if).not.toMatch(/always\(|failure\(/);
   expect(step("Save codex session")["continue-on-error"]).toBe(true);
-  expect(step("Drop older session snapshots").if).toBe("steps.app-token.outputs.hosted != 'true' && (steps.save-session.outputs.artifact-id)");
+  expect(step("Drop older session snapshots").if).toBe("steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)");
   // A failed publication skips the snapshot, but earlier saved drafts can still be released.
-  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.hosted != 'true' && (always())");
+  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.skip != 'true' && (always())");
 });
 
 function sessionSnapshots() {
@@ -397,7 +397,7 @@ test("a fork retries the download only after the opener prunes its selected snap
   const old = artifact(20, name, 10, 10), next = artifact(19, name + "-next", 11, 11);
   const output = join(setup.dir, "github-output");
   expect(step("Restore the session to fork")["continue-on-error"]).toBe(true);
-  expect(step(find).if).toBe("steps.app-token.outputs.hosted != 'true' && (steps.restore-fork.outcome == 'failure')");
+  expect(step(find).if).toBe("steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'failure')");
   expect(step(restore).with).toMatchObject({
     "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
     path: "${{ env.CODEX_HOME }}/fork",
@@ -666,7 +666,7 @@ test("a consumed retry still releases its cached pending drafts", () => {
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
   writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), "https://github.com/owner/repo/pull/8\n");
   expect(gate(setup)).toContain("SKIP=true");
-  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.hosted != 'true' && (always())");
+  expect(step("Mark forked PRs ready").if).toBe("steps.app-token.outputs.skip != 'true' && (always())");
   expect(run("Mark forked PRs ready", setup, { SKIP: "true", SNAPSHOT_ID: "" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe("https://github.com/owner/repo/pull/8\n");
 });

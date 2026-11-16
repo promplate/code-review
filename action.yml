@@ -50,7 +50,7 @@ runs:
         }
         save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
         # refill mints, saves the token gh and git read, and schedules the next refresh from the expiry the broker reports.
-        refill() { minted=$(mint) || return; if [ "$(jq -r '.hosted // false' <<< "$minted")" = true ]; then echo "hosted=true" >> "$GITHUB_OUTPUT"; return 2; fi; save "$(jq -r .token <<< "$minted")" && interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) )); }
+        refill() { minted=$(mint) || return; if [ "$(jq -r '.skip // false' <<< "$minted")" = true ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; return 2; fi; save "$(jq -r .token <<< "$minted")" && interval=$(( $(jq -r '.expires_at | fromdateiso8601' <<< "$minted") - $(date +%s) )); }
         mkdir -p "$RUNNER_TEMP/gh"
         status=0; refill || status=$?
         [ "$status" != 2 ] || exit 0
@@ -71,7 +71,7 @@ runs:
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
     - name: Resolve the review target
-      if: steps.app-token.outputs.hosted != 'true'
+      if: steps.app-token.outputs.skip != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -148,14 +148,14 @@ runs:
 
     - name: Find codex session snapshot
       id: snapshot
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: bash "$GITHUB_ACTION_PATH/scripts/session-artifacts.sh" "$SESSION_KEY"
 
     - name: Restore codex session
-      if: steps.app-token.outputs.hosted != 'true' && (steps.snapshot.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.snapshot.outputs.id)
       uses: actions/download-artifact@v8
       with:
         artifact-ids: ${{ steps.snapshot.outputs.id }}
@@ -165,7 +165,7 @@ runs:
 
     - name: Restore legacy session cache
       id: session-cache
-      if: steps.app-token.outputs.hosted != 'true' && (steps.snapshot.outcome == 'success' && !steps.snapshot.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.snapshot.outcome == 'success' && !steps.snapshot.outputs.id)
       uses: actions/cache/restore@v6
       with:
         # Branch names may contain "-" but never ":", so the key's prefix matches only this session's snapshots.
@@ -180,7 +180,7 @@ runs:
           code-review-default-${{ env.SESSION_KEY }}:
 
     - name: Skip activity another review already handled
-      if: steps.app-token.outputs.hosted != 'true'
+      if: steps.app-token.outputs.skip != 'true'
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -219,7 +219,7 @@ runs:
         esac
 
     - uses: actions/checkout@v7
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       with:
         token: ${{ steps.app-token.outputs.token }}
         # The commit under review, not its branch: a merged PR's branch is deleted, and a force push moves the name.
@@ -228,7 +228,7 @@ runs:
         persist-credentials: false
 
     - name: Skip pushes reviewed PRs already cover
-      if: steps.app-token.outputs.hosted != 'true' && (github.event_name == 'push' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (github.event_name == 'push' && env.SKIP != 'true')
       shell: bash
       env:
         BEFORE: ${{ github.event.before }}
@@ -254,7 +254,7 @@ runs:
 
     - name: Open check run
       id: check
-      if: steps.app-token.outputs.hosted != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -285,7 +285,7 @@ runs:
         echo "CHECK_ID=$id" >> "$GITHUB_ENV"
 
     - name: Mark PR as reviewing
-      if: steps.app-token.outputs.hosted != 'true' && (env.PR_NUMBER && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.PR_NUMBER && env.SKIP != 'true')
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -294,7 +294,7 @@ runs:
         printf 'EYES_REACTION_PATH=%s\nEYES_REACTION_ID=%s\n' "$EYES_REACTION_PATH" "$EYES_REACTION_ID" >> "$GITHUB_ENV"
 
     - name: Subscribe PR updates via SSE
-      if: steps.app-token.outputs.hosted != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
       shell: bash
       run: |
         # The webhook that started this run has the shape the broker relays, so the hooks read one stream and dedupe by id.
@@ -308,7 +308,7 @@ runs:
 
     - name: Find the session to fork
       id: fork-snapshot
-      if: steps.app-token.outputs.hosted != 'true' && (steps.check.outputs.fork-key && !steps.snapshot.outputs.id && !steps.session-cache.outputs.cache-matched-key && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (steps.check.outputs.fork-key && !steps.snapshot.outputs.id && !steps.session-cache.outputs.cache-matched-key && env.SKIP != 'true')
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -317,7 +317,7 @@ runs:
 
     - name: Restore the session to fork
       id: restore-fork
-      if: steps.app-token.outputs.hosted != 'true' && (steps.fork-snapshot.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.fork-snapshot.outputs.id)
       continue-on-error: true
       uses: actions/download-artifact@v8
       with:
@@ -328,7 +328,7 @@ runs:
 
     - name: Find a replacement session to fork
       id: fork-replacement
-      if: steps.app-token.outputs.hosted != 'true' && (steps.restore-fork.outcome == 'failure')
+      if: steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'failure')
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -341,7 +341,7 @@ runs:
 
     - name: Restore the replacement session to fork
       id: restore-fork-replacement
-      if: steps.app-token.outputs.hosted != 'true' && (steps.fork-replacement.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.fork-replacement.outputs.id)
       uses: actions/download-artifact@v8
       with:
         artifact-ids: ${{ steps.fork-replacement.outputs.id }}
@@ -352,7 +352,7 @@ runs:
     # Paths are part of the cache version, so a legacy cache restores into the opening review's home.
     - name: Restore the legacy session to fork
       id: fork
-      if: steps.app-token.outputs.hosted != 'true' && (steps.fork-snapshot.outcome == 'success' && !steps.fork-snapshot.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.fork-snapshot.outcome == 'success' && !steps.fork-snapshot.outputs.id)
       uses: actions/cache/restore@v6
       with:
         path: |
@@ -365,7 +365,7 @@ runs:
           code-review-default-${{ steps.check.outputs.fork-key }}:
 
     - name: Run setup
-      if: steps.app-token.outputs.hosted != 'true' && (inputs.setup != '' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (inputs.setup != '' && env.SKIP != 'true')
       shell: bash
       env:
         SETUP: ${{ inputs.setup }}
@@ -373,7 +373,7 @@ runs:
 
     - name: Reuse the runner's Bun
       id: bun
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       env:
         BUN_VERSION: ${{ inputs.bun-version }}
@@ -381,12 +381,12 @@ runs:
         if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
 
     - uses: oven-sh/setup-bun@v2
-      if: steps.app-token.outputs.hosted != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
       with:
         bun-version: ${{ inputs.bun-version }}
 
     - name: Install uv
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       run: |
         # Everything uv downloads or builds stays under the job's temp directory, so a runner reused by other jobs keeps what it already had.
@@ -398,7 +398,7 @@ runs:
 
     - name: Fetch config files
       id: catalog
-      if: steps.app-token.outputs.hosted != 'true' && ((inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && ((inputs.codex-auth-file != '' || inputs.model-catalog-file != '') && env.SKIP != 'true')
       shell: bash
       env:
         AUTH_FILE: ${{ inputs.codex-auth-file }}
@@ -434,7 +434,7 @@ runs:
         [ -z "$AUTH_FILE" ] || echo "CODEX_AUTH_FILE=$RUNNER_TEMP/auth.json" >> "$GITHUB_ENV"
 
     - name: Configure codex
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       env:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -451,7 +451,7 @@ runs:
         [ -z "$TRACE_TO_LANGFUSE" ] || echo "TRACE_TO_LANGFUSE=$TRACE_TO_LANGFUSE" >> "$GITHUB_ENV"
 
     - name: Run codex review
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       env:
         BEFORE: ${{ github.event.before }}
@@ -468,7 +468,7 @@ runs:
 
     - name: Publish check run
       id: publish
-      if: steps.app-token.outputs.hosted != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
       shell: bash
       env:
         REVIEW_ACTIONS_TOKEN: ${{ github.token }}
@@ -476,7 +476,7 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh"
 
     - name: Publish other commit verdicts
-      if: steps.app-token.outputs.hosted != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
       shell: bash
       env:
         REVIEW_ACTIONS_TOKEN: ${{ github.token }}
@@ -484,21 +484,21 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/scripts/publish-commits.sh"
 
     - name: Publish PR review
-      if: steps.app-token.outputs.hosted != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true')
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/publish-pr.sh"
 
     - name: Finish PR reactions
-      if: steps.app-token.outputs.hosted != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.SKIP != 'true')
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/finish-reactions.sh"
 
     - name: Write review summary
-      if: steps.app-token.outputs.hosted != 'true' && (env.SUPERSEDED != 'true' && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SUPERSEDED != 'true' && env.SKIP != 'true')
       shell: bash
       run: |
         # An agent run has no verdict to read, so its closing message is the summary; either way the page says how the run ended.
@@ -511,13 +511,13 @@ runs:
         printf '%s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Checkpoint published review
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 
     - name: Save codex session
       id: save-session
-      if: steps.app-token.outputs.hosted != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
       # An upload failure must not discard a completed review.
       continue-on-error: true
       uses: actions/upload-artifact@v7
@@ -533,7 +533,7 @@ runs:
           ${{ env.CODEX_HOME }}/check-runs.jsonl
 
     - name: Drop older session snapshots
-      if: steps.app-token.outputs.hosted != 'true' && (steps.save-session.outputs.artifact-id)
+      if: steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)
       continue-on-error: true
       shell: bash
       env:
@@ -550,7 +550,7 @@ runs:
     - name: Mark forked PRs ready
       # A failed publication skips the snapshot, so the pending list is kept beside the session until every draft is ready.
       # Consumed retries still need to release drafts restored from the session.
-      if: steps.app-token.outputs.hosted != 'true' && (always())
+      if: steps.app-token.outputs.skip != 'true' && (always())
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -578,14 +578,14 @@ runs:
         if [ -z "$left" ]; then rm -f "$CODEX_HOME/sessions/.github-pending-drafts"; else printf '%s' "$left" > "$CODEX_HOME/sessions/.github-pending-drafts"; fi
 
     - name: Merge PR
-      if: steps.app-token.outputs.hosted != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.PR_AUTHOR != env.BOT_LOGIN && env.SKIP != 'true')
+      if: steps.app-token.outputs.skip != 'true' && (env.SUPERSEDED != 'true' && env.PR_NUMBER && env.PR_AUTHOR != env.BOT_LOGIN && env.SKIP != 'true')
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
 
     - name: Upload Codex events
-      if: steps.app-token.outputs.hosted != 'true' && (always())
+      if: steps.app-token.outputs.skip != 'true' && (always())
       # The events only measure the run; losing them must not fail a review that is already published.
       continue-on-error: true
       uses: actions/upload-artifact@v7
@@ -595,7 +595,7 @@ runs:
         if-no-files-found: ignore
 
     - name: Close check run on failure or cancellation
-      if: steps.app-token.outputs.hosted != 'true' && ((failure() || cancelled()) && steps.check.outputs.id)
+      if: steps.app-token.outputs.skip != 'true' && ((failure() || cancelled()) && steps.check.outputs.id)
       shell: bash
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
@@ -610,7 +610,7 @@ runs:
         [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
 
     - name: Stop the SSE subscription
-      if: steps.app-token.outputs.hosted != 'true' && (always())
+      if: steps.app-token.outputs.skip != 'true' && (always())
       shell: bash
       run: |
         kill "$SSE_PID" "$TOKEN_PID" 2>/dev/null || true
@@ -618,7 +618,7 @@ runs:
         tail -3 "$RUNNER_TEMP/token.err" 2>/dev/null || true
 
     - name: Drop the plugin cache
-      if: steps.app-token.outputs.hosted != 'true' && (always())
+      if: steps.app-token.outputs.skip != 'true' && (always())
       shell: bash
       # Every home syncs its own ~90MB copy of the curated plugins, which self-hosted runners would keep in /tmp.
       # A Resolve failure leaves CODEX_HOME unset, and `rm -rf "/.tmp"` would delete a real directory on a self-hosted runner.
