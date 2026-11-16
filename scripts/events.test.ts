@@ -20,10 +20,12 @@ function fixture() {
   homes.push(dir);
   writeFileSync(join(dir, "sse.jsonl"), "");
   writeFileSync(join(dir, "injected.log"), "");
+  writeFileSync(join(dir, "event.json"), "{}");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
     CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main",
     GITHUB_STEP_SUMMARY: join(dir, "summary.md"), DEFAULT_BRANCH: "main" };
+  Object.assign(env, { GITHUB_EVENT_PATH: join(dir, "event.json") });
   return { dir, env };
 }
 
@@ -1559,6 +1561,18 @@ test("a broker skip response skips every action step before saving credentials",
   expect(readFileSync(output,"utf8")).toBe("skip=true\n");
   expect(existsSync(join(dir,"gh/hosts.yml"))).toBe(false);
   for(const step of steps.slice(1)) expect(step.if).toContain("steps.app-token.outputs.skip != 'true'");
+});
+
+test("token requests identify PR targets without treating issue or branch jobs as PRs", () => {
+  const steps=Bun.YAML.parse(readFileSync(join(root,"action.yml"),"utf8")).runs.steps;
+  for (const [body,pr,target] of [[{pull_request:{number:7}},"","pull_request"],[{issue:{pull_request:{}}},"","pull_request"],[{},"7","pull_request"],[{issue:{number:7}},"","other"],[{ref:"refs/heads/main"},"","other"]] as const) {
+    const {dir,env}=fixture();
+    writeFileSync(join(dir,"event.json"),JSON.stringify(body));
+    executable(dir,"curl",`#!/bin/sh\nprintf '%s\\n' "$@" >> "$RUNNER_TEMP/curl-args"\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"skip":true}' ;; esac\n`);
+    const result=Bun.spawnSync(["bash","-eo","pipefail","-c",steps[0].run],{env:{...env,DISPATCHED_PR:pr,GITHUB_OUTPUT:join(dir,"github-output"),ACTIONS_ID_TOKEN_REQUEST_URL:"https://example.test/oidc?fixture=1",ACTIONS_ID_TOKEN_REQUEST_TOKEN:"fixture",BROKER:"https://example.test"},timeout:3000});
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(join(dir,"curl-args"),"utf8")).toContain(`X-Review-Target: ${target}\n`);
+  }
 });
 
 test("check suite identities retain their suite id and reviewed head", () => {

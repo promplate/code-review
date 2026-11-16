@@ -42,11 +42,14 @@ runs:
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
+        DISPATCHED_PR: ${{ github.event.client_payload.pr || github.event.inputs.pr }}
       run: |
         : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Grant the job id-token: write so it can authenticate as the App.}"
+        # Tell the broker which execution this token is for, so repository routing can preserve unrelated issue/branch jobs.
+        export REVIEW_TARGET=$(jq -r --arg pr "${DISPATCHED_PR:-}" 'if .pull_request or .issue.pull_request or ($pr != "" and $pr != "false") then "pull_request" else "other" end' "$GITHUB_EVENT_PATH")
         mint() {
           oidc=$(bash "$GITHUB_ACTION_PATH/scripts/oidc.sh" "$BROKER")
-          curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" "$BROKER/token"
+          curl -sS --fail-with-body --retry 5 -X POST -H "Authorization: Bearer $oidc" -H "X-Review-Target: $REVIEW_TARGET" "$BROKER/token"
         }
         save() { printf 'github.com:\n    user: x-access-token\n    oauth_token: %s\n' "$1" > "$RUNNER_TEMP/gh/hosts.new" && mv "$RUNNER_TEMP/gh/hosts.new" "$RUNNER_TEMP/gh/hosts.yml"; }
         # refill mints, saves the token gh and git read, and schedules the next refresh from the expiry the broker reports.
