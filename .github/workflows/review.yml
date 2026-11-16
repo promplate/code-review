@@ -35,6 +35,10 @@ on:
         description: Path in this repository to a Codex model catalog, read from the default branch.
         type: string
         default: ""
+      codex-config:
+        description: Contents of a Codex config.toml. The matching secret takes precedence.
+        type: string
+        default: ""
       codex-config-file:
         description: Path in this repository to a Codex config.toml, read from the default branch; the `codex-config` secret takes precedence.
         type: string
@@ -48,7 +52,7 @@ on:
         type: string
         default: ""
     secrets:
-      # Either the secret or the matching `*-file` input supplies it; the action requires one of them.
+      # Existing callers can pass the config as a secret.
       codex-config:
         required: false
       codex-auth:
@@ -78,7 +82,7 @@ jobs:
     steps:
       - uses: $/
         with:
-          codex-config: ${{ secrets.codex-config }}
+          codex-config: ${{ secrets.codex-config || inputs.codex-config }}
           codex-auth: ${{ secrets.codex-auth }}
           service-tier: ${{ inputs.service-tier }}
           session-key: ${{ inputs.session-key }}
