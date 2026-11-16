@@ -135,7 +135,7 @@ The action reuses `bun-version` from the runner or installs it, and uses Bun for
 
 ## Options
 
-The App needs **Contents**, **Pull requests**, **Checks** and **Issues** write access. Issues write is needed even when the review never opens one: every PR review reacts with eyes to the pull request or the comment that triggered it, and edits or deletes its own comments. The broker asks for whichever Issues level the installation grants, so a read-only installation fails at the first reaction rather than only losing issue creation.
+The App needs **Contents**, **Pull requests**, **Checks** and **Issues** write access. Issues write is needed even when the review never opens one: reactions to the pull request body or conversation comments require it, including the final verdict reactions. The broker asks for whichever Issues level the installation grants, so a read-only installation fails when posting those reactions rather than only losing issue creation.
 
 `id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
 
