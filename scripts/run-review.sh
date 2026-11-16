@@ -86,7 +86,7 @@ if [ -n "$FORK_KEY" ]; then
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "You opened PR #$PR_NUMBER to keep that fix out of the change you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
      Run \`git diff $RANGE\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
-elif [ -f "$CODEX_HOME/last-thread-id" ]; then
+elif [ -s "$CODEX_HOME/last-thread-id" ]; then
   $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "$CONTINUE"
@@ -108,7 +108,7 @@ fi
 [ "$AGENT" = true ] || [ "$ran" = 1 ] || jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "item.completed" and .item.type == "agent_message") | .item.text] | last // empty' \
   < "$RUNNER_TEMP/codex.jsonl" > "$RUNNER_TEMP/review.json"
 # Recorded before the verdict check, so a fresh review can resume the thread it just started.
-jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id' \
+jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id // empty' \
   < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
 # A turn can end without a verdict, such as when the model stops to report progress; ask once more and let it name what it still does not know.
 # A commit without a conclusion, or without the one being reviewed, would fail the publish step instead of this one.

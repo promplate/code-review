@@ -71,6 +71,7 @@ test("a head that moves during hosted review is superseded without publishing a 
 test.each(["codex-fails", "publish-fails"])("hosted %s leaves the publication checkpoint uncommitted", mode => {
   const setup=fixture(mode), result=setup.run();
   expect(result.exitCode).not.toBe(0);
+  if (mode === "codex-fails") expect(readFileSync(join(setup.state,"last-thread-id"),"utf8")).toBe("");
   expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"failed",published:false});
   expect(Bun.file(join(setup.state,"sessions/.github-published-head")).size).toBe(0);
 });
