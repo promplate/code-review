@@ -151,7 +151,7 @@ Set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` and `LANGFUSE_BASE_URL` in the 
 
 ## Hosted execution
 
-`scripts/hosted-review.sh` runs the same configuration, Codex invocation, live-event hooks, publication and merge helpers that the action calls. It runs inside a prepared Linux environment, with Bash 5.1+, Bun, Codex, uv, gh, git, jq and curl. The hosting service owns authorization, a serialized queue per repository/session, installation-token renewal, sandbox cleanup and durable session storage.
+`scripts/hosted-review.sh` runs the same configuration, Codex invocation, live-event hooks, publication and merge helpers that the action calls. It runs inside a prepared Linux environment, with Bash 5.1+, Bun, Codex, uv, gh, git, jq, curl and file. The hosting service owns authorization, a serialized queue per repository/session, installation-token renewal, sandbox cleanup and durable session storage.
 
 Run it from a full checkout of the scheduled PR head with the default branch fetched under `refs/remotes/origin/`. Supply these environment variables:
 
