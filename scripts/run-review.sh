@@ -117,11 +117,11 @@ jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")
 verdict() { jq -e '.summary and (.commits | type == "array" and length > 0) and all(.commits[]; .conclusion == "success" or .conclusion == "failure") and any(.commits[]; .sha == env.HEAD_SHA)
   and (if .conclusion == "failure" or any(.commits[]; .sha == env.HEAD_SHA and .conclusion == "failure") then (.summary | test("\\S")) or any(.annotations[]; .level == "failure") else true end)' "$RUNNER_TEMP/review.json" > /dev/null 2>&1; }
 # A hosted run can see the new head through live activity while its check still belongs to the scheduled head.
-check_for_supersession() {
+supersede_stale_hosted_check() {
   [ "$REVIEW_HOSTED" != true ] || bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh" --superseded-only
 }
 if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; then
-  check_for_supersession
+  supersede_stale_hosted_check
   if [ ! -s "$RUNNER_TEMP/superseded" ]; then
     # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
     if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
@@ -133,7 +133,7 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
       "Reply with the full review JSON for $SUBJECT now, running no further commands, with every field named as in $GITHUB_ACTION_PATH/review-schema.json. Put whatever remains unknown into the summary and judge on what you verified." \
       < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" || {
         retry_status=$?
-        check_for_supersession
+        supersede_stale_hosted_check
         [ -s "$RUNNER_TEMP/superseded" ] || exit "$retry_status"
       }
   fi
@@ -179,7 +179,7 @@ mkdir -p "$CODEX_HOME/sessions"
 [ ! -s "$RUNNER_TEMP/forked-prs" ] || cat "$RUNNER_TEMP/forked-prs" >> "$CODEX_HOME/sessions/.github-pending-drafts"
 # Failing here leaves a red check the author cannot read, so the response that failed is posted where they do read.
 if [ "$AGENT" != true ] && [ ! -s "$RUNNER_TEMP/superseded" ] && ! verdict; then
-  check_for_supersession
+  supersede_stale_hosted_check
   [ ! -s "$RUNNER_TEMP/superseded" ] || exit 0
   # Branch instructions leave the commit to the reviewer; this diagnostic belongs to the reviewed head.
   [ ! -s "$RUNNER_TEMP/review.json" ] || printf 'This review ended without a usable verdict. The reviewer returned:\n\n```json\n%s\n```\n' \
