@@ -65,7 +65,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
   writeFileSync(config, 'model = "test-model"\n'); writeFileSync(auth, '{"tokens":{"refresh_token":"initial"}}');
   const env={...process.env, PATH:`${bin}:${process.env.PATH}`, TEST_MODE:mode, GITHUB_ACTION_PATH:root,GITHUB_REPOSITORY:"owner/repo",PR_NUMBER:"7", HEAD_SHA:head, CODEX_HOME:state,
     RUNNER_TEMP:temp, GH_CONFIG_DIR:join(dir,"gh"),BOT_LOGIN:"reviewer[bot]", GITHUB_EVENT_PATH:event,ACTIVITY_ID:"delivery",DETAILS_URL:"https://platform.example/reviews/run",DEFAULT_BRANCH:"main",
-    CODEX_CONFIG_FILE:config,CODEX_AUTH_FILE:auth,REVIEW_RUN_ID:"job-id",EVENT_NAME:"pull_request",EYES_REACTION_ID:"",EYES_REACTION_PATH:""};
+    CODEX_CONFIG_FILE:config,CODEX_AUTH_FILE:auth,REVIEW_RUN_ID:"job-id",EVENT_NAME:"pull_request",CHECK_ID:"",EYES_REACTION_ID:"",EYES_REACTION_PATH:""};
   return {head,state,temp,env,bin, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
 
