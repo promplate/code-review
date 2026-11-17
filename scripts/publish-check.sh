@@ -27,9 +27,6 @@ for sha in $(git rev-parse HEAD) $PUSHED; do
     --jq .status </dev/null)" = ahead ]; then NEWER=$sha; fi
 done
 fi
-if [ -z "$NEWER" ] && [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
-  echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
-fi
 if [ -n "$NEWER" ]; then
   [ -z "${GITHUB_ENV:-}" ] || echo "SUPERSEDED=true" >> "$GITHUB_ENV"
   printf '%s\n' "$NEWER" > "$RUNNER_TEMP/superseded"
@@ -42,6 +39,11 @@ if [ -n "$NEWER" ]; then
   # The run that continues on the newer commit keeps its own reaction; this one is done waiting.
   [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null
   exit 0
+fi
+# Hosted verdict recovery only needs to close a superseded check. Its verdict may be missing or invalid.
+[ "${1:-}" != --superseded-only ] || exit 0
+if [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
+  echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
 fi
 jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
 include "summary";

@@ -965,7 +965,8 @@ test("a failure verdict has to name what blocks it", () => {
 test("an unusable verdict is posted to the PR or reviewed commit", () => {
   const run = step("Run codex review").run;
   const define = run.match(/verdict\(\) \{[\s\S]*?; \}/)![0];
-  const report = run.match(/if \[ "\$AGENT" != true \] && ! verdict; then[\s\S]*?\nfi/)![0];
+  const supersede = run.match(/supersede_stale_hosted_check\(\) \{[\s\S]*?\n\}/)![0];
+  const report = run.match(/if \[ "\$AGENT" != true \] && \[ ! -s "\$RUNNER_TEMP\/superseded" \] && ! verdict; then[\s\S]*?\nfi/)![0];
   for (const [subject, args] of [
     ["PR", ["pr", "comment", "7", "--body-file", "-"]],
     ["branch", ["api", "repos/owner/repo/commits/head/comments", "-F", "body=@-"]],
@@ -978,7 +979,7 @@ writeFileSync(process.env.RUNNER_TEMP + "/comment-args", JSON.stringify(process.
 writeFileSync(process.env.RUNNER_TEMP + "/comment-body", await Bun.stdin.text());
 `);
     writeFileSync(join(dir, "review.json"), "unfinished response");
-    const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${command}\n${define}\n${report}`], { env });
+    const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${command}\n${define}\n${supersede}\n${report}`], { env });
     expect(result.exitCode).toBe(1);
     expect(result.stderr.toString()).toBe("");
     expect(JSON.parse(readFileSync(join(dir, "comment-args"), "utf8"))).toEqual(args);

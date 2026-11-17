@@ -91,7 +91,9 @@ fi
 . "$GITHUB_ACTION_PATH/scripts/configure-review.sh"
 export MODEL_NAME="$(bun -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
 bash "$GITHUB_ACTION_PATH/scripts/run-review.sh"
-bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh"
+if [ ! -s "$RUNNER_TEMP/superseded" ]; then
+  bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh"
+fi
 check_published=true
 if [ -f "$RUNNER_TEMP/superseded" ]; then result superseded "$(cat "$RUNNER_TEMP/superseded")"; exit 0; fi
 bash "$GITHUB_ACTION_PATH/scripts/publish-commits.sh"
