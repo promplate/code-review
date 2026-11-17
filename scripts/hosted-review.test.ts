@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -66,7 +66,7 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
   const env={...process.env, PATH:`${bin}:${process.env.PATH}`, TEST_MODE:mode, GITHUB_ACTION_PATH:root,GITHUB_REPOSITORY:"owner/repo",PR_NUMBER:"7", HEAD_SHA:head, CODEX_HOME:state,
     RUNNER_TEMP:temp, GH_CONFIG_DIR:join(dir,"gh"),BOT_LOGIN:"reviewer[bot]", GITHUB_EVENT_PATH:event,ACTIVITY_ID:"delivery",DETAILS_URL:"https://platform.example/reviews/run",DEFAULT_BRANCH:"main",
     CODEX_CONFIG_FILE:config,CODEX_AUTH_FILE:auth,REVIEW_RUN_ID:"job-id",EVENT_NAME:"pull_request",CHECK_ID:"",EYES_REACTION_ID:"",EYES_REACTION_PATH:""};
-  return {head,state,temp,env,bin, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
+  return {head,state,temp,env,bin,checkout, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
 
 test("hosted entry runs shared review, publishes at the exact head and returns refreshed credentials", () => {
@@ -203,4 +203,22 @@ test("initial lookup failures leave supplied published checks untouched", () => 
   const calls=readFileSync(join(setup.temp,"calls"),"utf8").trim().split("\n").map(line=>JSON.parse(line));
   expect(calls.length).toBeGreaterThan(0);
   expect(calls.every(args=>args[0]==="api"&&args[1]==="repos/owner/repo/pulls/7")).toBe(true);
+});
+
+test("the optional hosted step index points into the combined process log", () => {
+  const setup = fixture(), output = join(setup.temp, "output.log"), index = join(setup.temp, "steps");
+  const fd = openSync(output, "w");
+  const result = Bun.spawnSync(["bash", join(root, "scripts/hosted-review.sh")], {
+    cwd: setup.checkout, env: { ...setup.env, REVIEW_OUTPUT_LOG: output, REVIEW_STEP_INDEX: index }, stdout: fd, stderr: fd, timeout: 15000,
+  });
+  closeSync(fd);
+  expect(result.exitCode).toBe(0);
+  const rows = readFileSync(index, "utf8").trim().split("\n").map(line => line.split(" "));
+  const log = readFileSync(output);
+  expect(rows.map(([step]) => step)).toEqual(["resolve", "open-check", "configure", "review", "publish-check", "publish-commits", "publish-pr", "checkpoint"]);
+  const offsets = rows.map(([, value]) => Number(value));
+  expect(offsets).toEqual([...new Set(offsets)].sort((a, b) => a - b));
+  expect(offsets.every(offset => log[offset - 1] === 10)).toBe(true);
+  const review = rows.findIndex(([step]) => step === "review");
+  expect(log.subarray(offsets[review], offsets[review + 1]).length).toBeGreaterThan(1);
 });
