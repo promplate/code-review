@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -18,13 +18,18 @@ function fixture(mode = "success") {
   executable("tail", "#!/bin/sh\nexit 0\n");
   executable("sleep", "#!/bin/sh\nexit 0\n");
   executable("gh", `#!${process.execPath}
-import {appendFileSync, readFileSync} from 'node:fs';
-const args=process.argv.slice(2), path=args[1], mode=process.env.TEST_MODE;
-appendFileSync(process.env.RUNNER_TEMP+'/calls', JSON.stringify(args)+'\\n');
+import {appendFileSync, existsSync, readFileSync} from 'node:fs';
+const args=process.argv.slice(2), path=args[1], mode=process.env.TEST_MODE, temp=process.env.RUNNER_TEMP;
+appendFileSync(temp+'/calls', JSON.stringify(args)+'\\n');
 if(args[0]==='pr' && path==='merge' && mode==='merge-fails') process.exit(1);
 if(path?.endsWith('/pulls/7') && !args.includes('-X')) {
  if(mode==='initial-read-fails') process.exit(1);
- if(args.includes('--jq')) {const query=args[args.indexOf('--jq')+1];console.log(query==='.user.login'?'author':query.includes('.state')?'open '+process.env.HEAD_SHA:mode==='moved' ? 'new-head' : process.env.HEAD_SHA); process.exit(0);}
+ if(args.includes('--jq')) {
+  const query=args[args.indexOf('--jq')+1];
+  const moved=mode==='moved'||mode==='stale-verdict'||(mode.startsWith('moved-on-retry')&&existsSync(temp+'/retried'));
+  console.log(query==='.user.login'?'author':query.includes('.state')?'open '+process.env.HEAD_SHA:moved?'new-head':process.env.HEAD_SHA);
+  process.exit(0);
+ }
  console.log(JSON.stringify({head:{sha:mode==='initial-moved'?'new-head':process.env.HEAD_SHA,ref:'feature',repo:{full_name:'owner/repo'}},base:{ref:'main'},user:{login:'author'},draft:false}));
 } else if(path?.startsWith('repos/') && path.includes('/pulls/7/reviews')) {
  if(args.includes('--input')) { const body=readFileSync(args[args.indexOf('--input')+1],'utf8'); appendFileSync(process.env.RUNNER_TEMP+'/reviews',body); if(mode==='publish-fails') process.exit(1); }
@@ -35,12 +40,21 @@ else if(path?.includes('/reactions?')) console.log('[]');
 else if(path?.endsWith('/reactions')) console.log('9');
 else if(path?.endsWith('/check-runs') && args.includes('--jq')) console.log('10');
 else if(path?.endsWith('/check-runs/42') && !args.includes('-X')) console.log(process.env.TEST_CHECK_STATUS||'completed');
-else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') await Bun.stdin.text();
+else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
+ const body=await Bun.stdin.text();
+ if(path?.includes('/check-runs/')) await Bun.write(temp+'/check.json',body);
+}
 `);
   executable("codex", `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('codex 0.169.0'); process.exit(0);}
-if(process.env.TEST_MODE==='codex-fails') process.exit(1);
-const verdict={conclusion:'success',summary:'',reactions:['+1'],commits:[{sha:process.env.HEAD_SHA,conclusion:'success'}],merge:process.env.TEST_MODE.startsWith('merge')?{method:'squash',subject:'Fixture',body:''}:null,annotations:[]};
+const mode=process.env.TEST_MODE, retry=process.argv.includes('resume');
+if(retry) await Bun.write(process.env.RUNNER_TEMP+'/retried','');
+if(mode==='codex-fails'||(retry&&mode==='moved-on-retry-error')) process.exit(1);
+const invalid=mode==='stale-verdict'||mode==='invalid-verdict'||mode.startsWith('moved-on-retry');
+const commits=invalid
+ ? [{sha:process.env.HEAD_SHA,conclusion:'failure'},{sha:'new-head',conclusion:'success'}]
+ : [{sha:process.env.HEAD_SHA,conclusion:'success'}];
+const verdict={conclusion:'success',summary:'',reactions:['+1'],commits,merge:mode.startsWith('merge')?{method:'squash',subject:'Fixture',body:''}:null,annotations:[]};
 await Bun.write(process.argv[process.argv.indexOf('--output-last-message')+1],JSON.stringify(verdict));
 await Bun.write(process.env.CODEX_HOME+'/auth.json',JSON.stringify({tokens:{refresh_token:'refreshed'}}));
 console.log(JSON.stringify({type:'thread.started',thread_id:'test-thread'}));
@@ -69,6 +83,31 @@ test("a head that moves during hosted review is superseded without publishing a 
   expect(result.exitCode).toBe(0);
   expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"superseded",currentHead:"new-head",published:false});
   expect(Bun.file(join(setup.temp,"reviews")).size).toBe(0);
+});
+
+test.each(["stale-verdict", "moved-on-retry", "moved-on-retry-error"])("hosted %s supersedes an invalid verdict without posting a diagnostic", mode => {
+  const setup = fixture(mode), result = setup.run();
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(join(setup.temp, "retried"))).toBe(mode !== "stale-verdict");
+  expect(JSON.parse(readFileSync(join(setup.temp, "result.json"), "utf8"))).toMatchObject({
+    status: "superseded", headSha: setup.head, currentHead: "new-head", published: false,
+  });
+  expect(JSON.parse(readFileSync(join(setup.temp, "check.json"), "utf8"))).toMatchObject({
+    status: "completed", conclusion: "neutral", output: { title: expect.stringContaining("Superseded by") },
+  });
+  const calls = readFileSync(join(setup.temp, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(calls.filter(args => args[1] === "repos/owner/repo/check-runs/10" && args.includes("--input"))).toHaveLength(1);
+  expect(calls.some(args => args[0] === "pr" && args[1] === "comment")).toBe(false);
+  expect(existsSync(join(setup.temp, "reviews"))).toBe(false);
+});
+
+test("an invalid verdict on the current head still retries and reports the failure", () => {
+  const setup = fixture("invalid-verdict"), result = setup.run();
+  expect(result.exitCode).not.toBe(0);
+  expect(existsSync(join(setup.temp, "retried"))).toBe(true);
+  expect(result.stdout.toString()).toContain("Codex returned no verdict");
+  expect(JSON.parse(readFileSync(join(setup.temp, "result.json"), "utf8"))).toMatchObject({status: "failed", published: false});
+  expect(existsSync(join(setup.temp, "superseded"))).toBe(false);
 });
 
 test.each(["codex-fails", "publish-fails"])("hosted %s leaves the publication checkpoint uncommitted", mode => {
