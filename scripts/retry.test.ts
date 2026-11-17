@@ -39,6 +39,8 @@ test.each([
   'unknown flag: --timeout',
   '',
   'gh: timeout is not allowed (HTTP 422)',
+  'gh: API rate limit exceeded for installation ID 123. (HTTP 403)',
+  'gh: API rate limit exceeded for installation ID 123. (HTTP 429)',
 ])("permanent failure stops without sleeping: %s", error => {
   const setup = fixture([error]);
   const result = setup.run();
@@ -76,7 +78,8 @@ test.each([
 
 test.each([
   'gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)',
-  'gh: API rate limit exceeded for installation ID 123. (HTTP 403)',
+  'gh: You have triggered an abuse detection mechanism. Please wait a few minutes before you try again. (HTTP 403)',
+  'gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 429)',
   'gh: Too Many Requests (HTTP 429)',
 ])("rate limits retry after at least a minute and replay stdin: %s", error => {
   const setup = fixture([error]);

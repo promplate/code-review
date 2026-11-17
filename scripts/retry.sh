@@ -15,10 +15,14 @@ for attempt in 1 2 3 4 5 6 7 8; do
   error=$(cat "$err")
   if [[ "$error" =~ (HTTP\ |returned\ error:\ )([0-9]{3})([^0-9]|$) ]]; then
     status=${BASH_REMATCH[2]}
-    if [[ "$status" = 429 ]] || { [[ "$status" = 403 ]] && grep -qi 'rate limit' "$err"; }; then
-      # Throttles need at least a minute, then increasing waits capped at five minutes.
-      delay=$((delay < 60 ? 60 : delay))
-      max_delay=300
+    if [[ "$status" = 403 || "$status" = 429 ]]; then
+      # Secondary limits and bare throttles are transient; a primary quota resets on its own schedule.
+      if grep -Eiq 'secondary rate limit|abuse detection' "$err" || { [[ "$status" = 429 ]] && ! grep -qi 'api rate limit exceeded' "$err"; }; then
+        delay=$((delay < 60 ? 60 : delay))
+        max_delay=300
+      else
+        exit 1
+      fi
     else
       [[ "$status" = 5?? ]] || exit 1
     fi
