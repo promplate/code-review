@@ -71,6 +71,19 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 
 In a public repository, an Actions event policy must allow the `pull_request_target` trigger: from December 2, 2026 GitHub's default policy will block it ([changelog](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)). Allow it explicitly — Settings → Actions → Policies, an event policy whose allowed events include `pull_request_target`, `issue_comment`, `pull_request_review`, and `pull_request_review_comment` (plus any other trigger the workflow enables), scoped to this workflow file ([docs](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)) — or reviews stop starting on pull request events while comment triggers keep working, each blocked run failing as a `startup_failure` with no jobs and an annotation that blames the workflow file. Private and internal repositories are unaffected.
 
+The same policy through the REST API, which is what new repositories copy; `allowed_events` is a whitelist rather than a list of exceptions, so it names every trigger the workflow keeps, plus the optional ones below, so enabling one later does not trip the policy ([endpoints](https://docs.github.com/en/rest/actions/policies)):
+
+```bash
+gh api -X POST repos/OWNER/REPO/actions/policies -H 'X-GitHub-Api-Version: 2026-03-10' --input - <<'JSON'
+{
+  "name": "allow `pull_request_target` for agent invoke",
+  "enforcement": "active",
+  "conditions": { "workflow_path": { "include": [".github/workflows/agent.yml"], "exclude": [] } },
+  "rules": [{ "type": "restrict_action_events", "parameters": { "allowed_events": ["pull_request_target", "issues", "issue_comment", "pull_request_review", "pull_request_review_comment", "push", "repository_dispatch", "workflow_dispatch"] } }]
+}
+JSON
+```
+
 The reusable workflow owns the permission check, the shared concurrency group and the review step. Pass `authorize: false` only when every trigger is trusted, such as a private repository; without the check, an unauthorized run still takes a queue slot before it exits. `service-tier` and `session-key` reach the action through the same call. `setup` runs shell on the runner before Codex is installed, for tools the review needs; add their directories to the PATH through `$GITHUB_PATH`. `instructions` appends repository rules to the prompt, after the built-in review instructions. Codex takes its config, its ChatGPT credentials and an optional model catalog, and each is either passed as contents or named as a file in this repository: `codex-config-file`, `codex-auth-file` and `model-catalog-file`. A file is read from the default branch rather than the change under review, since these settings shape how Codex runs, and contents win when both are given. The catalog input also takes precedence over a `model_catalog_json` the config names itself.
 
 A catalog that only the change under review has, such as one a pull request introduces, warns and continues without the override, leaving any `model_catalog_json` in the supplied config intact. A path that neither the default branch nor that change has, and any other fetch error, keeps retrying and fails the run.
