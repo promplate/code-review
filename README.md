@@ -73,7 +73,7 @@ In a public repository, an Actions event policy must allow the `pull_request_tar
 
 The same policy through the REST API, which is what new repositories copy; `allowed_events` is a whitelist rather than a list of exceptions, so it names every trigger the workflow keeps, plus the optional ones below, so enabling one later does not trip the policy ([endpoints](https://docs.github.com/en/rest/actions/policies)):
 
-```bash
+```sh
 gh api -X POST repos/OWNER/REPO/actions/policies -H 'X-GitHub-Api-Version: 2026-03-10' --input - <<'JSON'
 {
   "name": "allow `pull_request_target` for agent invoke",
