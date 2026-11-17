@@ -18,7 +18,7 @@ HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSI
   --jq '.[] | {(.filename): [.patch // "" | scan("@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@") | (.[0] | tonumber) as $start | [$start, $start + (.[1] // "1" | tonumber)]]}' </dev/null | jq -cs add)
 # A finding an earlier review posted and nobody resolved is already on the pull request; posting it again would open a second thread for one root cause.
 # GraphQL bot logins omit the [bot] suffix used by REST.
-THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list </dev/null \
+THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list </dev/null \
   | jq -c --arg bot "$BOT_LOGIN" '[.[] | select(.isResolved == false and .firstComment.author == ($bot | rtrimstr("[bot]"))) | {path, line, body: .firstComment.body}]')
 jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
   --arg blob "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$(git rev-parse HEAD)" \

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 const root = resolve(import.meta.dir, ".."), dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture(failReply = false) {
+function fixture({ failReply = false, failReads = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "review-threads-"));
   dirs.push(dir);
   const thread = (id: string, resolved: boolean) => ({
@@ -17,7 +17,21 @@ function fixture(failReply = false) {
   const page = (node: ReturnType<typeof thread>) => JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [node] } } } } });
   writeFileSync(join(dir, "pages"), [page(thread("4577300937", true)), page(thread("4577334863", false))].join("\n"));
   writeFileSync(join(dir, "writes"), "");
+  writeFileSync(join(dir, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   writeFileSync(join(dir, "gh"), `#!/bin/sh
+if [ "$FAIL_READS" = true ]; then
+  case "$*" in
+    *'reviewThreads(first:'*) marker=graphql ;;
+    *pulls/comments/*) marker=rest ;;
+    *) marker= ;;
+  esac
+  if [ -n "$marker" ] && [ ! -f "$FIXTURE/$marker" ]; then
+    touch "$FIXTURE/$marker"
+    echo '{"message":"Service Unavailable"}'
+    echo 'gh: HTTP 503' >&2
+    exit 1
+  fi
+fi
 case "$*" in
   *'reviewThreads(first: 100, after: $endCursor)'*)
     case "$*" in *--paginate*) cat "$FIXTURE/pages" ;; *) head -n1 "$FIXTURE/pages" ;; esac ;;
@@ -31,7 +45,7 @@ case "$*" in
 esac
 `, { mode: 0o755 });
   const env = { ...process.env, PATH: dir + ":" + process.env.PATH, FIXTURE: dir, GITHUB_ACTION_PATH: root,
-    GITHUB_REPOSITORY: "owner/repo", PR_NUMBER: "82" };
+    GITHUB_REPOSITORY: "owner/repo", PR_NUMBER: "82", FAIL_READS: String(failReads) };
   const run = (script: string, ...args: string[]) => Bun.spawnSync(["bash", join(import.meta.dir, script), ...args], { env });
   return { run: (...args: string[]) => run("review-threads.sh", ...args), legacy: (...args: string[]) => run("resolve-thread.sh", ...args),
     writes: () => readFileSync(join(dir, "writes"), "utf8") };
@@ -65,7 +79,13 @@ test("resolve by comment replies once, and thread IDs can change state without a
 });
 
 test("a failed reply stops resolution and is never retried", () => {
-  const f = fixture(true);
+  const f = fixture({ failReply: true });
   expect(f.run("resolve", "thread-4577334863", "--reply", "Fixed").exitCode).not.toBe(0);
   expect(f.writes().match(/\w+\(input:/g)).toEqual(["addPullRequestReviewThreadReply(input:"]);
+});
+
+test("resolution recovers from transient REST and GraphQL read failures before posting the reply", () => {
+  const f = fixture({ failReads: true });
+  expect(f.legacy("4577337965", "Fixed").exitCode).toBe(0);
+  expect(f.writes().match(/\w+\(input:/g)).toEqual(["addPullRequestReviewThreadReply(input:", "resolveReviewThread(input:"]);
 });
