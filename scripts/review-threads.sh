@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Review threads on $GITHUB_REPOSITORY's $PR_NUMBER. list prints a JSON array, lookup prints a thread ID.
 set -euo pipefail
+: "${PR_NUMBER:?Pull request number}"
 usage() {
   echo 'Usage: review-threads.sh list | lookup <REST comment id> | resolve <threadId> [--reply <body>] | unresolve <threadId>' >&2
   exit 2

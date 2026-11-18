@@ -34,6 +34,7 @@ if [ "$FAIL_READS" = true ]; then
 fi
 case "$*" in
   *'reviewThreads(first: 100, after: $endCursor)'*)
+    case " $* " in *" -F number=$PR_NUMBER "*) ;; *) exit 1 ;; esac
     case "$*" in *--paginate*) cat "$FIXTURE/pages" ;; *) head -n1 "$FIXTURE/pages" ;; esac ;;
   *pulls/comments/4577300937*|*pulls/comments/4577369868*) echo 4577300937 ;;
   *pulls/comments/4577337965*) echo 4577334863 ;;
