@@ -5,7 +5,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 - a `code-review` check run per commit, with annotations on the reviewed head
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise; a finding an unresolved thread already carries is not posted again
 - everything else as regular PR comments, answers to review comments in their thread
-- certain fixes committed to the PR, or opened as separate PRs when out of scope
+- certain fixes committed to the PR, or opened as separate PRs when out of scope; fixes touching `.github/workflows/` reported for a maintainer to apply
 - out-of-scope problems it is certain of but cannot fix with certainty opened as issues
 - routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
@@ -154,7 +154,7 @@ The App needs **Contents**, **Pull requests**, **Checks** and **Issues** write a
 
 PR conversation comments use the issue-comment endpoints, but [creating, editing and deleting them](https://docs.github.com/en/rest/issues/comments) also accept **Pull requests** write, which the App already requires. Issues read-only therefore does not itself prevent those PR comment operations; it still cannot support the complete PR review flow above.
 
-`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
+`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. Fixes touching `.github/workflows/` are report-only in both review and issue sessions: Codex describes the required changes for a maintainer to apply, including any dependent changes in other files. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
 
 To review as your own GitHub App, deploy the broker with that App's credentials and set `with.broker` on the action or reusable workflow to its HTTPS origin, such as `https://review-broker.example.com`. Both default to `https://cf-webhook-sse-poc.admin-c9f.workers.dev`. The action learns which login it acts as from the token it mints, so workflows never name the App.
 
