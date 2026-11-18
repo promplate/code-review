@@ -7,9 +7,12 @@
 git config --replace-all credential.https://github.com.helper ""
 git config --add credential.https://github.com.helper "!gh auth git-credential"
 # Local commits and merges need an identity too; linked worktrees share this checkout's config.
-bot_id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "users/$BOT_LOGIN" --jq .id </dev/null)
 git config user.name "$BOT_LOGIN"
-git config user.email "$bot_id+$BOT_LOGIN@users.noreply.github.com"
+# gh prints HTTP error bodies to stdout, so use only the successful attempt's ID.
+bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+  bot_id=$(gh api "users/$BOT_LOGIN" --jq .id)
+  git config user.email "$bot_id+$BOT_LOGIN@users.noreply.github.com"
+' </dev/null
 if ! command -v codex > /dev/null; then
   # A reused runner may already carry Codex; otherwise it is installed inside the job instead of the runner's global bin.
   mkdir -p "$RUNNER_TEMP/codex"
