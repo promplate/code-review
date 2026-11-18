@@ -21,6 +21,14 @@ mkdir -p "$CODEX_HOME/sessions" "$RUNNER_TEMP"
 umask 077
 rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json"
 SSE_PID= published=false check_published=false check_started=false
+# Optional progress index for callers that redirect stdout and stderr to a file. The
+# newline makes each boundary safe for line-oriented readers and credential masking.
+step() {
+  local offset
+  if [ -n "${REVIEW_STEP_INDEX:-}" ] && [ -n "${REVIEW_OUTPUT_LOG:-}" ]; then
+    { printf '\n' && offset=$(wc -c < "$REVIEW_OUTPUT_LOG") && printf '%s %s\n' "$1" "$((offset))" >> "$REVIEW_STEP_INDEX"; } || true
+  fi
+}
 retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "$@"; }
 result() {
   jq -n --arg status "$1" --arg sha "$HEAD_SHA" --arg current "${2:-}" --arg check "${CHECK_ID:-}" --argjson published "$published" \
@@ -54,6 +62,7 @@ cleanup() {
   exit "$code"
 }
 trap cleanup EXIT
+step resolve
 pr=$(retry gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" </dev/null)
 current=$(jq -r .head.sha <<< "$pr")
 if ! jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" >/dev/null; then finish_without_review skipped; exit 0; fi
@@ -70,6 +79,7 @@ if [ "$(cat "$CODEX_HOME/sessions/.github-published-head" 2>/dev/null || true)" 
   [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ] && jq -e --arg id "$ACTIVITY_ID" 'index($id)' "$CODEX_HOME/sessions/.github-deliveries.json" >/dev/null; then
   finish_without_review skipped; exit 0
 fi
+step open-check
 if [ -z "${CHECK_ID:-}" ]; then
   CHECK_ID=$(retry gh api "repos/$GITHUB_REPOSITORY/check-runs" -f name=code-review -f head_sha="$HEAD_SHA" -f status=in_progress \
     -f details_url="$DETAILS_URL" -f "external_id=$SESSION_KEY" -f 'output[title]=Restoring the Codex session…' -f 'output[summary]=Preparing the hosted review.' --jq .id </dev/null)
@@ -88,15 +98,23 @@ else
   jq -nr --arg delivery "subscription:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:unavailable" \
     '"event: subscription_recovery\ndata: \(({event: "subscription_recovery", delivery: $delivery, writer: false, body: ({reason: "subscription_failed", status: "not_configured"} | tojson)} | tojson))\n"' >> "$RUNNER_TEMP/sse.jsonl"
 fi
+step configure
 . "$GITHUB_ACTION_PATH/scripts/configure-review.sh"
 export MODEL_NAME="$(bun -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
+step review
 bash "$GITHUB_ACTION_PATH/scripts/run-review.sh"
-bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh"
+if [ ! -s "$RUNNER_TEMP/superseded" ]; then
+  step publish-check
+  bash "$GITHUB_ACTION_PATH/scripts/publish-check.sh"
+fi
 check_published=true
 if [ -f "$RUNNER_TEMP/superseded" ]; then result superseded "$(cat "$RUNNER_TEMP/superseded")"; exit 0; fi
+step publish-commits
 bash "$GITHUB_ACTION_PATH/scripts/publish-commits.sh"
+step publish-pr
 bash "$GITHUB_ACTION_PATH/scripts/publish-pr.sh"
 if [ -f "$RUNNER_TEMP/superseded" ]; then result superseded "$(cat "$RUNNER_TEMP/superseded")"; exit 0; fi
+step checkpoint
 bash "$GITHUB_ACTION_PATH/scripts/finish-reactions.sh"
 EYES_REACTION_ID= EYES_REACTION_PATH=
 # Opened/reopened events are already in the initial prompt and are filtered by live hooks.

@@ -135,11 +135,11 @@ exit 1
 `);
   const branch = checkout({});
   expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-model.json" }, branch).exitCode).toBe(1);
-  expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+  expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(1);
   expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
 });
 
-test("other model catalog fetch errors still exhaust retries and fail", () => {
+test("model catalog fetches retry server errors but fail fast on permission errors", () => {
   for (const status of [403, 503]) {
     const setup = fixture();
     executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
@@ -149,7 +149,7 @@ echo 'gh: HTTP ${status}' >&2
 exit 1
 `);
     expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-models.json" }).exitCode).toBe(1);
-    expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(8);
+    expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(status === 503 ? 8 : 1);
     expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
   }
 });
@@ -168,6 +168,7 @@ case "$*" in
     if [ ! -f "$RUNNER_TEMP/attempt" ]; then
       touch "$RUNNER_TEMP/attempt"
       printf '%s' '{"message":"Service Unavailable"}'
+      echo 'gh: HTTP 503' >&2
       exit 1
     fi
     printf 'model = "file-model"\\n' ;;

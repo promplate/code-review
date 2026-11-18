@@ -12,10 +12,15 @@ def event_color:
   elif (.event | IN("push", "pull_request")) then 94
   elif (.event | IN("check_run", "workflow_run", "status")) then ci_color
   else 97 end;
+# The hook has the received head SHA even when GitHub supplied no activity URL.
+def target_url: .url // (if (.event == "push" or (.event == "pull_request" and .action == "synchronize"))
+    and ((.head // "") | test("^(?!0{40}$)[a-fA-F0-9]{40}$"))
+  then (env.PR_NUMBER // "") as $pr | (if $pr == "" then "/commit/" else "/pull/\($pr)/commits/" end) + .head
+  else null end);
 def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action else "" end)\u001b[0m"
   + (if .actor then " " + .actor else "" end) + (if .name then " " + .name else "" end)
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
-  + (if .url then " " + .url else "" end);
+  + (target_url | if . then " " + . else "" end);
 # Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading whitespace, and legacy `##[` anywhere.
 # Break every marker, including overlapping colons: concurrent tool output can insert a newline inside a long event record.
 # A zero-width space keeps the log readable without sharing the tool logger's suppression token.
