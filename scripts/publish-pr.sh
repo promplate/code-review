@@ -18,13 +18,8 @@ HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSI
   --jq '.[] | {(.filename): [.patch // "" | scan("@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@") | (.[0] | tonumber) as $start | [$start, $start + (.[1] // "1" | tonumber)]]}' </dev/null | jq -cs add)
 # A finding an earlier review posted and nobody resolved is already on the pull request; posting it again would open a second thread for one root cause.
 # GraphQL bot logins omit the [bot] suffix used by REST.
-THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api graphql --paginate -f query='
-  query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
-    repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor }
-        nodes { isResolved path line comments(first: 1) { nodes { author { login } body } } } } } } }' \
-  -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F number="$PR_NUMBER" </dev/null \
-  | jq -cs --arg bot "$BOT_LOGIN" '[.[]?.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved == false and .comments.nodes[0].author.login == ($bot | rtrimstr("[bot]"))) | {path, line, body: .comments.nodes[0].body}]')
+THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list </dev/null \
+  | jq -c --arg bot "$BOT_LOGIN" '[.[] | select(.isResolved == false and .firstComment.author == ($bot | rtrimstr("[bot]"))) | {path, line, body: .firstComment.body}]')
 jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
   --arg blob "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$(git rev-parse HEAD)" \
   --argjson verdict "$VERDICT" --arg author "$PR_AUTHOR" --arg last "$LAST" --arg lastComment "$LAST_COMMENT" '

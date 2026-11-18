@@ -458,6 +458,7 @@ for (const failed of ["Publish check run", "Publish other commit verdicts", "Pub
 if [ "$FAIL_STAGE" = "$STAGE" ] && [ -n "$STAGE" ]; then exit 1; fi
 case "$*" in
   *collaborators*) printf 'write\\n' ;;
+  *'api graphql'*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *'/reviews?'*|*'/files?'*) printf '[]\\n' ;;
   *'--jq .total_count'*) printf '0\\n' ;;
   *) cat > /dev/null; printf '{}\\n' ;;
@@ -497,6 +498,7 @@ test("success reviews keep useful text and omit empty comments", () => {
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
     executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
+  *'api graphql'*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *'/reviews?'*) printf '%s\\n' '${JSON.stringify(reviews)}' ;;
   *'/files?'*) printf '[]\\n' ;;
   *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;

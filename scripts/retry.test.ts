@@ -135,13 +135,10 @@ test.each([undefined, ""])("resolve-thread rejects missing PR_NUMBER (%j) before
   expect(setup.calls()).toEqual([]);
 });
 
-test("resolve-thread still queries, replies and resolves with a PR number", () => {
+test.each([undefined, ""])("review thread lookup rejects missing PR_NUMBER (%j) before calling gh", pr => {
   const setup = fixture([]);
-  const result = Bun.spawnSync(["bash", join(scripts, "resolve-thread.sh"), "123", "Fixed"], { env: { ...setup.env, PR_NUMBER: "7" }, timeout: 3000 });
-  expect(result.exitCode).toBe(0);
-  const calls = setup.calls();
-  expect(calls).toHaveLength(3);
-  expect(calls[0].args).toContain("pr=7");
-  expect(calls[1].args.join(" ")).toContain("addPullRequestReviewThreadReply");
-  expect(calls[2].args.join(" ")).toContain("resolveReviewThread");
+  const result = Bun.spawnSync(["bash", join(scripts, "review-threads.sh"), "lookup", "123"], { env: { ...setup.env, PR_NUMBER: pr }, timeout: 3000 });
+  expect(setup.calls()).toEqual([]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("PR_NUMBER");
 });

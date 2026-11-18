@@ -11,6 +11,8 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 - one Codex session per PR, resumed on every push
 - awareness of the repository's CI, waiting for workflows that push fixes such as formatting
 
+During a PR review, `bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list` prints a JSON array of threads with their locations, resolution state and first comments. Use `lookup <REST comment id>` to get the thread ID for a comment or reply. The same helper accepts `resolve <threadId> [--reply <body>]` and `unresolve <threadId>` for the current PR.
+
 ## Setup
 
 1. [Install the App](https://github.com/apps/muspi-merol-review/installations/new) on the repository.
