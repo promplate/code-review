@@ -59,6 +59,11 @@ const argv = process.argv.slice(2);
 appendFileSync(dir + "/gh-args", JSON.stringify(argv) + "\\n");
 if (!argv.includes("--paginate")) { console.error("missing pagination"); process.exit(1); }
 if (argv.includes("--slurp")) { console.error("unknown flag: --slurp"); process.exit(1); }
+if (argv[1].includes("/actions/workflows/")) {
+  if (process.env.WORKFLOW_LOOKUP_FAIL === "1") { console.error("HTTP 404"); process.exit(1); }
+  console.log(JSON.stringify({ id: process.env.WORKFLOW_LOOKUP_BAD_ID === "1" ? "42" : 42, path: process.env.WORKFLOW_LOOKUP_PATH || ".github/workflows/agent.yml" }));
+  process.exit(0);
+}
 const actions = argv[1].includes("/actions/runs");
 const countFile = dir + (actions ? "/workflow-calls" : "/calls");
 const count = existsSync(countFile) ? Number(readFileSync(countFile, "utf8")) : 0;
@@ -1648,10 +1653,10 @@ test("injected changes link to the received commit in its PR when available", ()
   }
 });
 
-test.each(["true", ""])("hosted UUID excludes exact workflow paths without an Actions token (%s)", REVIEW_HOSTED => {
+test.each([".github/workflows/agent.yml", ".github/workflows/agent.yml@main", ".github/workflows/agent.yml@refs/heads/release@v2"].flatMap(path => ["true", ""].map(REVIEW_HOSTED => ({ path, REVIEW_HOSTED }))))("hosted UUID resolves workflow ID (%j)", ({ path, REVIEW_HOSTED }) => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
     { REVIEW_HOSTED, GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/release@v2", WAIT_CI_TIMEOUT: "1" },
-    [{ pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/agent.yml", name: "review", check_suite_id: 7 }] }] }]);
+    [{ pages: [{ workflow_runs: [{ id: 99, workflow_id: 42, path, name: "review", check_suite_id: 7 }] }] }]);
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("actions/runs/review-uuid");
   expectTailReleased(dir);
@@ -1687,7 +1692,7 @@ test("hosted without workflow ref retains queued checks despite a shared name", 
 test("hosted failed later pagination retains all checks", () => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
     { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "1" },
-    [{ pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }], error: "HTTP 502: next page failed" }]);
+    [{ pages: [{ workflow_runs: [{ id: 99, workflow_id: 42, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }], error: "HTTP 502: next page failed" }]);
   expect(result.exitCode).toBe(1);
   expect(result.stderr.toString()).toContain("No CI checks matching");
   expectTailReleased(dir);
@@ -1704,7 +1709,7 @@ test.each(["other/repo/.github/workflows/agent.yml@refs/heads/main", "owner/repo
 test("hosted numeric attempt ID still selects by workflow path", () => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
     { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "12", WAIT_CI_TIMEOUT: "1" },
-    [{ pages: [{ workflow_runs: [{ id: 12, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] }]);
+    [{ pages: [{ workflow_runs: [{ id: 12, workflow_id: 42, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] }]);
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("actions/runs/12");
   expectTailReleased(dir);
@@ -1716,9 +1721,32 @@ test("hosted recomputes sibling suites when a new queued run appears", () => {
     { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] },
   ], frame("status", { sha: "head", state: "success" }), [".", "pass"], { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "1" }, [
     { pages: [{ workflow_runs: [] }] },
-    { pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] },
+    { pages: [{ workflow_runs: [{ id: 99, workflow_id: 42, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] },
   ]);
   expect(result.exitCode).toBe(0);
   expect(calls).toBe(2);
+  expectTailReleased(dir);
+});
+
+test.each([
+  { WORKFLOW_LOOKUP_FAIL: "1" },
+  { WORKFLOW_LOOKUP_BAD_ID: "1" },
+  { WORKFLOW_LOOKUP_PATH: ".github/workflows/renamed.yml" },
+])("hosted failed or mismatched workflow lookup retains checks (%j)", lookup => {
+  const { result, dir } = runCI([{ pages: [{ check_runs: [check({ conclusion: "failure", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
+    { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", ...lookup },
+    [{ pages: [{ workflow_runs: [{ id: 99, workflow_id: 42, path: ".github/workflows/agent.yml@main", check_suite_id: 7 }] }] }]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("test: failure");
+  expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("actions/runs");
+  expectTailReleased(dir);
+});
+
+test("hosted same run path with different workflow ID retains failure", () => {
+  const { result, dir } = runCI([{ pages: [{ check_runs: [check({ conclusion: "failure", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
+    { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid" },
+    [{ pages: [{ workflow_runs: [{ id: 99, workflow_id: 43, path: ".github/workflows/agent.yml@main", check_suite_id: 7 }] }] }]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("test: failure");
   expectTailReleased(dir);
 });

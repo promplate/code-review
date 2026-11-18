@@ -4,28 +4,31 @@ set -euo pipefail
 export SHA=$1 NAME=${2:-.}
 # Other runs of this workflow are review status, not CI: one queued behind this job can never start, so waiting for it would deadlock.
 # Use the same gh authentication as the check lookup, including the App credentials in GH_CONFIG_DIR.
-WORKFLOW_ID= WORKFLOW_PATH=
+WORKFLOW_ID= SELF_RUN_ID=
 if [ "${REVIEW_HOSTED:-}" = true ] || [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]; then
-  # A hosted attempt has a UUID, not an Actions run. Prefer its exact caller path;
+  # A hosted attempt has a UUID, not an Actions run. Resolve its exact caller path;
   # display names are not identities: absent/invalid refs retain every check.
   if [ -n "${GITHUB_WORKFLOW_REF:-}" ]; then
     if [[ $GITHUB_WORKFLOW_REF =~ ^"$GITHUB_REPOSITORY"/(\.github/workflows/[^/]+\.ya?ml)@(.+)$ ]] && git check-ref-format "refs/${BASH_REMATCH[2]}"; then
-      WORKFLOW_PATH=${BASH_REMATCH[1]}
+      workflow_path=${BASH_REMATCH[1]}
+      workflow_file=$(jq -rn --arg path "${workflow_path##*/}" '$path | @uri')
+      WORKFLOW_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_file" --paginate < /dev/null |
+        jq -er --arg path "$workflow_path" 'select(.path == $path) | .id | select(type == "number")') || WORKFLOW_ID=
     fi
   fi
 else
+  SELF_RUN_ID=${GITHUB_RUN_ID:-}
   WORKFLOW_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --paginate < /dev/null | jq -er '.workflow_id | select(type == "number")') || WORKFLOW_ID=
 fi
-[ -n "$WORKFLOW_ID$WORKFLOW_PATH" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."
+[ -n "$WORKFLOW_ID" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."
 checks() {
   # Recomputed every poll: a run queued while this one waits must be excluded too.
   own='[]'
-  if [ -n "$WORKFLOW_ID$WORKFLOW_PATH" ]; then
+  if [ -n "$WORKFLOW_ID" ]; then
     own=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100" --paginate < /dev/null |
-      jq -sc --arg self "${GITHUB_RUN_ID:-}" --arg workflow "$WORKFLOW_ID" --arg path "$WORKFLOW_PATH" '
+      jq -sc --arg self "$SELF_RUN_ID" --arg workflow "$WORKFLOW_ID" '
         [.[].workflow_runs[] | select(
-          if $workflow != "" then (.workflow_id | tostring) == $workflow and (.id | tostring) != $self
-          else .path == $path end
+          (.workflow_id | tostring) == $workflow and (.id | tostring) != $self
         ) | .check_suite_id | select(. != null)]') || own='[]'
   fi
   export OWN_CHECK_SUITES=$own
