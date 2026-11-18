@@ -823,7 +823,7 @@ const expandStep = (entry: any) => {
 };
 const step = (name: string) => expandStep((Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps.find((s: any) => s.name === name));
 
-test("token setup creates its config and refreshes through a transient failure", () => {
+test("token setup backs off within and between failed refresh batches", () => {
   const { dir, env } = fixture();
   executable(dir, "curl", `#!${process.execPath}
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -832,6 +832,7 @@ if (process.argv.at(-1).includes("/oidc")) { console.log('{"value":"fixture-oidc
 const count = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
 writeFileSync(marker, String(count));
 if (count === 2) { console.error("curl: (22) The requested URL returned error: 503"); process.exit(22); }
+if (count === 3 || count === 4) { console.error("curl: (22) The requested URL returned error: 403"); process.exit(22); }
 console.log(JSON.stringify({ token: count === 1 ? "initial-token" : "renewed-token", events_url: "https://example.test/events", bot: "reviewer[bot]", expires_at: new Date(Date.now() + 3600000).toISOString().replace(/\\.\\d{3}Z$/, "Z") }));
 `);
   executable(dir, "sleep", `#!/usr/bin/env bash
@@ -845,8 +846,8 @@ else echo "$1" >> "$RUNNER_TEMP/backoff"; fi
     env: { ...env, BROKER: "https://example.test", ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.test/oidc?fixture=1", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "fixture-token", GITHUB_OUTPUT: join(dir, "github-output") }, timeout: 3000,
   });
   expect(result.exitCode).toBe(0);
-  expect(readFileSync(join(dir, "mints"), "utf8")).toBe("3");
-  expect(readFileSync(join(dir, "backoff"), "utf8")).toBe("1\n");
+  expect(readFileSync(join(dir, "mints"), "utf8")).toBe("5");
+  expect(readFileSync(join(dir, "backoff"), "utf8")).toBe("1\n30\n30\n");
   const token = Bun.spawnSync([Bun.which("gh")!, "auth", "token", "--hostname", "github.com"], {
     env: { ...env, GH_CONFIG_DIR: join(dir, "gh"), GH_TOKEN: "", GITHUB_TOKEN: "", GH_ENTERPRISE_TOKEN: "", GITHUB_ENTERPRISE_TOKEN: "" },
   });
