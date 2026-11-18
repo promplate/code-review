@@ -23,7 +23,7 @@ function fixture() {
   writeFileSync(join(dir, "event.json"), "{}");
   const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root, GITHUB_ENV: join(dir, "github-env"),
     GITHUB_REPOSITORY: "owner/repo", EVENT_NAME: "", PR_NUMBER: "7", HEAD_SHA: "head", HEAD_BRANCH: "feature", GITHUB_REF: "refs/heads/main", BOT_LOGIN: "reviewer[bot]",
-    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main",
+    CHECK_ID: "10", JOB_CHECK_RUN_ID: "11", REVIEW_HOSTED: "", GITHUB_RUN_ID: "12", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/main",
     GITHUB_STEP_SUMMARY: join(dir, "summary.md"), DEFAULT_BRANCH: "main" };
   Object.assign(env, { GITHUB_EVENT_PATH: join(dir, "event.json") });
   return { dir, env };
@@ -72,7 +72,7 @@ if (response.error) { console.error(response.error); process.exit(1); }
   // Keep the actual jq evaluator: mocking its JSON output would hide broken filters.
   executable(setup.dir, "jq", `#!/usr/bin/env bash\nprintf 'called\\n' >> "$RUNNER_TEMP/jq-calls"\nexec '${realJq}' "$@"\n`);
   executable(setup.dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\nexec '${realTail}' "$@"\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: { ...setup.env, GH_CONFIG_DIR: join(setup.dir, "gh"), GH_TOKEN: "", GITHUB_TOKEN: "", ACTIONS_TOKEN: "", ...extraEnv }, timeout: 3000 });
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: { ...setup.env, GH_CONFIG_DIR: join(setup.dir, "gh-config"), GH_TOKEN: "", GITHUB_TOKEN: "", ACTIONS_TOKEN: "", ...extraEnv }, timeout: 3000 });
   return { ...setup, result, calls: Number(readFileSync(join(setup.dir, "calls"), "utf8")) };
 }
 
@@ -1650,7 +1650,7 @@ test("injected changes link to the received commit in its PR when available", ()
 
 test.each(["true", ""])("hosted UUID excludes exact workflow paths without an Actions token (%s)", REVIEW_HOSTED => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
-    { REVIEW_HOSTED, GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "1" },
+    { REVIEW_HOSTED, GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF: "owner/repo/.github/workflows/agent.yml@refs/heads/release@v2", WAIT_CI_TIMEOUT: "1" },
     [{ pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/agent.yml", name: "review", check_suite_id: 7 }] }] }]);
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("actions/runs/review-uuid");
@@ -1683,7 +1683,7 @@ test("hosted failed later pagination retains all checks", () => {
   expectTailReleased(dir);
 });
 
-test.each(["other/repo/.github/workflows/agent.yml@refs/heads/main", "invalid-ref"])("hosted invalid nonempty workflow ref keeps checks (%s)", GITHUB_WORKFLOW_REF => {
+test.each(["other/repo/.github/workflows/agent.yml@refs/heads/main", "owner/repo/.github/workflows/agent.yml@", "owner/repo/.github/workflows/agent.yml@refs/heads/bad..ref", "invalid-ref"])("hosted invalid nonempty workflow ref keeps checks (%s)", GITHUB_WORKFLOW_REF => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check({ status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
     { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF, GITHUB_WORKFLOW: "review", WAIT_CI_TIMEOUT: "1" });
   expect(result.exitCode).toBe(1);

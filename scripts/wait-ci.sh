@@ -9,11 +9,9 @@ if [ "${REVIEW_HOSTED:-}" = true ] || [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]; 
   # A hosted attempt has a UUID, not an Actions run. Prefer its exact caller path;
   # never fall back to a same-name workflow when a supplied path does not match.
   if [ -n "${GITHUB_WORKFLOW_REF:-}" ]; then
-    case "$GITHUB_WORKFLOW_REF" in
-      "$GITHUB_REPOSITORY"/.github/workflows/*@*)
-        WORKFLOW_PATH=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}
-        WORKFLOW_PATH=${WORKFLOW_PATH%@*} ;;
-    esac
+    if [[ $GITHUB_WORKFLOW_REF =~ ^"$GITHUB_REPOSITORY"/(\.github/workflows/[^/]+\.ya?ml)@(.+)$ ]] && git check-ref-format "refs/${BASH_REMATCH[2]}"; then
+      WORKFLOW_PATH=${BASH_REMATCH[1]}
+    fi
   else
     WORKFLOW_NAME=${GITHUB_WORKFLOW:-}
   fi
