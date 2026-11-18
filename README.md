@@ -150,7 +150,9 @@ The action reuses `bun-version` from the runner or installs it, and uses Bun for
 
 ## Options
 
-The App needs **Contents**, **Pull requests** and **Checks** write access, plus **Issues** write when reviews should open issues for problems they cannot fix. The broker asks for whichever Issues level the installation grants, so a read-only installation still reviews and only loses issue creation.
+The App needs **Contents**, **Pull requests**, **Checks** and **Issues** write access for PR reviews. **Issues** write is required for the [PR-body and issue-comment reactions](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-an-issue), as well as opening issues for problems the reviewer cannot fix. The broker asks for whichever Issues level the installation grants, but Issues read-only cannot create issues or add and remove those reactions. There is no mode that skips reactions: a denied PR-body eyes reaction fails “Mark PR as reviewing” before Codex starts, and final verdict reactions also require write access.
+
+PR conversation comments use the issue-comment endpoints, but [creating, editing and deleting them](https://docs.github.com/en/rest/issues/comments) also accept **Pull requests** write, which the App already requires. Issues read-only therefore does not itself prevent those PR comment operations; it still cannot support the complete PR review flow above.
 
 `id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
 
