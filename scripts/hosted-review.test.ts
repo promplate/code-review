@@ -219,8 +219,14 @@ test("a hosted run without SSE lets the CI waiter poll completed checks", () => 
   const tail=Bun.which("tail")!, setup=fixture();
   expect(setup.run({EVENTS_URL:""}).exitCode).toBe(0);
   writeFileSync(join(setup.bin,"tail"),`#!/bin/sh\nexec '${tail}' "$@"\n`);
-  writeFileSync(join(setup.bin,"gh"),`#!${process.execPath}\nconst path=process.env.RUNNER_TEMP+'/poll-count';const count=await Bun.file(path).exists()?Number(await Bun.file(path).text()):0;await Bun.write(path,String(count+1));console.log(JSON.stringify({check_runs:[{id:99,name:'format',status:count?'completed':'in_progress',conclusion:count?'success':null,app:{slug:'ci'}}]}));\n`);
-  const result=Bun.spawnSync(["bash",join(root,"scripts/wait-ci.sh"),setup.head,"format","pass"],{env:{...setup.env,ACTIONS_TOKEN:"",CHECK_ID:"10",WAIT_CI_TIMEOUT:"4"},timeout:6000});
+  writeFileSync(join(setup.bin,"gh"),`#!${process.execPath}
+if (process.argv[3].includes("/actions/runs?")) { console.log('{"workflow_runs":[]}'); process.exit(0); }
+if (!process.argv[3].includes("/check-runs?")) process.exit(1);
+const path=process.env.RUNNER_TEMP+'/poll-count', count=await Bun.file(path).exists()?Number(await Bun.file(path).text()):0;
+await Bun.write(path,String(count+1));
+console.log(JSON.stringify({check_runs:[{id:99,name:'format',status:count?'completed':'in_progress',conclusion:count?'success':null,app:{slug:'ci'}}]}));
+`);
+  const result=Bun.spawnSync(["bash",join(root,"scripts/wait-ci.sh"),setup.head,"format","pass"],{env:{...setup.env,REVIEW_HOSTED:"true",GITHUB_RUN_ID:"job-id",GITHUB_WORKFLOW_REF:"owner/repo/.github/workflows/agent.yml@refs/heads/main",CHECK_ID:"10",WAIT_CI_TIMEOUT:"4"},timeout:6000});
   expect(result.exitCode).toBe(0);
   expect(Number(readFileSync(join(setup.temp,"poll-count"),"utf8"))).toBeGreaterThan(1);
 });
