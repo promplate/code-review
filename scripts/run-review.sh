@@ -7,8 +7,6 @@ PRICE_PID=$!
 [ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH \
   -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
 jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
-# Heads this session reviewed face the review; markers for pushes it skipped only bound the next range.
-COMMITS=$(jq -rs 'map(select(.id != "")) | map(.sha) | unique' "$CODEX_HOME/check-runs.jsonl")
 # Seed the hook receipts from the restored session before processing new activity.
 if [ -f "$CODEX_HOME/sessions/.github-deliveries.json" ]; then jq -r '.[]' "$CODEX_HOME/sessions/.github-deliveries.json" > "$RUNNER_TEMP/injected-deliveries.log"; else : > "$RUNNER_TEMP/injected-deliveries.log"; fi
 rm -f "$RUNNER_TEMP/injected.size"
@@ -51,7 +49,7 @@ esac
 SCHEMA=(--output-schema "$GITHUB_ACTION_PATH/review-schema.json" --output-last-message "$RUNNER_TEMP/review.json")
 OPEN="Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
 CONTINUE="Continue reviewing $SUBJECT. The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\`, \
-     re-check what changed, reply to the activity the hooks report, and output the full updated JSON review. $CONFLICT$INSTRUCTIONS"
+     re-check what changed, reply to the activity the hooks report, and output the JSON review covering what this run saw. $CONFLICT$INSTRUCTIONS"
 if [ "$AGENT" = true ]; then
   # An agent turn posts no verdict, but its closing message is what the run page shows as the summary.
   SCHEMA=(--output-last-message "$RUNNER_TEMP/last-message.md")

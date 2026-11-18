@@ -11,6 +11,8 @@ if ! command -v codex > /dev/null; then
   mkdir -p "$RUNNER_TEMP/codex"
   bun add --cwd "$RUNNER_TEMP/codex" --silent "@openai/codex${CODEX_VERSION:+@$CODEX_VERSION}"
   export PATH="$RUNNER_TEMP/codex/node_modules/.bin:$PATH"
+  # Actions runs later steps in fresh shells; hosted callers keep the export above.
+  [ -z "${GITHUB_PATH:-}" ] || printf '%s\n' "$RUNNER_TEMP/codex/node_modules/.bin" >> "$GITHUB_PATH"
 fi
 CODEX_BIN=$(command -v codex)
 CODEX_RUNTIME=

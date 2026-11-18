@@ -5,7 +5,7 @@ Reviews same-repository pull requests, and optionally branch pushes, with [Codex
 - a `code-review` check run per commit, with annotations on the reviewed head
 - `REQUEST_CHANGES` with inline threads for must-fix issues only, `APPROVE` otherwise; a finding an unresolved thread already carries is not posted again
 - everything else as regular PR comments, answers to review comments in their thread
-- certain fixes committed to the PR, or opened as separate PRs when out of scope
+- certain fixes committed to the PR, or opened as separate PRs when out of scope; fixes touching `.github/workflows/` reported for a maintainer to apply
 - out-of-scope problems it is certain of but cannot fix with certainty opened as issues
 - routine PRs it is certain about merged the way the repository merged similar ones, once every other check passes
 - one Codex session per PR, resumed on every push
@@ -73,9 +73,22 @@ During a PR review, `bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list` 
 
 In a public repository, an Actions event policy must allow the `pull_request_target` trigger: from December 2, 2026 GitHub's default policy will block it ([changelog](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)). Allow it explicitly — Settings → Actions → Policies, an event policy whose allowed events include `pull_request_target`, `issue_comment`, `pull_request_review`, and `pull_request_review_comment` (plus any other trigger the workflow enables), scoped to this workflow file ([docs](https://docs.github.com/en/actions/how-tos/administer/control-workflow-execution)) — or reviews stop starting on pull request events while comment triggers keep working, each blocked run failing as a `startup_failure` with no jobs and an annotation that blames the workflow file. Private and internal repositories are unaffected.
 
+The same policy through the REST API, which is what new repositories copy; `allowed_events` is a whitelist rather than a list of exceptions, so it names every trigger the workflow keeps, plus the optional ones below, so enabling one later does not trip the policy ([endpoints](https://docs.github.com/en/rest/actions/policies)):
+
+```sh
+gh api -X POST repos/OWNER/REPO/actions/policies -H 'X-GitHub-Api-Version: 2026-03-10' --input - <<'JSON'
+{
+  "name": "allow `pull_request_target` for agent invoke",
+  "enforcement": "active",
+  "conditions": { "workflow_path": { "include": [".github/workflows/agent.yml"], "exclude": [] } },
+  "rules": [{ "type": "restrict_action_events", "parameters": { "allowed_events": ["pull_request_target", "issues", "issue_comment", "pull_request_review", "pull_request_review_comment", "push", "repository_dispatch", "workflow_dispatch"] } }]
+}
+JSON
+```
+
 The reusable workflow owns the permission check, the shared concurrency group and the review step. Pass `authorize: false` only when every trigger is trusted, such as a private repository; without the check, an unauthorized run still takes a queue slot before it exits. `service-tier` and `session-key` reach the action through the same call. `setup` runs shell on the runner before Codex is installed, for tools the review needs; add their directories to the PATH through `$GITHUB_PATH`. `instructions` appends repository rules to the prompt, after the built-in review instructions. Codex takes its config, its ChatGPT credentials and an optional model catalog, and each is either passed as contents or named as a file in this repository: `codex-config-file`, `codex-auth-file` and `model-catalog-file`. A file is read from the default branch rather than the change under review, since these settings shape how Codex runs, and contents win when both are given. The catalog input also takes precedence over a `model_catalog_json` the config names itself.
 
-A catalog that only the change under review has, such as one a pull request introduces, warns and continues without the override, leaving any `model_catalog_json` in the supplied config intact. A path that neither the default branch nor that change has, and any other fetch error, keeps retrying and fails the run.
+A catalog that only the change under review has, such as one a pull request introduces, warns and continues without the override, leaving any `model_catalog_json` in the supplied config intact. A path that neither the default branch nor that change has fails the run. Fetches retry recognized network errors, 5xx responses, bare 429s, and responses whose message identifies a secondary rate limit or abuse detection; primary rate limits and other failures stop immediately. Secondary limits start with a one-minute wait and back off to five minutes, within the same eight-attempt limit.
 
 When the supplied config omits `project_doc_fallback_filenames`, the action imports only that key from the default branch's `.codex/config.toml`. It accepts an array of plain filenames, such as `["CLAUDE.md"]`; invalid TOML or filenames warn and are ignored. An explicit setting, including `[]`, wins. The reviewed checkout supplies the instruction files themselves, as it does for `AGENTS.md`, but cannot change this list or enable other configuration.
 
@@ -139,9 +152,11 @@ The action reuses `bun-version` from the runner or installs it, and uses Bun for
 
 ## Options
 
-The App needs **Contents**, **Pull requests** and **Checks** write access, plus **Issues** write when reviews should open issues for problems they cannot fix. The broker asks for whichever Issues level the installation grants, so a read-only installation still reviews and only loses issue creation.
+The App needs **Contents**, **Pull requests**, **Checks** and **Issues** write access for PR reviews. **Issues** write is required for the [PR-body and issue-comment reactions](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-an-issue), as well as opening issues for problems the reviewer cannot fix. The broker asks for whichever Issues level the installation grants, but Issues read-only cannot create issues or add and remove those reactions. There is no mode that skips reactions: a denied PR-body eyes reaction fails “Mark PR as reviewing” before Codex starts, and final verdict reactions also require write access.
 
-`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
+PR conversation comments use the issue-comment endpoints, but [creating, editing and deleting them](https://docs.github.com/en/rest/issues/comments) also accept **Pull requests** write, which the App already requires. Issues read-only therefore does not itself prevent those PR comment operations; it still cannot support the complete PR review flow above.
+
+`id-token: write` lets the job prove which repository it runs in, in exchange for an App token limited to that repository and without the `workflows` permission. Fixes touching `.github/workflows/` are report-only in both review and issue sessions: Codex describes the required changes for a maintainer to apply, including any dependent changes in other files. `actions: read` lets the job restore session artifacts and look up workflow runs. Grant the App **Actions** write access to let the broker prune superseded snapshots. The broker keeps that credential server-side, and without it the snapshots expire according to the repository's retention policy.
 
 To review as your own GitHub App, deploy the broker with that App's credentials and set `with.broker` on the action or reusable workflow to its HTTPS origin, such as `https://review-broker.example.com`. Both default to `https://cf-webhook-sse-poc.admin-c9f.workers.dev`. The action learns which login it acts as from the token it mints, so workflows never name the App.
 
@@ -167,6 +182,8 @@ Run it from a full checkout of the scheduled PR head with the default branch fet
 - `DETAILS_URL`: the authenticated run page linked from the review check. `EVENTS_URL` supplies live SSE updates in the broker's existing format.
 
 Optional `CHECK_ID` reuses a check owned by the hosting service. `REVIEW_RUN_ID` and `REVIEW_RUN_ATTEMPT` identify an attempt for subscription recovery. `DEFAULT_BRANCH`, `SERVICE_TIER`, `EXTRA_INSTRUCTIONS`, `CATALOG` and `MODEL_CATALOG` use the same meanings as the action. To fork an opening review's conversation, restore its state into `$CODEX_HOME/fork` and set `FORK_KEY` to its session key.
+
+To index the combined process log, redirect stdout and stderr to the same file with `> "$REVIEW_OUTPUT_LOG" 2>&1` and set `REVIEW_STEP_INDEX` to a fresh file path for the attempt. Export both paths. As each step starts, the entry appends a line of the form `<step> <byte-offset>` to the index. The offset points to the start of that step's output in the raw log.
 
 The entry writes `$RUNNER_TEMP/result.json` with `status` (`completed`, `superseded`, `skipped` or `failed`), `headSha`, `currentHead`, `checkId` and `published`. A superseded result tells the scheduler which head needs another run. It never treats receiving an event as a completed publication. Persist `sessions/`, `last-thread-id` and `check-runs.jsonl` from `CODEX_HOME`, and save any refreshed `auth.json` back to the encrypted credential store. Auth belongs to the repository credential store, separately from conversation snapshots.
 

@@ -831,7 +831,7 @@ const marker = process.env.RUNNER_TEMP + "/mints";
 if (process.argv.at(-1).includes("/oidc")) { console.log('{"value":"fixture-oidc"}'); process.exit(0); }
 const count = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
 writeFileSync(marker, String(count));
-if (count === 2) process.exit(22);
+if (count === 2) { console.error("curl: (22) The requested URL returned error: 503"); process.exit(22); }
 console.log(JSON.stringify({ token: count === 1 ? "initial-token" : "renewed-token", events_url: "https://example.test/events", bot: "reviewer[bot]", expires_at: new Date(Date.now() + 3600000).toISOString().replace(/\\.\\d{3}Z$/, "Z") }));
 `);
   executable(dir, "sleep", `#!/usr/bin/env bash
@@ -1604,4 +1604,18 @@ test("check suite identities retain their suite id and reviewed head", () => {
     ids.push(actual);
   }
   expect(new Set(ids).size).toBe(3);
+});
+
+test("injected changes link to the received commit in its PR when available", () => {
+  const head = "0123456789abcdef0123456789abcdef01234567";
+  const input = [{ event: "push", head }, { event: "pull_request", action: "synchronize", head }, { event: "push", head: "unknown" }, { event: "push", head: "0".repeat(40) }, { event: "issue_comment", url: "/pull/7#issuecomment-1" }].map((event) => JSON.stringify(event)).join("\n");
+  for (const pr of ["7", ""]) {
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input), env: { ...process.env, PR_NUMBER: pr } });
+    expect(result.exitCode).toBe(0);
+    const lines = result.stdout.toString().split("\n").filter(Boolean);
+    const path = pr ? `/pull/${pr}/commits/${head}` : `/commit/${head}`;
+    for (const line of lines.slice(0, 2)) expect(line).toEndWith(path);
+    for (const line of lines.slice(2, 4)) expect(line).not.toContain("/commit");
+    expect(lines[4]).toEndWith("/pull/7#issuecomment-1");
+  }
 });

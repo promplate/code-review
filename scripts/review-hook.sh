@@ -86,7 +86,7 @@ context=$(jq -r .context <<< "$result") || exit 1
 if [ -n "$context" ]; then
   subject=${PR_NUMBER:+PR #$PR_NUMBER}
   jq -n --arg subject "${subject:-branch $HEAD_BRANCH}" --arg context "$context" --arg event "$event" '
-    ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the full updated JSON review.") as $message
+    ("New GitHub activity on " + $subject + ":\n" + $context + "\nTake it into account, answer each message where it was posted when useful, and output the JSON review covering what this run saw.") as $message
     | if $event == "Stop" then {decision: "block", reason: $message} else {hookSpecificOutput: {hookEventName: $event, additionalContext: $message}} end' || exit 1
 fi
 # A tool round's context is recorded before the model's next request and a blocked Stop continues the turn, so the output above is delivery; a crash may repeat an event but can never suppress an undelivered one.
