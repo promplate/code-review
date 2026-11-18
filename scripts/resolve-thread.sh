@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: resolve-thread.sh <id of any comment in the thread> <reply>. Answers a review thread a fix settled and resolves it.
 set -eo pipefail
+[ -n "${PR_NUMBER:-}" ] || { echo 'resolve-thread.sh requires PR_NUMBER to identify the pull request.' >&2; exit 1; }
 thread=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -F pr="$PR_NUMBER" \
   -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $pr) { reviewThreads(first: 100) { nodes { id comments(first: 100) { nodes { databaseId } } } } } } }' \
   --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(any(.comments.nodes[]; .databaseId == $1)) | .id" < /dev/null)

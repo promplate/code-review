@@ -831,7 +831,7 @@ const marker = process.env.RUNNER_TEMP + "/mints";
 if (process.argv.at(-1).includes("/oidc")) { console.log('{"value":"fixture-oidc"}'); process.exit(0); }
 const count = existsSync(marker) ? Number(readFileSync(marker, "utf8")) + 1 : 1;
 writeFileSync(marker, String(count));
-if (count === 2) process.exit(22);
+if (count === 2) { console.error("curl: (22) The requested URL returned error: 503"); process.exit(22); }
 console.log(JSON.stringify({ token: count === 1 ? "initial-token" : "renewed-token", events_url: "https://example.test/events", bot: "reviewer[bot]", expires_at: new Date(Date.now() + 3600000).toISOString().replace(/\\.\\d{3}Z$/, "Z") }));
 `);
   executable(dir, "sleep", `#!/usr/bin/env bash
