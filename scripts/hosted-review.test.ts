@@ -40,6 +40,14 @@ else if(path?.includes('/reactions?')) console.log('[]');
 else if(path?.endsWith('/reactions')) console.log('9');
 else if(path?.endsWith('/check-runs') && args.includes('--jq')) console.log('10');
 else if(path?.endsWith('/check-runs/42') && !args.includes('-X')) console.log(process.env.TEST_CHECK_STATUS||'completed');
+else if(path==='users/reviewer[bot]') {
+ if(mode==='retry-identity' && !existsSync(temp+'/identity-retried')) {
+  await Bun.write(temp+'/identity-retried','');
+  process.stdout.write('{"message":"Service Unavailable"}');
+  console.error('gh: Service Unavailable (HTTP 503)'); process.exit(1);
+ }
+ console.log('12345');
+}
 else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
  const body=await Bun.stdin.text();
  if(path?.includes('/check-runs/')) await Bun.write(temp+'/check.json',body);
@@ -69,6 +77,31 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
     REVIEW_OUTPUT_LOG:"",REVIEW_STEP_INDEX:""};
   return {head,state,temp,env,bin,checkout, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
+
+test("shared setup supplies the App identity for commits and merges in linked worktrees", () => {
+  const setup = fixture("retry-identity");
+  const env: Record<string, string | undefined> = {...setup.env, AGENT: "true", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", LANGFUSE_PUBLIC_KEY: "", HOME: setup.temp, LC_ALL: "C"};
+  for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"]) delete env[key];
+  const git = (...args: string[]) => Bun.spawnSync(["git", ...args], {cwd: setup.checkout, env});
+  expect(git("config", "user.useConfigOnly", "true").exitCode).toBe(0);
+  const before = git("commit", "--allow-empty", "-m", "missing identity");
+  expect(before.exitCode).not.toBe(0);
+  expect(before.stderr.toString()).toContain("Author identity unknown");
+  for (let i = 0; i < 2; i++) {
+    const configured = Bun.spawnSync(["bash", "-e", "-c", '. "$GITHUB_ACTION_PATH/scripts/configure-review.sh"'], {cwd: setup.checkout, env});
+    expect(configured.exitCode).toBe(0);
+    expect(git("config", "user.email").stdout.toString().trim()).toBe("12345+reviewer[bot]@users.noreply.github.com");
+  }
+  expect(git("commit", "--allow-empty", "-m", "configured identity").exitCode).toBe(0);
+  const worktree = join(setup.temp, "worktree");
+  expect(git("worktree", "add", "-b", "fix", worktree).exitCode).toBe(0);
+  expect(git("-C", worktree, "commit", "--allow-empty", "-m", "fix").exitCode).toBe(0);
+  expect(git("merge", "--no-ff", "fix", "-m", "merge fix").exitCode).toBe(0);
+  const identity = "reviewer[bot] <12345+reviewer[bot]@users.noreply.github.com>";
+  for (const ref of ["HEAD", "HEAD^1", "fix"]) {
+    expect(git("show", "-s", "--format=%an <%ae>%n%cn <%ce>", ref).stdout.toString().trim()).toBe(`${identity}\n${identity}`);
+  }
+});
 
 test("hosted entry runs shared review, publishes at the exact head and returns refreshed credentials", () => {
   const setup=fixture(), result=setup.run();

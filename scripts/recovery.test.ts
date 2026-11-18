@@ -160,6 +160,7 @@ test.each([false, true])("config files preserve the model's session identity and
   executable(setup.dir, "git", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "codex", "#!/bin/sh\necho codex-cli\n");
   executable(setup.dir, "gh", `#!/bin/sh
+if [ "$*" = 'api users/reviewer[bot] --jq .id' ]; then echo 12345; exit 0; fi
 echo "$*" >> "$RUNNER_TEMP/requests"
 [ "$OVERRIDE" != true ] || exit 1
 case "$*" in
