@@ -1682,3 +1682,33 @@ test("hosted failed later pagination retains all checks", () => {
   expect(result.stderr.toString()).toContain("No CI checks matching");
   expectTailReleased(dir);
 });
+
+test.each(["other/repo/.github/workflows/agent.yml@refs/heads/main", "invalid-ref"])("hosted invalid nonempty workflow ref keeps checks (%s)", GITHUB_WORKFLOW_REF => {
+  const { result, dir } = runCI([{ pages: [{ check_runs: [check({ status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
+    { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF, GITHUB_WORKFLOW: "review", WAIT_CI_TIMEOUT: "1" });
+  expect(result.exitCode).toBe(1);
+  expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("/actions/runs");
+  expectTailReleased(dir);
+});
+
+test("hosted numeric attempt ID still selects by workflow path", () => {
+  const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
+    { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "12", WAIT_CI_TIMEOUT: "1" },
+    [{ pages: [{ workflow_runs: [{ id: 12, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] }]);
+  expect(result.exitCode).toBe(0);
+  expect(readFileSync(join(dir, "gh-args"), "utf8")).not.toContain("actions/runs/12");
+  expectTailReleased(dir);
+});
+
+test("hosted recomputes sibling suites when a new queued run appears", () => {
+  const { result, calls, dir } = runCI([
+    { pages: [{ check_runs: [check({ status: "in_progress" })] }] },
+    { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] },
+  ], frame("status", { sha: "head", state: "success" }), [".", "pass"], { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "1" }, [
+    { pages: [{ workflow_runs: [] }] },
+    { pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] },
+  ]);
+  expect(result.exitCode).toBe(0);
+  expect(calls).toBe(2);
+  expectTailReleased(dir);
+});
