@@ -3,6 +3,19 @@
 input=$(cat)
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
+# gh api writes HTTP error bodies and any completed pages to stdout. Its caller
+# needs the final attempt's response, including when the last request fails.
+if [[ "$1" = gh && "$2" = api ]]; then
+  response=$(mktemp) || exit 1
+  finish() {
+    local status=$?
+    cat "$response" || status=1
+    rm -f "$err" "$response"
+    exit "$status"
+  }
+  trap finish EXIT
+  gh() { command gh "$@" > "$response"; }
+fi
 delay=1
 max_delay=30
 for attempt in 1 2 3 4 5 6 7 8; do
