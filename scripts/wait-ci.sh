@@ -3,14 +3,36 @@
 set -euo pipefail
 export SHA=$1 NAME=${2:-.}
 # Other runs of this workflow are review status, not CI: one queued behind this job can never start, so waiting for it would deadlock.
-# The App token has no Actions access, so the Merge step hands over the job token for these two lookups.
-WORKFLOW_ID=
-[ -z "${ACTIONS_TOKEN:-}" ] || WORKFLOW_ID=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --paginate < /dev/null | jq -r .workflow_id) || WORKFLOW_ID=
-[ -n "$WORKFLOW_ID" ] || [ -z "${ACTIONS_TOKEN:-}" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."
+# Use the same gh authentication as the check lookup, including the App credentials in GH_CONFIG_DIR.
+WORKFLOW_ID= WORKFLOW_PATH= WORKFLOW_NAME=
+if [ "${REVIEW_HOSTED:-}" = true ] || [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ ]]; then
+  # A hosted attempt has a UUID, not an Actions run. Prefer its exact caller path;
+  # never fall back to a same-name workflow when a supplied path does not match.
+  if [ -n "${GITHUB_WORKFLOW_REF:-}" ]; then
+    case "$GITHUB_WORKFLOW_REF" in
+      "$GITHUB_REPOSITORY"/.github/workflows/*@*)
+        WORKFLOW_PATH=${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY"/}
+        WORKFLOW_PATH=${WORKFLOW_PATH%@*} ;;
+    esac
+  else
+    WORKFLOW_NAME=${GITHUB_WORKFLOW:-}
+  fi
+else
+  WORKFLOW_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --paginate < /dev/null | jq -er '.workflow_id | select(type == "number")') || WORKFLOW_ID=
+fi
+[ -n "$WORKFLOW_ID$WORKFLOW_PATH$WORKFLOW_NAME" ] || echo "::notice::Waiting for every check: this workflow's other runs are not readable."
 checks() {
   # Recomputed every poll: a run queued while this one waits must be excluded too.
   own='[]'
-  [ -z "$WORKFLOW_ID" ] || own=$(GH_TOKEN=$ACTIONS_TOKEN gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100" --paginate < /dev/null | jq -sc --argjson self "$GITHUB_RUN_ID" --argjson workflow "$WORKFLOW_ID" '[.[].workflow_runs[] | select(.workflow_id == $workflow and .id != $self) | .check_suite_id]') || own='[]'
+  if [ -n "$WORKFLOW_ID$WORKFLOW_PATH$WORKFLOW_NAME" ]; then
+    own=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SHA&per_page=100" --paginate < /dev/null |
+      jq -sc --arg self "${GITHUB_RUN_ID:-}" --arg workflow "$WORKFLOW_ID" --arg path "$WORKFLOW_PATH" --arg name "$WORKFLOW_NAME" '
+        [.[].workflow_runs[] | select(
+          if $workflow != "" then (.workflow_id | tostring) == $workflow and (.id | tostring) != $self
+          elif $path != "" then .path == $path
+          else .name == $name end
+        ) | .check_suite_id | select(. != null)]') || own='[]'
+  fi
   export OWN_CHECK_SUITES=$own
   gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?filter=latest&per_page=100" --paginate < /dev/null | jq -s -c '[.[].check_runs[] | select((.id | tostring) != (env.CHECK_ID // "") and (.id | tostring) != (env.JOB_CHECK_RUN_ID // ""))
     | select(.check_suite.id as $suite | (env.OWN_CHECK_SUITES | fromjson | index($suite)) | not)
