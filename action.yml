@@ -68,8 +68,8 @@ runs:
         export -f mint save refill
         # Installation tokens expire after an hour, which long reviews and merges waiting for CI outlast, so a background loop keeps the config fresh.
         ( while sleep "$(( interval * 9 / 10 ))"; do
-            # retry.sh owns the backoff, and the loop keeps asking so a broker that comes back never leaves gh on a dead token.
-            until interval=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'refill > /dev/null && printf %s "$interval"' < /dev/null); do :; done
+            # A terminal error can end retry.sh immediately. Pause before asking the broker again.
+            until interval=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'refill > /dev/null && printf %s "$interval"' < /dev/null); do sleep 30; done
           done ) >> "$RUNNER_TEMP/token.err" 2>&1 &
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
