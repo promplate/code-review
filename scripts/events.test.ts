@@ -1666,11 +1666,21 @@ test.each([".github/workflows/other.yml", ".github/workflows/renamed.yml"])("hos
   expectTailReleased(dir);
 });
 
-test("hosted name fallback applies only without workflow ref", () => {
+test.each(["", "owner/repo/.github/workflows/agent.yml@refs/heads/main"])("hosted retains a failed same-name workflow with ref %s", GITHUB_WORKFLOW_REF => {
+  const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, name: "integration", conclusion: "failure", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
+    { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF, GITHUB_WORKFLOW: "review", WAIT_CI_TIMEOUT: "1" },
+    [{ pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/integration.yml", name: "review", check_suite_id: 7 }] }] }]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("integration: failure");
+  expectTailReleased(dir);
+});
+
+test("hosted without workflow ref retains queued checks despite a shared name", () => {
   const { result, dir } = runCI([{ pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] }], "", [".", "pass"],
     { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", GITHUB_WORKFLOW_REF: "", GITHUB_WORKFLOW: "review", WAIT_CI_TIMEOUT: "1" },
-    [{ pages: [{ workflow_runs: [{ id: 99, name: "review", check_suite_id: 7 }] }] }]);
-  expect(result.exitCode).toBe(0);
+    [{ pages: [{ workflow_runs: [{ id: 99, path: ".github/workflows/integration.yml", name: "review", check_suite_id: 7 }] }] }]);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("No CI checks matching");
   expectTailReleased(dir);
 });
 
