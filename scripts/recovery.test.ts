@@ -337,9 +337,12 @@ await Bun.write(path, JSON.stringify(artifacts.filter(artifact => !older.include
 test("main → merge ref → main restores the latest complete snapshot before deduplication", () => {
   const { setup, lookup, cleanup, artifact, write, read } = sessionSnapshots();
   const restore = "Restore codex session";
-  const snapshotPaths = step("Save codex session").with.path.trim().split("\n").map((path: string) => path.split("/").at(-1));
-  expect(snapshotPaths).toEqual(["sessions", "last-thread-id", "check-runs.jsonl"]);
-  expect(step("Save codex session").with["include-hidden-files"]).toBe(true);
+  // The upload carries one encrypted archive instead of the session's own files.
+  expect(step("Save codex session").with.path).toBe("${{ runner.temp }}/snapshot.bin");
+  expect(step("Encrypt codex session").run).toEndWith("sessions last-thread-id check-runs.jsonl");
+  expect(steps.indexOf(step("Encrypt codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
+  expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Decrypt codex session")));
+  expect(steps.indexOf(step("Decrypt codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
   expect(step(restore).with["artifact-ids"]).toBe("${{ steps.snapshot.outputs.id }}");
   expect(step("Restore legacy session cache").if).toContain("!steps.snapshot.outputs.id");
   expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));

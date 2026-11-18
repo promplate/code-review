@@ -147,7 +147,22 @@ runs:
         MODEL=$(sed -n 's/^model *= *"\([^"]*\)".*/\1/p' <<< "$CODEX_CONFIG" | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
         # A reused runner can hold an older snapshot, or one that was never published.
-        rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork"
+        rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork" "$home/snapshot.bin"
+
+    # Session snapshots are encrypted, so Bun must be installed before the first one is restored.
+    - name: Reuse the runner's Bun
+      id: bun
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
+      shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: |
+        if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
+
+    - uses: oven-sh/setup-bun@v2
+      if: steps.app-token.outputs.skip != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
+      with:
+        bun-version: ${{ inputs.bun-version }}
 
     - name: Find codex session snapshot
       id: snapshot
@@ -165,6 +180,13 @@ runs:
         run-id: ${{ steps.snapshot.outputs.run-id }}
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}
+
+    - name: Decrypt codex session
+      if: steps.app-token.outputs.skip != 'true' && (steps.snapshot.outputs.id)
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/snapshot.bin" "$CODEX_HOME"
 
     - name: Restore legacy session cache
       id: session-cache
@@ -352,6 +374,16 @@ runs:
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}/fork
 
+    - name: Decrypt the session to fork
+      if: steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success')
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      # A fork only adds context; an archive nobody can open must not fail a review that can start without it.
+      # Bun reads a bunfig.toml from the working directory, and the checkout under review is untrusted.
+      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
+        || { rm -rf "$CODEX_HOME/fork"; echo "::warning::The forked session could not be decrypted; this review starts without it."; }
+
     # Paths are part of the cache version, so a legacy cache restores into the opening review's home.
     - name: Restore the legacy session to fork
       id: fork
@@ -373,20 +405,6 @@ runs:
       env:
         SETUP: ${{ inputs.setup }}
       run: bash -e -c "$SETUP"
-
-    - name: Reuse the runner's Bun
-      id: bun
-      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
-      shell: bash
-      env:
-        BUN_VERSION: ${{ inputs.bun-version }}
-      run: |
-        if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
-
-    - uses: oven-sh/setup-bun@v2
-      if: steps.app-token.outputs.skip != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
-      with:
-        bun-version: ${{ inputs.bun-version }}
 
     - name: Install uv
       if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
@@ -518,22 +536,28 @@ runs:
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 
+    - name: Encrypt codex session
+      id: encrypt-session
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
+      # Losing the key must not fail a review that is already published; the older snapshot stays restore-able.
+      continue-on-error: true
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME" sessions last-thread-id check-runs.jsonl
+
     - name: Save codex session
       id: save-session
-      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
+      if: steps.app-token.outputs.skip != 'true' && (steps.encrypt-session.outcome == 'success')
       # An upload failure must not discard a completed review.
       continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.snapshot.outputs.name }}
-        include-hidden-files: true
         if-no-files-found: error
         # A rerun can replace an obsolete slot in this run; lookup keeps the newest snapshot in the other slot.
         overwrite: true
-        path: |
-          ${{ env.CODEX_HOME }}/sessions
-          ${{ env.CODEX_HOME }}/last-thread-id
-          ${{ env.CODEX_HOME }}/check-runs.jsonl
+        path: ${{ runner.temp }}/snapshot.bin
 
     - name: Drop older session snapshots
       if: steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)
@@ -587,14 +611,27 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
 
-    - name: Upload Codex events
+    - name: Encrypt Codex events
+      id: encrypt-events
       if: steps.app-token.outputs.skip != 'true' && (always())
+      # The events only measure the run; losing them must not fail a review that is already published.
+      continue-on-error: true
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      run: |
+        [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
+        (cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" save "$RUNNER_TEMP/codex.jsonl.enc" "$RUNNER_TEMP" codex.jsonl)
+        echo "saved=true" >> "$GITHUB_OUTPUT"
+
+    - name: Upload Codex events
+      if: steps.app-token.outputs.skip != 'true' && (always() && steps.encrypt-events.outputs.saved == 'true')
       # The events only measure the run; losing them must not fail a review that is already published.
       continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
         name: agent-debug-events
-        path: ${{ runner.temp }}/codex.jsonl
+        path: ${{ runner.temp }}/codex.jsonl.enc
         if-no-files-found: ignore
 
     - name: Close check run on failure or cancellation
