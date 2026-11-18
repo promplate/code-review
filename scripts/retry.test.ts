@@ -17,7 +17,11 @@ const file = dir + "/calls";
 const count = existsSync(file) ? readFileSync(file, "utf8").trim().split("\\n").length : 0;
 appendFileSync(file, JSON.stringify({ args: process.argv.slice(2), input: await Bun.stdin.text() }) + "\\n");
 const errors = JSON.parse(process.env.ERRORS);
-if (count < errors.length) { console.error(errors[count]); process.exit(1); }
+if (count < errors.length) {
+  console.log(JSON.stringify({ message: errors[count] }));
+  console.error(errors[count]);
+  process.exit(1);
+}
 console.log("ok");
 console.error("success diagnostic");
 `, { mode: 0o755 });
@@ -101,7 +105,9 @@ test("persistent rate limits exhaust eight attempts with capped backoff", () => 
 
 test("a permission error after a rate limit stops further retries", () => {
   const setup = fixture(['gh: You have exceeded a secondary rate limit. (HTTP 403)', 'gh: Resource not accessible by integration (HTTP 403)']);
-  expect(setup.run().exitCode).toBe(1);
+  const result = setup.run();
+  expect(result.exitCode).toBe(1);
+  expect(JSON.parse(result.stdout.toString())).toEqual({ message: 'gh: Resource not accessible by integration (HTTP 403)' });
   expect(setup.calls()).toHaveLength(2);
   expect(setup.delays()).toEqual([60]);
 });
