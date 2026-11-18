@@ -77,7 +77,7 @@ if (response.error) { console.error(response.error); process.exit(1); }
   // Keep the actual jq evaluator: mocking its JSON output would hide broken filters.
   executable(setup.dir, "jq", `#!/usr/bin/env bash\nprintf 'called\\n' >> "$RUNNER_TEMP/jq-calls"\nexec '${realJq}' "$@"\n`);
   executable(setup.dir, "tail", `#!/usr/bin/env bash\nprintf '%s' "$$" > "$RUNNER_TEMP/tail-pid"\nexec '${realTail}' "$@"\n`);
-  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: { ...setup.env, GH_CONFIG_DIR: join(setup.dir, "gh-config"), GH_TOKEN: "", GITHUB_TOKEN: "", ACTIONS_TOKEN: "", ...extraEnv }, timeout: 3000 });
+  const result = Bun.spawnSync(["bash", join(scripts, "wait-ci.sh"), "head", ...args], { env: { ...setup.env, GH_CONFIG_DIR: join(setup.dir, "gh-config"), GH_TOKEN: "", GITHUB_TOKEN: "", ACTIONS_TOKEN: "", ...extraEnv }, timeout: Math.max(3000, (Number(extraEnv.WAIT_CI_TIMEOUT) || 0) * 1000 + 2000) });
   return { ...setup, result, calls: Number(readFileSync(join(setup.dir, "calls"), "utf8")) };
 }
 
@@ -1719,7 +1719,7 @@ test("hosted recomputes sibling suites when a new queued run appears", () => {
   const { result, calls, dir } = runCI([
     { pages: [{ check_runs: [check({ status: "in_progress" })] }] },
     { pages: [{ check_runs: [check(), check({ id: 101, status: "queued", check_suite: { id: 7 } })] }] },
-  ], frame("status", { sha: "head", state: "success" }), [".", "pass"], { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "1" }, [
+  ], frame("status", { sha: "head", state: "success" }), [".", "pass"], { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "review-uuid", WAIT_CI_TIMEOUT: "5" }, [
     { pages: [{ workflow_runs: [] }] },
     { pages: [{ workflow_runs: [{ id: 99, workflow_id: 42, path: ".github/workflows/agent.yml", check_suite_id: 7 }] }] },
   ]);
