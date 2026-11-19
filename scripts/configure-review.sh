@@ -53,7 +53,7 @@ command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
 type = "command"
 command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
 EOF
-# gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh; MCP children only see the variables named here.
+# gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh.
 # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
 bun -e '
   const path = process.argv[1];
@@ -67,8 +67,7 @@ bun -e '
   }
   if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
   // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
-  // The child sees only the variables named here, so the uv directories of the job travel with it and the download stays inside the job.
-  // PATH is not listed: codex already exports it to every MCP child through its own default allowlist.
+  // Forward the uv directories to keep downloads inside the job. Codex already forwards PATH by default.
   const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 30\n" +
     "env_vars = [\"GH_CONFIG_DIR\", \"UV_CACHE_DIR\", \"UV_TOOL_DIR\", \"UV_PYTHON_INSTALL_DIR\"]\n";
   try { Bun.TOML.parse(config); }
