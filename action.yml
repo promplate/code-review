@@ -22,12 +22,15 @@ inputs:
   broker:
     description: Service that exchanges the job's OIDC token for an installation token of the App and relays webhooks.
     default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
+  encrypt-snapshots:
+    description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
+    default: "false"
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
     description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
   setup:
-    description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`.
+    description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`. It runs after Bun is installed, so a proxy or a Bun it provides does not apply to that install.
   instructions:
     description: Instructions appended to the review prompt, for rules specific to this repository.
   model-catalog:
@@ -147,7 +150,22 @@ runs:
         MODEL=$(sed -n 's/^model *= *"\([^"]*\)".*/\1/p' <<< "$CODEX_CONFIG" | head -1)
         printf 'MODEL_NAME=%s\n' "${MODEL:-default}" >> "$GITHUB_ENV"
         # A reused runner can hold an older snapshot, or one that was never published.
-        rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork"
+        rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork" "$home/snapshot.bin"
+
+    # Snapshots are archived and unpacked by a Bun script, so Bun must be installed before the first one is restored.
+    - name: Reuse the runner's Bun
+      id: bun
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
+      shell: bash
+      env:
+        BUN_VERSION: ${{ inputs.bun-version }}
+      run: |
+        if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
+
+    - uses: oven-sh/setup-bun@v2
+      if: steps.app-token.outputs.skip != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
+      with:
+        bun-version: ${{ inputs.bun-version }}
 
     - name: Find codex session snapshot
       id: snapshot
@@ -165,6 +183,13 @@ runs:
         run-id: ${{ steps.snapshot.outputs.run-id }}
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}
+
+    - name: Extract codex session
+      if: steps.app-token.outputs.skip != 'true' && (steps.snapshot.outputs.id)
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" load "$CODEX_HOME/snapshot.bin" "$CODEX_HOME"
 
     - name: Restore legacy session cache
       id: session-cache
@@ -352,6 +377,22 @@ runs:
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}/fork
 
+    - name: Extract the session to fork
+      id: decrypt-fork
+      if: steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success')
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+      # A fork only adds context; an archive nobody can open must not fail a review that can start without it.
+      run: |
+        if bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
+          && [ -d "$CODEX_HOME/fork/sessions" ] && [ -s "$CODEX_HOME/fork/last-thread-id" ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          rm -rf "$CODEX_HOME/fork"
+          echo "::warning::Could not restore the session to fork. This review starts without it."
+        fi
+
     # Paths are part of the cache version, so a legacy cache restores into the opening review's home.
     - name: Restore the legacy session to fork
       id: fork
@@ -367,26 +408,27 @@ runs:
           code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:
           code-review-default-${{ steps.check.outputs.fork-key }}:
 
+    - name: Verify the legacy session to fork
+      id: verify-fork
+      if: steps.app-token.outputs.skip != 'true' && (steps.fork.outputs.cache-matched-key)
+      shell: bash
+      env:
+        FORK_KEY: ${{ steps.check.outputs.fork-key }}
+      run: |
+        fork="$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/$FORK_KEY"
+        # A session cached only its check history when its last save was a covered push, so there is no conversation to fork.
+        if [ -d "$fork/sessions" ] && [ -s "$fork/last-thread-id" ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::The cached session has no conversation to continue. This review starts without it."
+        fi
+
     - name: Run setup
       if: steps.app-token.outputs.skip != 'true' && (inputs.setup != '' && env.SKIP != 'true')
       shell: bash
       env:
         SETUP: ${{ inputs.setup }}
       run: bash -e -c "$SETUP"
-
-    - name: Reuse the runner's Bun
-      id: bun
-      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
-      shell: bash
-      env:
-        BUN_VERSION: ${{ inputs.bun-version }}
-      run: |
-        if command -v bun > /dev/null && [ "$(bun --version)" = "$BUN_VERSION" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; fi
-
-    - uses: oven-sh/setup-bun@v2
-      if: steps.app-token.outputs.skip != 'true' && (steps.bun.outputs.ready != 'true' && env.SKIP != 'true')
-      with:
-        bun-version: ${{ inputs.bun-version }}
 
     - name: Install uv
       if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
@@ -459,7 +501,7 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
+        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
@@ -518,22 +560,29 @@ runs:
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 
+    - name: Archive codex session
+      id: encrypt-session
+      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
+      # Losing the key must not fail a review that is already published; the older snapshot stays restore-able.
+      continue-on-error: true
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+        ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME"
+
     - name: Save codex session
       id: save-session
-      if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
+      if: steps.app-token.outputs.skip != 'true' && (steps.encrypt-session.outcome == 'success')
       # An upload failure must not discard a completed review.
       continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.snapshot.outputs.name }}
-        include-hidden-files: true
         if-no-files-found: error
         # A rerun can replace an obsolete slot in this run; lookup keeps the newest snapshot in the other slot.
         overwrite: true
-        path: |
-          ${{ env.CODEX_HOME }}/sessions
-          ${{ env.CODEX_HOME }}/last-thread-id
-          ${{ env.CODEX_HOME }}/check-runs.jsonl
+        path: ${{ runner.temp }}/snapshot.bin
 
     - name: Drop older session snapshots
       if: steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)
@@ -587,14 +636,28 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
 
-    - name: Upload Codex events
+    - name: Archive Codex events
+      id: encrypt-events
       if: steps.app-token.outputs.skip != 'true' && (always())
+      # The events only measure the run; losing them must not fail a review that is already published.
+      continue-on-error: true
+      shell: bash
+      env:
+        BROKER: ${{ inputs.broker }}
+        ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
+      run: |
+        [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
+        bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/codex.jsonl.bin" "$RUNNER_TEMP" codex.jsonl
+        echo "saved=true" >> "$GITHUB_OUTPUT"
+
+    - name: Upload Codex events
+      if: steps.app-token.outputs.skip != 'true' && (always() && steps.encrypt-events.outputs.saved == 'true')
       # The events only measure the run; losing them must not fail a review that is already published.
       continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
         name: agent-debug-events
-        path: ${{ runner.temp }}/codex.jsonl
+        path: ${{ runner.temp }}/codex.jsonl.bin
         if-no-files-found: ignore
 
     - name: Close check run on failure or cancellation

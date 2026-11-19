@@ -337,9 +337,14 @@ await Bun.write(path, JSON.stringify(artifacts.filter(artifact => !older.include
 test("main → merge ref → main restores the latest complete snapshot before deduplication", () => {
   const { setup, lookup, cleanup, artifact, write, read } = sessionSnapshots();
   const restore = "Restore codex session";
-  const snapshotPaths = step("Save codex session").with.path.trim().split("\n").map((path: string) => path.split("/").at(-1));
-  expect(snapshotPaths).toEqual(["sessions", "last-thread-id", "check-runs.jsonl"]);
-  expect(step("Save codex session").with["include-hidden-files"]).toBe(true);
+  // The upload carries the session files in a single archive.
+  expect(step("Save codex session").with.path).toBe("${{ runner.temp }}/snapshot.bin");
+  expect(step("Archive codex session").run).toContain("scripts/snapshot.sh");
+  expect(steps.indexOf(step("Archive codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
+  // Extracting the archive needs Bun, so its install moves ahead of the first restore.
+  expect(steps.indexOf(step("Reuse the runner's Bun"))).toBeLessThan(steps.indexOf(step(restore)));
+  expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Extract codex session")));
+  expect(steps.indexOf(step("Extract codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
   expect(step(restore).with["artifact-ids"]).toBe("${{ steps.snapshot.outputs.id }}");
   expect(step("Restore legacy session cache").if).toContain("!steps.snapshot.outputs.id");
   expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
@@ -404,7 +409,7 @@ test("a fork retries the download only after the opener prunes its selected snap
     "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
     path: "${{ env.CODEX_HOME }}/fork",
   });
-  expect(step("Run codex review").env.FORK_KEY).toContain("steps.restore-fork-replacement.outcome == 'success'");
+  expect(step("Extract the session to fork").if).toContain("steps.restore-fork-replacement.outcome == 'success'");
   write([old]);
   expect(lookup("12", source).id).toBe("20");
   const retry = () => {
@@ -421,6 +426,52 @@ test("a fork retries the download only after the opener prunes its selected snap
   expect(retry().exitCode).toBe(0);
   expect(readFileSync(output, "utf8")).toContain("id=19\nrun-id=11\n");
   expect(existsSync(join(setup.dir, "fork"))).toBe(false);
+});
+
+test("a child only forks a downloaded session after it unpacks", () => {
+  const setup = fixture(), decrypt = step("Extract the session to fork");
+  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "fork");
+  const key = step("Run codex review").env.FORK_KEY;
+  expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}`);
+  writeFileSync(output, "");
+  mkdirSync(fork);
+  writeFileSync(join(fork, "snapshot.bin"), "unreadable archive");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(existsSync(fork)).toBe(false);
+  expect(readFileSync(output, "utf8")).toBe("");
+  mkdirSync(fork);
+  writeFileSync(join(fork, "check-runs.jsonl"), "");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(existsSync(fork)).toBe(false);
+  expect(readFileSync(output, "utf8")).toBe("");
+  mkdirSync(join(fork, "sessions"), { recursive: true });
+  writeFileSync(join(fork, "last-thread-id"), "legacy-thread");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("restored=true\n");
+});
+
+test("a cached session without a conversation does not become a fork", () => {
+  const setup = fixture(), verify = step("Verify the legacy session to fork");
+  const source = "ref-$release";
+  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "code-review-homes/owner/repo", source);
+  expect(verify.env?.FORK_KEY).toBe("${{ steps.check.outputs.fork-key }}");
+  const runVerify = () => {
+    writeFileSync(output, "");
+    return run(verify.name, setup, { FORK_KEY: source, release: "v1" });
+  };
+  // A covered-push save left only the check history, and `cp -R` would fail the child review on it.
+  mkdirSync(fork, { recursive: true });
+  writeFileSync(join(fork, "check-runs.jsonl"), "");
+  writeFileSync(join(fork, "config.toml"), "profile = 'review'");
+  expect(runVerify().exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("");
+  expect(readFileSync(join(fork, "config.toml"), "utf8")).toBe("profile = 'review'");
+
+  mkdirSync(join(fork, "sessions"), { recursive: true });
+  writeFileSync(join(fork, "last-thread-id"), "thread-1\n");
+  expect(runVerify().exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("restored=true\n");
+  expect(existsSync(join(fork, "sessions"))).toBe(true);
 });
 
 test("hook receipts survive publication and restore from the cached JSON format", () => {
