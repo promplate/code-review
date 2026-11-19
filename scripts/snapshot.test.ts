@@ -111,6 +111,17 @@ test("encryption is off unless the repository asks for it, and needs no broker",
   expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
 });
 
+test("turning encryption off still restores what an encrypted save wrote", async () => {
+  const source = home({ "last-thread-id": "thread-1\n" });
+  const archive = join(home({}), "snapshot.bin");
+  expect((await run(["save", archive, source, "last-thread-id"])).exitCode).toBe(0);
+  expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP1\n");
+  const target = home({});
+  // The archive says which format it is, so the read path never consults the input.
+  expect((await run(["load", archive, target], "23", { ENCRYPT_SNAPSHOTS: "false" })).exitCode).toBe(0);
+  expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
+});
+
 test("a broker that fails the key request stores nothing", async () => {
   const source = home({ "last-thread-id": "thread-1\n" });
   const archive = join(home({}), "snapshot.bin");
