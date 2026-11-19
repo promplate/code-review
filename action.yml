@@ -27,7 +27,7 @@ inputs:
   service-tier:
     description: Provider service tier for reviews, such as `ultrafast` where the model advertises it; `default` or empty sends none.
   setup:
-    description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`.
+    description: Shell to run on the runner before Codex is installed, for tools the review needs; add directories to the PATH through `$GITHUB_PATH`. It runs after Bun is installed, so a proxy or a Bun it provides does not apply to that install.
   instructions:
     description: Instructions appended to the review prompt, for rules specific to this repository.
   model-catalog:
@@ -186,7 +186,7 @@ runs:
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
-      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/snapshot.bin" "$CODEX_HOME"
+      run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" load "$CODEX_HOME/snapshot.bin" "$CODEX_HOME"
 
     - name: Restore legacy session cache
       id: session-cache
@@ -381,10 +381,8 @@ runs:
       env:
         BROKER: ${{ inputs.broker }}
       # A fork only adds context; an archive nobody can open must not fail a review that can start without it.
-      # Bun reads a bunfig.toml from the working directory, and the checkout under review is untrusted.
       run: |
-        cd "$RUNNER_TEMP"
-        if bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
+        if bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
           && [ -d "$CODEX_HOME/fork/sessions" ] && [ -s "$CODEX_HOME/fork/last-thread-id" ]; then
           echo "restored=true" >> "$GITHUB_OUTPUT"
         else
@@ -552,7 +550,7 @@ runs:
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
-      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME" sessions last-thread-id check-runs.jsonl
+      run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME"
 
     - name: Save codex session
       id: save-session
@@ -629,7 +627,7 @@ runs:
         BROKER: ${{ inputs.broker }}
       run: |
         [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
-        (cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" save "$RUNNER_TEMP/codex.jsonl.enc" "$RUNNER_TEMP" codex.jsonl)
+        bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/codex.jsonl.enc" "$RUNNER_TEMP" codex.jsonl
         echo "saved=true" >> "$GITHUB_OUTPUT"
 
     - name: Upload Codex events

@@ -339,8 +339,10 @@ test("main → merge ref → main restores the latest complete snapshot before d
   const restore = "Restore codex session";
   // The upload carries one encrypted archive instead of the session's own files.
   expect(step("Save codex session").with.path).toBe("${{ runner.temp }}/snapshot.bin");
-  expect(step("Encrypt codex session").run).toEndWith("sessions last-thread-id check-runs.jsonl");
+  expect(step("Encrypt codex session").run).toContain("scripts/snapshot.sh");
   expect(steps.indexOf(step("Encrypt codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
+  // Decrypting needs Bun, so its install moves ahead of the first restore.
+  expect(steps.indexOf(step("Reuse the runner's Bun"))).toBeLessThan(steps.indexOf(step(restore)));
   expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Decrypt codex session")));
   expect(steps.indexOf(step("Decrypt codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
   expect(step(restore).with["artifact-ids"]).toBe("${{ steps.snapshot.outputs.id }}");

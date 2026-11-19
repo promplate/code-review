@@ -16,7 +16,7 @@ const server = Bun.serve({
     // A broker that predates snapshot keys answers 404, like any route it does not serve.
     if (repo === "legacy") return new Response("not found", { status: 404 });
     // Only an absent route may fall back to plaintext; a broker that fails must stop the run.
-    if (repo === "broken") return new Response("boom", { status: 500 });
+    if (repo === "broken") return new Response("boom", { status: 400 });
     if (url.pathname !== "/snapshot-key" || !repo) return new Response("bad token", { status: 401 });
     const key = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`snapshot:${repo}`)));
     return Response.json({ key: Buffer.from(key).toString("base64") });
@@ -85,20 +85,13 @@ test("an artifact saved before snapshots became one archive still restores its u
   expect(existsSync(join(target, "sessions/a.jsonl"))).toBe(true);
 });
 
-test("a broker that predates snapshot keys stores a plain archive, and cannot open an encrypted one", async () => {
+test("a broker without the endpoint saves nothing, in the clear or otherwise", async () => {
   const source = home({ "last-thread-id": "thread-1\n" });
   const archive = join(home({}), "snapshot.bin");
-  expect((await run(["save", archive, source, "last-thread-id"], "legacy")).exitCode).toBe(0);
-  expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP0\n");
-  const target = home({});
-  expect((await run(["load", archive, target], "legacy")).exitCode).toBe(0);
-  expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
-
-  const encrypted = join(home({}), "snapshot.bin");
-  expect((await run(["save", encrypted, source, "last-thread-id"])).exitCode).toBe(0);
-  const decrypted = await run(["load", encrypted, home({})], "legacy");
-  expect(decrypted.exitCode).not.toBe(0);
-  expect(decrypted.stderr).toContain("no longer provides snapshot keys");
+  const saved = await run(["save", archive, source, "last-thread-id"], "legacy");
+  expect(saved.exitCode).not.toBe(0);
+  expect(saved.stderr).toContain("does not provide snapshot keys");
+  expect(existsSync(archive)).toBe(false);
 });
 
 test("a restore that unpacked nothing fails instead of starting a fresh session", async () => {

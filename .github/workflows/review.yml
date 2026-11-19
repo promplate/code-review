@@ -24,7 +24,7 @@ on:
         type: string
         default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
       setup:
-        description: Shell to run on the runner before Codex is installed, for tools the review needs.
+        description: Shell to run on the runner before Codex is installed, for tools the review needs. It runs after Bun is installed, so a proxy or a Bun it provides does not apply to that install.
         type: string
         default: ""
       instructions:
