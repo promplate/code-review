@@ -436,7 +436,8 @@ runs:
       run: |
         # Everything uv downloads or builds stays under the job's temp directory, so a runner reused by other jobs keeps what it already had.
         printf 'UV_CACHE_DIR=%s\nUV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/cache" "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
-        if ! command -v uv > /dev/null; then
+        # uvx ships with a full uv install but not with a bare uv binary; the gh MCP server spawns uvx, so a runner that has only uv must still get the complete toolchain.
+        if ! command -v uv > /dev/null || ! command -v uvx > /dev/null; then
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
         fi
@@ -501,8 +502,8 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        # The outputs are 'true' or absent; a comparison would yield the boolean false, which renders as the string "false" and looks like a fork key.
-        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored || steps.verify-fork.outputs.restored) && steps.check.outputs.fork-key }}
+        # Without the empty-string fallback, a failed restore check sets FORK_KEY to "false", which run-review.sh treats as a session key.
+        FORK_KEY: ${{ ((steps.decrypt-fork.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key) || '' }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
