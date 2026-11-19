@@ -155,6 +155,8 @@ def mixed_merge():
     assert git(f.work, "show", ":0:auto") == automatic
     git(f.work, "--literal-pathspecs", "add", "--", "resolve[1]")
     expected = git(f.work, "write-tree").decode().strip()
+    # Restore the conflict stages so the helper must stage the working-tree resolution itself.
+    git(f.work, "update-index", "--unresolve", "resolve[1]")
     f.publish("resolve[1]")
     assert f.remote_rev("head^{tree}") == expected
     assert f.requests("git/commits")[0]["parents"] == [head, base]
@@ -165,7 +167,6 @@ def mixed_merge():
     assert f.blob("head-only") == b"already in head\n"
     assert f.entry("resolve1") is None
     f.pass_("mixed merge uploads auto-merged and resolved blobs and reuses both parents' blobs")
-
 
 def ignored_submodule_merge():
     def init(w):

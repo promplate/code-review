@@ -12,7 +12,7 @@ if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
     git cat-file blob "$sha" | upload_blob
   done
 else
-  # Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
+  # Upload the staged bytes so GitHub computes the same blob IDs as the index.
   git --literal-pathspecs diff --cached --ignore-submodules=none --no-renames --diff-filter=AMT --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
     # A type change can replace a file with a submodule, whose commit lives in a different repository.
     [ "$(git --literal-pathspecs ls-files --format='%(objectmode)' -- "$path")" != 160000 ] || continue
