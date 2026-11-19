@@ -407,7 +407,7 @@ test("a fork retries the download only after the opener prunes its selected snap
     "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
     path: "${{ env.CODEX_HOME }}/fork",
   });
-  expect(step("Run codex review").env.FORK_KEY).toContain("steps.restore-fork-replacement.outcome == 'success'");
+  expect(step("Decrypt the session to fork").if).toContain("steps.restore-fork-replacement.outcome == 'success'");
   write([old]);
   expect(lookup("12", source).id).toBe("20");
   const retry = () => {
@@ -424,6 +424,28 @@ test("a fork retries the download only after the opener prunes its selected snap
   expect(retry().exitCode).toBe(0);
   expect(readFileSync(output, "utf8")).toContain("id=19\nrun-id=11\n");
   expect(existsSync(join(setup.dir, "fork"))).toBe(false);
+});
+
+test("a child only forks a downloaded session after it unpacks", () => {
+  const setup = fixture(), decrypt = step("Decrypt the session to fork");
+  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "fork");
+  const key = step("Run codex review").env.FORK_KEY;
+  expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}`);
+  writeFileSync(output, "");
+  mkdirSync(fork);
+  writeFileSync(join(fork, "snapshot.bin"), "unreadable archive");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(existsSync(fork)).toBe(false);
+  expect(readFileSync(output, "utf8")).toBe("");
+  mkdirSync(fork);
+  writeFileSync(join(fork, "check-runs.jsonl"), "");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(existsSync(fork)).toBe(false);
+  expect(readFileSync(output, "utf8")).toBe("");
+  mkdirSync(join(fork, "sessions"), { recursive: true });
+  writeFileSync(join(fork, "last-thread-id"), "legacy-thread");
+  expect(run(decrypt.name, setup).exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("restored=true\n");
 });
 
 test("hook receipts survive publication and restore from the cached JSON format", () => {

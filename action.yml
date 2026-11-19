@@ -375,14 +375,22 @@ runs:
         path: ${{ env.CODEX_HOME }}/fork
 
     - name: Decrypt the session to fork
+      id: decrypt-fork
       if: steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success')
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
       # A fork only adds context; an archive nobody can open must not fail a review that can start without it.
       # Bun reads a bunfig.toml from the working directory, and the checkout under review is untrusted.
-      run: cd "$RUNNER_TEMP" && bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
-        || { rm -rf "$CODEX_HOME/fork"; echo "::warning::The forked session could not be decrypted; this review starts without it."; }
+      run: |
+        cd "$RUNNER_TEMP"
+        if bun "$GITHUB_ACTION_PATH/scripts/snapshot.ts" load "$CODEX_HOME/fork/snapshot.bin" "$CODEX_HOME/fork" \
+          && [ -d "$CODEX_HOME/fork/sessions" ] && [ -s "$CODEX_HOME/fork/last-thread-id" ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          rm -rf "$CODEX_HOME/fork"
+          echo "::warning::Could not restore the session to fork. This review starts without it."
+        fi
 
     # Paths are part of the cache version, so a legacy cache restores into the opening review's home.
     - name: Restore the legacy session to fork
@@ -477,7 +485,7 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
+        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored == 'true' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
