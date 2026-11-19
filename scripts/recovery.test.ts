@@ -452,18 +452,20 @@ test("a child only forks a downloaded session after it unpacks", () => {
 
 test("a cached session without a conversation does not become a fork", () => {
   const setup = fixture(), verify = step("Verify the legacy session to fork");
-  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "code-review-homes/owner/repo/source");
-  const command = verify.run.replaceAll("${{ steps.check.outputs.fork-key }}", "source");
+  const source = "ref-$release";
+  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "code-review-homes/owner/repo", source);
+  expect(verify.env?.FORK_KEY).toBe("${{ steps.check.outputs.fork-key }}");
   const runVerify = () => {
     writeFileSync(output, "");
-    return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", command], { env: { ...setup.env, GITHUB_OUTPUT: output } });
+    return run(verify.name, setup, { FORK_KEY: source, release: "v1" });
   };
   // A covered-push save left only the check history, and `cp -R` would fail the child review on it.
   mkdirSync(fork, { recursive: true });
   writeFileSync(join(fork, "check-runs.jsonl"), "");
+  writeFileSync(join(fork, "config.toml"), "profile = 'review'");
   expect(runVerify().exitCode).toBe(0);
   expect(readFileSync(output, "utf8")).toBe("");
-  expect(existsSync(fork)).toBe(false);
+  expect(readFileSync(join(fork, "config.toml"), "utf8")).toBe("profile = 'review'");
 
   mkdirSync(join(fork, "sessions"), { recursive: true });
   writeFileSync(join(fork, "last-thread-id"), "thread-1\n");
