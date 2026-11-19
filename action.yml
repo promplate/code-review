@@ -436,7 +436,9 @@ runs:
       run: |
         # Everything uv downloads or builds stays under the job's temp directory, so a runner reused by other jobs keeps what it already had.
         printf 'UV_CACHE_DIR=%s\nUV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/cache" "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
-        if ! command -v uv > /dev/null; then
+        # Probe uvx, not uv: the gh MCP server runs `uvx gh-mcp`, and a host that ships only
+        # `uv` on PATH skips this install and leaves the server unresolvable.
+        if ! command -v uvx > /dev/null; then
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
         fi
