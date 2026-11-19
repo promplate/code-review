@@ -14,12 +14,13 @@ done
 if git rev-parse -q --verify MERGE_HEAD > /dev/null && git diff --cached --ignore-submodules=none --quiet HEAD; then
   tree=$(git rev-parse 'HEAD^{tree}')
 else
-  tree=$(git diff --cached --ignore-submodules=none --no-renames --name-only -z HEAD | while IFS= read -r -d '' path; do
-    # An unmerged path has only stage 1–3 entries, and its first line is the merge base: committing that would drop the resolution.
-    entries=$(git --literal-pathspecs ls-files -s -- "$path")
-    read -r mode sha < <(awk '$3 == 0 { print $1, $2; exit }' <<< "$entries") || true
-    if [ -z "$entries" ]; then mode=100644 sha=; # The tree drops a deleted path.
-    elif [ -z "$sha" ]; then echo "Unresolved conflict in $path" >&2; exit 1; fi
+  tree=$(git diff --cached --ignore-submodules=none --no-renames --raw --no-abbrev -z HEAD | while IFS= read -r -d '' entry && IFS= read -r -d '' path; do
+    # Use the diff's exact entry: looking up a deleted file by name also matches children of a directory that replaced it.
+    read -r _ mode _ sha status <<< "$entry"
+    case "$status" in
+      D) mode=100644 sha= ;; # The tree drops a deleted path.
+      U) echo "Unresolved conflict in $path" >&2; exit 1 ;;
+    esac
     jq -n --arg path "$path" --arg mode "$mode" --arg sha "$sha" '{path: $path, mode: $mode, type: (if $mode == "160000" then "commit" else "blob" end), sha: (if $sha == "" then null else $sha end)}'
   done | jq -s --arg base "$(git rev-parse 'HEAD^{tree}')" '{base_tree: $base, tree: .}' | api git/trees)
 fi

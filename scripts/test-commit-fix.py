@@ -14,11 +14,10 @@ import tempfile
 
 COMMIT = Path(__file__).resolve().with_name("commit-fix.sh")
 ZERO = "0" * 40
-ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null",
+ENV = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+ENV.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null",
            GIT_AUTHOR_NAME="Offline fixture", GIT_AUTHOR_EMAIL="fixture@example.test",
            GIT_COMMITTER_NAME="Offline fixture", GIT_COMMITTER_EMAIL="fixture@example.test")
-for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_COUNT"):
-    ENV.pop(name, None)
 
 def run(cmd, cwd=None, env=None, input=None):
     out = subprocess.run(cmd, cwd=cwd, env=env or ENV, input=input, capture_output=True)
@@ -124,6 +123,24 @@ def unchanged_merge():
     assert f.requests("git/commits")[0]["parents"] == [head, base]
     f.pass_("same-tree merge reuses the tree and preserves both parents")
 
+def ignored_submodule_merge():
+    def init(w):
+        init_basic(w)
+        (w/"module").mkdir()
+        (w/".gitmodules").write_text('[submodule "module"]\n\tpath = module\n\tignore = all\n')
+        git(w, "update-index", "--add", "--cacheinfo", f"160000,{'1'*40},module")
+    f = Fixture("ignored-submodule", init)
+    git(f.work, "switch", "-qc", "base")
+    git(f.work, "update-index", "--cacheinfo", f"160000,{'2'*40},module")
+    git(f.work, "commit", "-qm", "advance submodule")
+    git(f.work, "push", "-q", "origin", "base")
+    git(f.work, "switch", "-q", "head")
+    git(f.work, "merge", "--no-commit", "--no-ff", "base")
+    f.publish("plain")
+    assert f.remote_rev("head^{tree}") == f.remote_rev("base^{tree}")
+    assert f.requests("git/commits")[0]["parents"] == [f.original, f.remote_rev("base")]
+    f.pass_("merge preserves a staged update to an ignored submodule")
+
 def indexed_blobs():
     def init(w):
         init_basic(w)
@@ -180,6 +197,18 @@ def literal_paths():
     assert f.entry("deletion") is None
     f.pass_("literal staging and index lookup; directory changes and deletions still work")
 
+def file_to_directory():
+    f = Fixture("file-to-directory", init_basic)
+    (f.work/"plain").unlink()
+    (f.work/"plain").mkdir()
+    (f.work/"plain"/"child").write_text("new child\n")
+    f.publish("plain")
+    # GitHub requires an explicit deletion before a nested entry can replace a blob.
+    rows = {row["path"]: row for row in f.requests("git/trees")[0]["tree"]}
+    assert rows["plain"]["sha"] is None
+    assert f.blob("plain/child") == b"new child\n"
+    f.pass_("a directory replaces a tracked file")
+
 if __name__ == "__main__":
     if sys.argv[1:] and sys.argv[1] == "--mock-gh":
         mocked_gh()
@@ -193,5 +222,5 @@ if __name__ == "__main__":
             gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} '
                           f'{shlex.quote(str(Path(__file__).resolve()))} --mock-gh "$@"\n')
             gh.chmod(0o755)
-            for test in (unchanged_merge, indexed_blobs, type_changes, literal_paths):
+            for test in (unchanged_merge, ignored_submodule_merge, indexed_blobs, type_changes, literal_paths, file_to_directory):
                 test()
