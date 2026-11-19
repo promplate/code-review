@@ -405,6 +405,20 @@ runs:
           code-review-${{ env.MODEL_NAME }}-${{ steps.check.outputs.fork-key }}:
           code-review-default-${{ steps.check.outputs.fork-key }}:
 
+    - name: Verify the legacy session to fork
+      id: verify-fork
+      if: steps.app-token.outputs.skip != 'true' && (steps.fork.outputs.cache-matched-key)
+      shell: bash
+      run: |
+        fork="$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/${{ steps.check.outputs.fork-key }}"
+        # A session cached only its check history when its last save was a covered push, so there is no conversation to fork.
+        if [ -d "$fork/sessions" ] && [ -s "$fork/last-thread-id" ]; then
+          echo "restored=true" >> "$GITHUB_OUTPUT"
+        else
+          rm -rf "$fork"
+          echo "::warning::The cached session has no conversation to continue. This review starts without it."
+        fi
+
     - name: Run setup
       if: steps.app-token.outputs.skip != 'true' && (inputs.setup != '' && env.SKIP != 'true')
       shell: bash
@@ -483,7 +497,7 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored == 'true' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}
+        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}

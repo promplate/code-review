@@ -432,7 +432,7 @@ test("a child only forks a downloaded session after it unpacks", () => {
   const setup = fixture(), decrypt = step("Decrypt the session to fork");
   const output = join(setup.dir, "github-output"), fork = join(setup.dir, "fork");
   const key = step("Run codex review").env.FORK_KEY;
-  expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.fork.outputs.cache-matched-key) && steps.check.outputs.fork-key }}`);
+  expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}`);
   writeFileSync(output, "");
   mkdirSync(fork);
   writeFileSync(join(fork, "snapshot.bin"), "unreadable archive");
@@ -448,6 +448,28 @@ test("a child only forks a downloaded session after it unpacks", () => {
   writeFileSync(join(fork, "last-thread-id"), "legacy-thread");
   expect(run(decrypt.name, setup).exitCode).toBe(0);
   expect(readFileSync(output, "utf8")).toBe("restored=true\n");
+});
+
+test("a cached session without a conversation does not become a fork", () => {
+  const setup = fixture(), verify = step("Verify the legacy session to fork");
+  const output = join(setup.dir, "github-output"), fork = join(setup.dir, "code-review-homes/owner/repo/source");
+  const command = verify.run.replaceAll("${{ steps.check.outputs.fork-key }}", "source");
+  const runVerify = () => {
+    writeFileSync(output, "");
+    return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", command], { env: { ...setup.env, GITHUB_OUTPUT: output } });
+  };
+  // A covered-push save left only the check history, and `cp -R` would fail the child review on it.
+  mkdirSync(fork, { recursive: true });
+  writeFileSync(join(fork, "check-runs.jsonl"), "");
+  expect(runVerify().exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("");
+  expect(existsSync(fork)).toBe(false);
+
+  mkdirSync(join(fork, "sessions"), { recursive: true });
+  writeFileSync(join(fork, "last-thread-id"), "thread-1\n");
+  expect(runVerify().exitCode).toBe(0);
+  expect(readFileSync(output, "utf8")).toBe("restored=true\n");
+  expect(existsSync(join(fork, "sessions"))).toBe(true);
 });
 
 test("hook receipts survive publication and restore from the cached JSON format", () => {
