@@ -5,7 +5,9 @@ api() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSI
 # Stage only the paths the fix touched; tests leave untracked artifacts such as __pycache__ behind.
 git add -A -- "${@:2}"
 # Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
-git diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
+git diff --cached --no-renames --diff-filter=AMT --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
+  # A type change can replace a file with a submodule, whose commit lives in a different repository.
+  [ "$(git --literal-pathspecs ls-files --format='%(objectmode)' -- "$path")" != 160000 ] || continue
   base64 < "$path" | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
 done
 tree=$(git diff --cached --no-renames --name-only -z HEAD | while IFS= read -r -d '' path; do
