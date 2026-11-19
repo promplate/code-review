@@ -339,12 +339,12 @@ test("main → merge ref → main restores the latest complete snapshot before d
   const restore = "Restore codex session";
   // The upload carries one encrypted archive instead of the session's own files.
   expect(step("Save codex session").with.path).toBe("${{ runner.temp }}/snapshot.bin");
-  expect(step("Encrypt codex session").run).toContain("scripts/snapshot.sh");
-  expect(steps.indexOf(step("Encrypt codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
+  expect(step("Archive codex session").run).toContain("scripts/snapshot.sh");
+  expect(steps.indexOf(step("Archive codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
   // Decrypting needs Bun, so its install moves ahead of the first restore.
   expect(steps.indexOf(step("Reuse the runner's Bun"))).toBeLessThan(steps.indexOf(step(restore)));
-  expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Decrypt codex session")));
-  expect(steps.indexOf(step("Decrypt codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
+  expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Extract codex session")));
+  expect(steps.indexOf(step("Extract codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
   expect(step(restore).with["artifact-ids"]).toBe("${{ steps.snapshot.outputs.id }}");
   expect(step("Restore legacy session cache").if).toContain("!steps.snapshot.outputs.id");
   expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));
@@ -409,7 +409,7 @@ test("a fork retries the download only after the opener prunes its selected snap
     "artifact-ids": "${{ steps.fork-replacement.outputs.id }}", "run-id": "${{ steps.fork-replacement.outputs.run-id }}",
     path: "${{ env.CODEX_HOME }}/fork",
   });
-  expect(step("Decrypt the session to fork").if).toContain("steps.restore-fork-replacement.outcome == 'success'");
+  expect(step("Extract the session to fork").if).toContain("steps.restore-fork-replacement.outcome == 'success'");
   write([old]);
   expect(lookup("12", source).id).toBe("20");
   const retry = () => {
@@ -429,7 +429,7 @@ test("a fork retries the download only after the opener prunes its selected snap
 });
 
 test("a child only forks a downloaded session after it unpacks", () => {
-  const setup = fixture(), decrypt = step("Decrypt the session to fork");
+  const setup = fixture(), decrypt = step("Extract the session to fork");
   const output = join(setup.dir, "github-output"), fork = join(setup.dir, "fork");
   const key = step("Run codex review").env.FORK_KEY;
   expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}`);

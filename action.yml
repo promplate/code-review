@@ -22,6 +22,9 @@ inputs:
   broker:
     description: Service that exchanges the job's OIDC token for an installation token of the App and relays webhooks.
     default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
+  encrypt-snapshots:
+    description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
+    default: "false"
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
@@ -149,7 +152,7 @@ runs:
         # A reused runner can hold an older snapshot, or one that was never published.
         rm -rf "$home/sessions" "$home/last-thread-id" "$home/check-runs.jsonl" "$home/fork" "$home/snapshot.bin"
 
-    # Session snapshots are encrypted, so Bun must be installed before the first one is restored.
+    # Snapshots are archived and unpacked by a Bun script, so Bun must be installed before the first one is restored.
     - name: Reuse the runner's Bun
       id: bun
       if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
@@ -181,7 +184,7 @@ runs:
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}
 
-    - name: Decrypt codex session
+    - name: Extract codex session
       if: steps.app-token.outputs.skip != 'true' && (steps.snapshot.outputs.id)
       shell: bash
       env:
@@ -374,7 +377,7 @@ runs:
         github-token: ${{ github.token }}
         path: ${{ env.CODEX_HOME }}/fork
 
-    - name: Decrypt the session to fork
+    - name: Extract the session to fork
       id: decrypt-fork
       if: steps.app-token.outputs.skip != 'true' && (steps.restore-fork.outcome == 'success' || steps.restore-fork-replacement.outcome == 'success')
       shell: bash
@@ -557,7 +560,7 @@ runs:
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/scripts/checkpoint-review.sh"
 
-    - name: Encrypt codex session
+    - name: Archive codex session
       id: encrypt-session
       if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true' || env.RECORDED_SKIP == 'true')
       # Losing the key must not fail a review that is already published; the older snapshot stays restore-able.
@@ -565,6 +568,7 @@ runs:
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
+        ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
       run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME"
 
     - name: Save codex session
@@ -632,7 +636,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: bash "$GITHUB_ACTION_PATH/scripts/merge-review.sh"
 
-    - name: Encrypt Codex events
+    - name: Archive Codex events
       id: encrypt-events
       if: steps.app-token.outputs.skip != 'true' && (always())
       # The events only measure the run; losing them must not fail a review that is already published.
@@ -640,9 +644,10 @@ runs:
       shell: bash
       env:
         BROKER: ${{ inputs.broker }}
+        ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
       run: |
         [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
-        bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/codex.jsonl.enc" "$RUNNER_TEMP" codex.jsonl
+        bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/codex.jsonl.bin" "$RUNNER_TEMP" codex.jsonl
         echo "saved=true" >> "$GITHUB_OUTPUT"
 
     - name: Upload Codex events
@@ -652,7 +657,7 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: agent-debug-events
-        path: ${{ runner.temp }}/codex.jsonl.enc
+        path: ${{ runner.temp }}/codex.jsonl.bin
         if-no-files-found: ignore
 
     - name: Close check run on failure or cancellation

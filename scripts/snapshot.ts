@@ -7,8 +7,11 @@ import { join } from "node:path";
 
 const [command, archive, dir, ...paths] = process.argv.slice(2);
 const SESSION_PATHS = ["sessions", "last-thread-id", "check-runs.jsonl"];
-// A truncated or foreign file can never be mistaken for a session archive.
-const mark = new TextEncoder().encode("CRSNP1\n");
+// Each marker identifies a format, so a truncated or foreign file can never be mistaken for a session archive.
+const encryptedMark = new TextEncoder().encode("CRSNP1\n"), plainMark = new TextEncoder().encode("CRSNP0\n");
+// Off by default: a repository opts in when its readers must not download the conversation.
+const encryption = process.env.ENCRYPT_SNAPSHOTS === "true";
+const starts = (raw: Uint8Array, mark: Uint8Array) => mark.every((byte, index) => raw[index] === byte);
 
 async function fetchKey() {
   const broker = process.env.BROKER;
@@ -43,10 +46,15 @@ if (command === "save") {
   const tar = Bun.spawn(["tar", "-C", dir, "-czf", "-", ...present], { stdout: "pipe", stderr: "inherit" });
   const plain = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
   if (await tar.exited) throw new Error("Could not read the session into an archive");
-  const key = await fetchKey();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
-  await Bun.write(archive, Buffer.concat([mark, iv, new Uint8Array(sealed)]));
+  const key = encryption ? await fetchKey() : null;
+  if (!key) {
+    console.log("::warning::Snapshots are not encrypted; anyone who can read this repository can download them.");
+    await Bun.write(archive, Buffer.concat([plainMark, plain]));
+  } else {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain);
+    await Bun.write(archive, Buffer.concat([encryptedMark, iv, new Uint8Array(sealed)]));
+  }
   console.log(`Saved ${present.join(", ")} into ${archive}`);
 } else if (command === "load") {
   // An artifact saved before snapshots became one archive already unpacked its files.
@@ -56,14 +64,18 @@ if (command === "save") {
     console.log("::notice::Restored an older session snapshot as it was uploaded.");
   } else {
     const raw = new Uint8Array(await Bun.file(archive).arrayBuffer());
-    if (!mark.every((byte, index) => raw[index] === byte)) throw new Error(`${archive} is not a session snapshot`);
-    const key = await fetchKey();
-    const iv = raw.subarray(mark.length, mark.length + 12);
-    let plain: ArrayBuffer;
-    // A wrong key or a modified archive must leave the session empty rather than restore it.
-    try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, raw.subarray(mark.length + 12)); }
-    catch { throw new Error(`${archive} could not be decrypted; the repository's snapshot key or the archive itself changed.`); }
-    await unpack(new Uint8Array(plain));
+    // The archive's own marker decides, so turning encryption off still opens what an encrypted save wrote.
+    if (starts(raw, plainMark)) await unpack(raw.subarray(plainMark.length));
+    else if (!starts(raw, encryptedMark)) throw new Error(`${archive} is not a session snapshot`);
+    else {
+      const key = await fetchKey();
+      const iv = raw.subarray(encryptedMark.length, encryptedMark.length + 12);
+      let plain: ArrayBuffer;
+      // A wrong key or a modified archive must leave the session empty rather than restore it.
+      try { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, raw.subarray(encryptedMark.length + 12)); }
+      catch { throw new Error(`${archive} could not be decrypted; the repository's snapshot key or the archive itself changed.`); }
+      await unpack(new Uint8Array(plain));
+    }
     rmSync(archive);
   }
 } else throw new Error("Usage: snapshot.ts save <archive> <dir> [path...] | load <archive> <dir>");

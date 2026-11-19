@@ -23,6 +23,10 @@ on:
         description: Service that exchanges the job's OIDC token for an installation token of the App and relays webhooks.
         type: string
         default: https://cf-webhook-sse-poc.admin-c9f.workers.dev
+      encrypt-snapshots:
+        description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
+        type: boolean
+        default: false
       setup:
         description: Shell to run on the runner before Codex is installed, for tools the review needs. It runs after Bun is installed, so a proxy or a Bun it provides does not apply to that install.
         type: string
@@ -87,6 +91,7 @@ jobs:
           service-tier: ${{ inputs.service-tier }}
           session-key: ${{ inputs.session-key }}
           broker: ${{ inputs.broker }}
+          encrypt-snapshots: ${{ inputs.encrypt-snapshots }}
           setup: ${{ inputs.setup }}
           instructions: ${{ inputs.instructions }}
           model-catalog-file: ${{ inputs.model-catalog-file }}

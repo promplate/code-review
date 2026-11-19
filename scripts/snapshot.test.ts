@@ -39,9 +39,9 @@ afterAll(() => homes.forEach(dir => rmSync(dir, { recursive: true, force: true }
 const runnerTemp = home({});
 
 // The broker answers on this process, so the script must run without blocking the event loop.
-async function run(args: string[], repo = "23") {
+async function run(args: string[], repo = "23", extraEnv: Record<string, string> = {}) {
   const proc = Bun.spawn(["bash", script, ...args], {
-    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner" },
+    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
   const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
@@ -98,6 +98,17 @@ test("a broker without the endpoint saves nothing, in the clear or otherwise", a
 
 test("a restore that unpacked nothing fails instead of starting a fresh session", async () => {
   expect((await run(["load", join(home({}), "snapshot.bin"), home({})])).exitCode).not.toBe(0);
+});
+
+test("encryption is off unless the repository asks for it, and needs no broker", async () => {
+  const source = home({ "last-thread-id": "thread-1\n" });
+  const archive = join(home({}), "snapshot.bin");
+  const saved = await run(["save", archive, source, "last-thread-id"], "23", { ENCRYPT_SNAPSHOTS: "false", BROKER: "" });
+  expect(saved.exitCode).toBe(0);
+  expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP0\n");
+  const target = home({});
+  expect((await run(["load", archive, target], "23", { BROKER: "" })).exitCode).toBe(0);
+  expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
 });
 
 test("a broker that fails the key request stores nothing", async () => {
