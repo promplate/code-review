@@ -4,12 +4,21 @@ set -eo pipefail
 api() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$1" --input - --jq .sha; }
 # Stage only the paths the fix touched; tests leave untracked artifacts such as __pycache__ behind.
 git --literal-pathspecs add -A -- "${@:2}"
-# Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
-git --literal-pathspecs diff --cached --ignore-submodules=none --no-renames --diff-filter=AMT --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
-  # A type change can replace a file with a submodule, whose commit lives in a different repository.
-  [ "$(git --literal-pathspecs ls-files --format='%(objectmode)' -- "$path")" != 160000 ] || continue
-  git cat-file blob ":0:$path" | base64 | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
-done
+upload_blob() { base64 | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null; }
+if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+  # Git can combine edits outside the resolved paths into new blobs that neither parent contains.
+  staged_tree=$(git write-tree)
+  git rev-list --objects --no-object-names --filter=object:type=blob --filter-provided-objects "$staged_tree" '^HEAD^{tree}' '^MERGE_HEAD^{tree}' | while read -r sha; do
+    git cat-file blob "$sha" | upload_blob
+  done
+else
+  # Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
+  git --literal-pathspecs diff --cached --ignore-submodules=none --no-renames --diff-filter=AMT --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
+    # A type change can replace a file with a submodule, whose commit lives in a different repository.
+    [ "$(git --literal-pathspecs ls-files --format='%(objectmode)' -- "$path")" != 160000 ] || continue
+    git cat-file blob ":0:$path" | upload_blob
+  done
+fi
 # A merge can add a parent without changing any files. GitHub rejects an empty list of tree entries.
 if git rev-parse -q --verify MERGE_HEAD > /dev/null && git diff --cached --ignore-submodules=none --quiet HEAD; then
   tree=$(git rev-parse 'HEAD^{tree}')

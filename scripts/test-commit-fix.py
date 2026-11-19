@@ -123,6 +123,50 @@ def unchanged_merge():
     assert f.requests("git/commits")[0]["parents"] == [head, base]
     f.pass_("same-tree merge reuses the tree and preserves both parents")
 
+def mixed_merge():
+    def init(w):
+        (w/"auto").write_text("first\nspacer 1\nspacer 2\nspacer 3\nlast\n")
+        (w/"resolve[1]").write_text("common\n")
+    f = Fixture("mixed-merge", init)
+    git(f.work, "branch", "base")
+    (f.work/"auto").write_text("head first\nspacer 1\nspacer 2\nspacer 3\nlast\n")
+    (f.work/"resolve[1]").write_text("head change\n")
+    (f.work/"head-only").write_text("already in head\n")
+    git(f.work, "add", "-A")
+    git(f.work, "commit", "-qm", "head changes")
+    head = f.rev("HEAD")
+    git(f.work, "push", "-q", "origin", "head")
+    git(f.work, "switch", "-q", "base")
+    (f.work/"auto").write_text("first\nspacer 1\nspacer 2\nspacer 3\nbase last\n")
+    (f.work/"resolve[1]").write_text("base change\n")
+    (f.work/"base-only").write_text("already in base\n")
+    git(f.work, "add", "-A")
+    git(f.work, "commit", "-qm", "base changes")
+    base = f.rev("HEAD")
+    git(f.work, "push", "-q", "origin", "base")
+    git(f.work, "switch", "-q", "head")
+    merge = subprocess.run(["git", "merge", "--no-commit", "--no-ff", "base"],
+                           cwd=f.work, env=ENV, capture_output=True)
+    assert merge.returncode == 1, merge
+    assert git(f.work, "diff", "--name-only", "--diff-filter=U", "-z") == b"resolve[1]\0"
+    (f.work/"resolve[1]").write_text("manual resolution\n")
+    (f.work/"resolve1").write_text("unrequested neighbor\n")
+    automatic = b"head first\nspacer 1\nspacer 2\nspacer 3\nbase last\n"
+    assert git(f.work, "show", ":0:auto") == automatic
+    git(f.work, "--literal-pathspecs", "add", "--", "resolve[1]")
+    expected = git(f.work, "write-tree").decode().strip()
+    f.publish("resolve[1]")
+    assert f.remote_rev("head^{tree}") == expected
+    assert f.requests("git/commits")[0]["parents"] == [head, base]
+    assert sorted(base64.b64decode(x["content"]) for x in f.requests("git/blobs")) == [
+        automatic, b"manual resolution\n"
+    ]
+    assert f.blob("base-only") == b"already in base\n"
+    assert f.blob("head-only") == b"already in head\n"
+    assert f.entry("resolve1") is None
+    f.pass_("mixed merge uploads auto-merged and resolved blobs and reuses both parents' blobs")
+
+
 def ignored_submodule_merge():
     def init(w):
         init_basic(w)
@@ -222,5 +266,5 @@ if __name__ == "__main__":
             gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} '
                           f'{shlex.quote(str(Path(__file__).resolve()))} --mock-gh "$@"\n')
             gh.chmod(0o755)
-            for test in (unchanged_merge, ignored_submodule_merge, indexed_blobs, type_changes, literal_paths, file_to_directory):
+            for test in (unchanged_merge, mixed_merge, ignored_submodule_merge, indexed_blobs, type_changes, literal_paths, file_to_directory):
                 test()
