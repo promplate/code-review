@@ -501,7 +501,8 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
-        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}
+        # The outputs are 'true' or absent; a comparison would yield the boolean false, which renders as the string "false" and looks like a fork key.
+        FORK_KEY: ${{ (steps.decrypt-fork.outputs.restored || steps.verify-fork.outputs.restored) && steps.check.outputs.fork-key }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         TRIGGER_SENDER: ${{ github.event.sender.login || 'unknown' }}
         TRIGGER_TYPE: ${{ github.event.sender.type || 'unknown' }}
