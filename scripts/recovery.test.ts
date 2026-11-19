@@ -772,3 +772,21 @@ esac
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${base}/8\n`);
   expect(existsSync(join(setup.dir, "sessions/.github-pending-drafts"))).toBe(false);
 });
+
+test("a new review cannot reuse a previous job's verdict or supersession marker", () => {
+  const setup = fixture();
+  for (const file of ["review.json", "superseded", "last-message.md"]) writeFileSync(join(setup.dir, file), "previous run");
+  writeFileSync(join(setup.dir, "sessions", ".github-published-head"), "recorded head");
+  executable(setup.dir, "bun", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+for file in review.json superseded last-message.md; do
+  [ ! -e "$RUNNER_TEMP/$file" ] || exit 19
+done
+touch "$RUNNER_TEMP/clean-at-start"
+exit 23
+`);
+  const result = run("Run codex review", setup, { AGENT: "false" });
+  expect(result.exitCode).toBe(1);
+  expect(existsSync(join(setup.dir, "clean-at-start"))).toBe(true);
+  expect(readFileSync(join(setup.dir, "sessions", ".github-published-head"), "utf8")).toBe("recorded head");
+});
