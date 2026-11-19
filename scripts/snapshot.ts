@@ -16,14 +16,15 @@ async function fetchKey() {
   // Ask for the key per operation, so it is never in the job environment while Codex runs.
   const oidc = Bun.spawnSync(["bash", join(import.meta.dir, "oidc.sh"), broker]);
   if (oidc.exitCode) throw new Error(oidc.stderr.toString());
-  // The shared retry policy covers a transient broker failure, and curl follows no redirect on its own.
-  const request = Bun.spawnSync(["bash", join(import.meta.dir, "retry.sh"), "curl", "-sS", "--fail-with-body", "-w", "\\n%{http_code}", "-X", "POST",
+  // Only a completed transfer may supply the key. Keep failed attempts' bodies out of retry.sh's stdout.
+  const request = Bun.spawnSync(["bash", join(import.meta.dir, "retry.sh"), "bash", "-c", 'reply=$(curl "$@") && printf %s "$reply"', "_",
+    "-fsS", "-w", "%{stderr}\\n%{http_code}\\n", "-X", "POST",
     "-H", `Authorization: Bearer ${oidc.stdout.toString().trim()}`, `${broker}/snapshot-key`], { stdin: "ignore" });
-  const reply = request.stdout.toString().trimEnd(), cut = reply.lastIndexOf("\n"), status = Number(reply.slice(cut + 1));
+  const status = Number(request.stderr.toString().match(/^\d{3}$/gm)?.at(-1));
   // Without a key there is no way to keep the session out of the artifact, so it is never stored in the clear.
   if (status === 404) throw new Error("The broker does not provide snapshot keys, so the session cannot be stored or restored encrypted.");
-  if (status !== 200) throw new Error(`Snapshot key request failed: ${status || "no response"}; refusing to continue without one.`);
-  const { key } = JSON.parse(reply.slice(0, cut)) as { key: string };
+  if (request.exitCode !== 0 || status !== 200) throw new Error(`Snapshot key request failed: ${status || "no response"}; refusing to continue without one.`);
+  const { key } = JSON.parse(request.stdout.toString()) as { key: string };
   const bytes = Buffer.from(key, "base64");
   if (bytes.length !== 32) throw new Error("The broker must return a 256-bit snapshot key");
   return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]);

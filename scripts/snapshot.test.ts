@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
-const script = join(root, "scripts/snapshot.ts");
+const script = join(root, "scripts/snapshot.sh");
 
 // Stands in for the broker: the OIDC value names the repository, and the key is derived from that alone.
+let recoveringRequests = 0;
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
@@ -15,8 +16,8 @@ const server = Bun.serve({
     const repo = request.headers.get("authorization")?.replace(/^Bearer repo:/, "") ?? "";
     // A broker that predates snapshot keys answers 404, like any route it does not serve.
     if (repo === "legacy") return new Response("not found", { status: 404 });
-    // Only an absent route may fall back to plaintext; a broker that fails must stop the run.
     if (repo === "broken") return new Response("boom", { status: 400 });
+    if (repo === "recovering" && ++recoveringRequests === 1) return new Response("temporarily unavailable", { status: 503 });
     if (url.pathname !== "/snapshot-key" || !repo) return new Response("bad token", { status: 401 });
     const key = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`snapshot:${repo}`)));
     return Response.json({ key: Buffer.from(key).toString("base64") });
@@ -35,11 +36,12 @@ function home(files: Record<string, string>) {
   return dir;
 }
 afterAll(() => homes.forEach(dir => rmSync(dir, { recursive: true, force: true })));
+const runnerTemp = home({});
 
 // The broker answers on this process, so the script must run without blocking the event loop.
 async function run(args: string[], repo = "23") {
-  const proc = Bun.spawn([process.execPath, script, ...args], {
-    env: { ...process.env, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner" },
+  const proc = Bun.spawn(["bash", script, ...args], {
+    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner" },
     stdout: "pipe", stderr: "pipe",
   });
   const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
@@ -105,6 +107,16 @@ test("a broker that fails the key request stores nothing", async () => {
   expect(saved.exitCode).not.toBe(0);
   expect(saved.stderr).toContain("Snapshot key request failed");
   expect(existsSync(archive)).toBe(false);
+});
+
+test("a successful key retry saves a restorable snapshot", async () => {
+  const source = home({ "last-thread-id": "thread" }), target = home({});
+  const archive = join(home({}), "snapshot.bin");
+  recoveringRequests = 0;
+  expect((await run(["save", archive, source], "recovering")).exitCode).toBe(0);
+  expect(recoveringRequests).toBe(2);
+  expect((await run(["load", archive, target], "recovering")).exitCode).toBe(0);
+  expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread");
 });
 
 test("saving nothing fails instead of uploading an empty archive", async () => {
