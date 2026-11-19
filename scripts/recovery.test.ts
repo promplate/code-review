@@ -432,7 +432,8 @@ test("a child only forks a downloaded session after it unpacks", () => {
   const setup = fixture(), decrypt = step("Extract the session to fork");
   const output = join(setup.dir, "github-output"), fork = join(setup.dir, "fork");
   const key = step("Run codex review").env.FORK_KEY;
-  expect(key).toBe(`\${{ (steps.${decrypt.id}.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key }}`);
+  // A false condition would otherwise render as the string "false", and `-n "$FORK_KEY"` would treat it as a session key.
+  expect(key).toBe(`\${{ ((steps.${decrypt.id}.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key) || '' }}`);
   writeFileSync(output, "");
   mkdirSync(fork);
   writeFileSync(join(fork, "snapshot.bin"), "unreadable archive");
