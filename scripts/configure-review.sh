@@ -66,9 +66,9 @@ bun -e '
     await Bun.write(path, text);
   }
   if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
-  // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
-  // The child sees only the variables named here, so the uv directories of the job travel with it and the download stays inside the job.
-  const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 30\n" +
+  // Run through the uv binary setup checks for; some runners have uv but not its uvx alias.
+  // The job-local uv directories keep tool downloads out of the shared home directory.
+  const config = text + "\n[mcp_servers.gh]\ncommand = \"uv\"\nargs = [\"tool\", \"run\", \"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 30\n" +
     "env_vars = [\"GH_CONFIG_DIR\", \"UV_CACHE_DIR\", \"UV_TOOL_DIR\", \"UV_PYTHON_INSTALL_DIR\"]\n";
   try { Bun.TOML.parse(config); }
   catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
