@@ -9,8 +9,6 @@ const [command, archive, dir, ...paths] = process.argv.slice(2);
 const SESSION_PATHS = ["sessions", "last-thread-id", "check-runs.jsonl"];
 // Each marker identifies a format, so a truncated or foreign file can never be mistaken for a session archive.
 const encryptedMark = new TextEncoder().encode("CRSNP1\n"), plainMark = new TextEncoder().encode("CRSNP0\n");
-// Off by default: a repository opts in when its readers must not download the conversation.
-const encryption = process.env.ENCRYPT_SNAPSHOTS === "true";
 const starts = (raw: Uint8Array, mark: Uint8Array) => mark.every((byte, index) => raw[index] === byte);
 
 async function fetchKey() {
@@ -39,6 +37,9 @@ async function unpack(tar: Uint8Array) {
 }
 
 if (command === "save") {
+  // Composite action inputs are strings. A misspelling must not publish an unencrypted conversation.
+  const encryption = (process.env.ENCRYPT_SNAPSHOTS ?? "false").trim().toLowerCase();
+  if (encryption !== "true" && encryption !== "false") throw new Error("encrypt-snapshots must be true or false");
   const present = (paths.length ? paths : SESSION_PATHS).filter(path => existsSync(join(dir, path)));
   // The upload used to fail when nothing was written; keep that failure instead of saving an empty archive.
   if (!present.length) throw new Error(`No session files to save in ${dir}`);
@@ -46,7 +47,7 @@ if (command === "save") {
   const tar = Bun.spawn(["tar", "-C", dir, "-czf", "-", ...present], { stdout: "pipe", stderr: "inherit" });
   const plain = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
   if (await tar.exited) throw new Error("Could not read the session into an archive");
-  const key = encryption ? await fetchKey() : null;
+  const key = encryption === "true" ? await fetchKey() : null;
   if (!key) {
     console.log("::warning::Snapshots are not encrypted; anyone who can read this repository can download them.");
     await Bun.write(archive, Buffer.concat([plainMark, plain]));

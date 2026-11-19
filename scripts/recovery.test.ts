@@ -337,11 +337,11 @@ await Bun.write(path, JSON.stringify(artifacts.filter(artifact => !older.include
 test("main → merge ref → main restores the latest complete snapshot before deduplication", () => {
   const { setup, lookup, cleanup, artifact, write, read } = sessionSnapshots();
   const restore = "Restore codex session";
-  // The upload carries one encrypted archive instead of the session's own files.
+  // The upload carries the session files in a single archive.
   expect(step("Save codex session").with.path).toBe("${{ runner.temp }}/snapshot.bin");
   expect(step("Archive codex session").run).toContain("scripts/snapshot.sh");
   expect(steps.indexOf(step("Archive codex session"))).toBeLessThan(steps.indexOf(step("Save codex session")));
-  // Decrypting needs Bun, so its install moves ahead of the first restore.
+  // Extracting the archive needs Bun, so its install moves ahead of the first restore.
   expect(steps.indexOf(step("Reuse the runner's Bun"))).toBeLessThan(steps.indexOf(step(restore)));
   expect(steps.indexOf(step(restore))).toBeLessThan(steps.indexOf(step("Extract codex session")));
   expect(steps.indexOf(step("Extract codex session"))).toBeLessThan(steps.indexOf(step("Skip activity another review already handled")));

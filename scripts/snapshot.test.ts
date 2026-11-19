@@ -120,6 +120,18 @@ test("a broker that fails the key request stores nothing", async () => {
   expect(existsSync(archive)).toBe(false);
 });
 
+test("a capitalized true encrypts debug events and an invalid input saves nothing", async () => {
+  const source = home({ "codex.jsonl": "review event\n" });
+  const archive = join(home({}), "codex.jsonl.bin"), target = home({});
+  const save = ["save", archive, source, "codex.jsonl"];
+  expect((await run(save, "23", { ENCRYPT_SNAPSHOTS: "treu" })).exitCode).not.toBe(0);
+  expect(existsSync(archive)).toBe(false);
+  expect((await run(save, "23", { ENCRYPT_SNAPSHOTS: "True" })).exitCode).toBe(0);
+  expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP1\n");
+  expect((await run(["load", archive, target], "23", { ENCRYPT_SNAPSHOTS: "false" })).exitCode).toBe(0);
+  expect(readFileSync(join(target, "codex.jsonl"), "utf8")).toBe("review event\n");
+});
+
 test("a successful key retry saves a restorable snapshot", async () => {
   const source = home({ "last-thread-id": "thread" }), target = home({});
   const archive = join(home({}), "snapshot.bin");
