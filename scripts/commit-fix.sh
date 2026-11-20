@@ -4,10 +4,18 @@ set -eo pipefail
 api() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$1" --input - --jq .sha; }
 # Stage only the paths the fix touched; tests leave untracked artifacts such as __pycache__ behind.
 git add -A -- "${@:2}"
-# Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
-git diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
-  base64 < "$path" | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
-done
+upload_blob() { base64 | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null; }
+if git rev-parse -q --verify MERGE_HEAD > /dev/null; then
+  # Git can combine edits outside the resolved paths into new blobs that neither parent contains.
+  staged_tree=$(git write-tree)
+  git rev-list --objects --no-object-names --filter=object:type=blob --filter-provided-objects "$staged_tree" '^HEAD^{tree}' '^MERGE_HEAD^{tree}' | while read -r sha; do
+    git cat-file blob "$sha" | upload_blob
+  done
+else
+  git diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
+    upload_blob < "$path"
+  done
+fi
 tree=$(git diff --cached --no-renames --name-only -z HEAD | while IFS= read -r -d '' path; do
   # An unmerged path has only stage 1–3 entries, and its first line is the merge base: committing that would drop the resolution.
   entries=$(git ls-files -s -- "$path")
