@@ -84,8 +84,8 @@ test("restore baseline and cutoff exclude previous runs, while new turns in the 
   expect(fresh.every(e => e.startedAt >= f.since + 9000)).toBe(true);
 });
 
-test("HTTP failure retains only safe metadata and retries the same event IDs after recovery", async () => {
-  const f = fixture(), target = await receiver(500); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+test.each([408, 500])("HTTP %i retains only safe metadata and retries the same event IDs after recovery", async status => {
+  const f = fixture(), target = await receiver(status); f.env.REVIEW_TRACE_RELAY_URL = target.url;
   await runTrace({ env: f.env, hook: { transcript_path: f.file } });
   expect(f.state().pending).toHaveLength(4);
   expect(JSON.stringify(f.state())).not.toMatch(/PRIVATE_|rrt_|raw-session|private@example/);
@@ -187,12 +187,28 @@ test("a tool output before its execution-end event does not prematurely freeze s
   expect(events.find(e => e.kind === "tool").status).toBe("error");
 });
 
-test("a failed observable generation without token_count is retained with no fabricated usage", async () => {
+test.each([
+  { type: "exec_command_end", call_id: "call", exit_code: 1 },
+  { type: "item_completed", item: { type: "CommandExecution", id: "call", status: "failed", exit_code: 7 } },
+])("tool completion before token_count preserves its outcome and the generation span", async completion => {
+  const f = fixture();
+  writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
+    + f.line(1000, "event_msg", { type: "task_started", turn_id: "turn" })
+    + f.line(1200, "response_item", { type: "function_call", name: "exec_command", call_id: "call" })
+    + f.line(1300, "event_msg", completion)
+    + f.line(1301, "response_item", { type: "function_call_output", call_id: "call" })
+    + f.line(1302, "event_msg", { type: "token_count", info: { last_token_usage: { input_tokens: 1, output_tokens: 1 } } }));
+  const events = await collectRollout(f.file, { since: f.since });
+  expect(events.find(event => event.kind === "tool")?.status).toBe("error");
+  expect(events[0]).toMatchObject({ kind: "generation", startedAt: f.since + 1000, endedAt: f.since + 1200 });
+});
+
+test.each(["task_failed", "task_complete"])("a failed %s without token_count retains the generation without usage", async type => {
   const f = fixture();
   writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
     + f.line(1, "event_msg", { type: "task_started", turn_id: "turn" })
     + f.line(2, "response_item", { type: "reasoning", content: "PRIVATE_REASONING" })
-    + f.line(3, "event_msg", { type: "task_failed", error: "PRIVATE_PROVIDER_ERROR" }));
+    + f.line(3, "event_msg", { type, error: { message: "PRIVATE_PROVIDER_ERROR" } }));
   const events = await collectRollout(f.file, { since: f.since });
   expect(events.map(e => [e.kind, e.status])).toEqual([["generation", "error"], ["turn", "error"]]);
   expect(events[0].usage).toBeUndefined(); expect(JSON.stringify(events)).not.toContain("PRIVATE_");

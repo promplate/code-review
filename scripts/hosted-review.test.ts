@@ -112,6 +112,14 @@ command = "bun /tmp/langfuse/node_modules/@langfuse/codex-observability-plugin/d
   expect(result.stdout.toString() + result.stderr.toString()).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
 });
 
+test("a superseded attempt skips tracing restored sessions", () => {
+  const f = fixture("initial-moved"), now = Date.now();
+  const result = f.run({ REVIEW_TRACE_RELAY_URL: "http://127.0.0.1:1/trace", REVIEW_TRACE_RELAY_TOKEN: "test",
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) });
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(join(f.temp, "review-trace"))).toBe(false);
+});
+
 test("shared setup supplies the App identity for commits and merges in linked worktrees", () => {
   const setup = fixture("retry-identity");
   const env: Record<string, string | undefined> = {...setup.env, AGENT: "true", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", LANGFUSE_PUBLIC_KEY: "", HOME: setup.temp, LC_ALL: "C"};

@@ -57,7 +57,7 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
     if (status !== undefined) emit("turn", "final", turn.start, ts, status, turn.model ? { model: turn.model } : {});
     turn = undefined;
   };
-  const input = createReadStream(file, { encoding: "utf8" });
+  const input = createReadStream(file, { encoding: "utf8", end: MAX_TRANSCRIPT_BYTES - 1 });
   try {
     for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
       const offset = bytes;
@@ -93,7 +93,10 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
           }
         } else if (["function_call_output", "custom_tool_call_output"].includes(p.type)) {
           const call = turn.tools.get(id(p.call_id));
-          if (call) { call.end = Math.max(call.end ?? ts, ts); turn.stepStart = Math.max(turn.stepStart, ts); }
+          if (call) {
+            call.end = Math.max(call.end ?? ts, ts);
+            if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
+          }
         }
       }
       if (line.type !== "event_msg") continue;
@@ -102,19 +105,21 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
         emit("generation", String(turn.step++), turn.stepStart, turn.firstTool ?? ts, "success",
           { ...(turn.model ? { model: turn.model } : {}), ...(counts ? { usage: counts } : {}) });
         turn.activity = false; turn.firstTool = undefined; turn.stepStart = ts;
-      } else if (p.type === "task_complete") finish(ts, "success");
+      } else if (p.type === "task_complete") finish(ts, p.error != null ? "error" : "success");
       else if (p.type === "turn_aborted") finish(ts, "aborted");
       else if (p.type === "task_failed" || p.type === "turn_failed") finish(ts, "error");
-      else if (typeof p.type === "string" && typeof p.call_id === "string") {
-        const call = turn.tools.get(p.call_id);
+      else if (typeof p.type === "string") {
+        const item = p.type === "item_completed" ? p.item : undefined;
+        const call = turn.tools.get(item?.id ?? p.call_id);
         if (!call) continue;
         if (p.type.endsWith("_begin")) call.start = ts;
-        if (p.type.endsWith("_end")) {
+        if (item || p.type.endsWith("_end")) {
+          const outcome = item ?? p;
           call.end = ts;
-          call.status = p.status === "failed" || p.status === "declined" || p.error != null || p.codex_error_info != null
-            || (typeof p.exit_code === "number" && p.exit_code !== 0) ? "error"
-            : p.status === "completed" || p.status === "success" || p.exit_code === 0 ? "success" : "unknown";
-          turn.stepStart = Math.max(turn.stepStart, ts);
+          call.status = outcome.status === "failed" || outcome.status === "declined" || outcome.error != null || outcome.codex_error_info != null
+            || (typeof outcome.exit_code === "number" && outcome.exit_code !== 0) ? "error"
+            : outcome.status === "completed" || outcome.status === "success" || outcome.exit_code === 0 ? "success" : "unknown";
+          if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
         }
       }
     }
@@ -239,7 +244,7 @@ export async function runTrace({ env = process.env, hook = {}, mode = "hook", no
         const response = await send(config.url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
           body: JSON.stringify({ version: 1, events: batch }), redirect: "error", signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT, remaining)) });
         if (response.status === 202) { state.sent.push(...batch.map((event) => event.eventId)); state.pending.splice(0, batch.length); state.failures = 0; state.retryAt = now() + REQUEST_SPACING; }
-        else if (response.status === 401 || response.status === 403 || (response.status >= 400 && response.status < 500 && response.status !== 429)) state.stopped = true;
+        else if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) state.stopped = true;
         else {
           const retry = response.headers.get("retry-after");
           const retryMs = /^\d+$/.test(retry ?? "") ? Number(retry) * 1000 : Date.parse(retry ?? "") - now();
