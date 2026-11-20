@@ -56,6 +56,10 @@ else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
   executable("codex", `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('codex 0.169.0'); process.exit(0);}
 const mode=process.env.TEST_MODE, retry=process.argv.includes('resume');
+if(process.env.REVIEW_TRACE_RELAY_URL) await Bun.write(process.env.RUNNER_TEMP+'/trace-env.json', JSON.stringify({
+  stockEnabled:process.env.TRACE_TO_LANGFUSE, projectKeyPresent:!!(process.env.LANGFUSE_SECRET_KEY||process.env.LANGFUSE_CODEX_SECRET_KEY),
+  relayTokenPresent:!!process.env.REVIEW_TRACE_RELAY_TOKEN
+}));
 if(retry) await Bun.write(process.env.RUNNER_TEMP+'/retried','');
 if(mode==='codex-fails'||(retry&&mode==='moved-on-retry-error')) process.exit(1);
 const invalid=mode==='stale-verdict'||mode==='invalid-verdict'||mode.startsWith('moved-on-retry');
@@ -77,6 +81,36 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
     REVIEW_OUTPUT_LOG:"",REVIEW_STEP_INDEX:""};
   return {head,state,temp,env,bin,checkout, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
+
+test("hosted relay disables installed content tracing and installs metadata hooks without storing its token in the session", () => {
+  const f = fixture(), now = Date.now();
+  mkdirSync(join(f.checkout, ".codex"));
+  writeFileSync(join(f.checkout, ".codex/langfuse.json"), JSON.stringify({ enabled: true, public_key: "PRIVATE_PROJECT_KEY", secret_key: "PRIVATE_PROJECT_SECRET" }));
+  const config = `model = "test-model"
+[plugins."tracing@codex-observability-plugin"]
+enabled = true
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "bun /tmp/langfuse/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs"
+`;
+  const token = "rrt_" + "a".repeat(64);
+  const result = f.run({ CODEX_CONFIG: config, LANGFUSE_PUBLIC_KEY: "PRIVATE_PROJECT_KEY", LANGFUSE_SECRET_KEY: "PRIVATE_PROJECT_SECRET",
+    LANGFUSE_CODEX_SECRET_KEY: "PRIVATE_CODEX_PROJECT_SECRET", TRACE_TO_LANGFUSE: "true",
+    REVIEW_TRACE_RELAY_URL: "http://127.0.0.1:1/trace", REVIEW_TRACE_RELAY_TOKEN: token,
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) });
+  expect(result.exitCode).toBe(0);
+  const installed = Bun.TOML.parse(readFileSync(join(f.state, "config.toml"), "utf8")) as any;
+  expect(installed.plugins["tracing@codex-observability-plugin"].enabled).toBe(false);
+  const commands = Object.values(installed.hooks).flatMap((entries: any) => entries.flatMap((entry: any) => entry.hooks.map((hook: any) => hook.command)));
+  expect(commands.filter((command: string) => command.includes("review-trace.mjs"))).toHaveLength(2);
+  expect(commands.some((command: string) => command.includes("@langfuse"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(f.temp, "trace-env.json"), "utf8"))).toEqual({ stockEnabled: "false", projectKeyPresent: false, relayTokenPresent: true });
+  expect(existsSync(join(f.temp, "langfuse"))).toBe(false);
+  expect(readFileSync(join(f.state, "config.toml"), "utf8")).not.toContain(token);
+  expect(readFileSync(join(f.temp, "review-trace/state.json"), "utf8")).not.toContain(token);
+  expect(result.stdout.toString() + result.stderr.toString()).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
+});
 
 test("shared setup supplies the App identity for commits and merges in linked worktrees", () => {
   const setup = fixture("retry-identity");

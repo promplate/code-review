@@ -48,6 +48,9 @@ finish_without_review() {
 cleanup() {
   code=$?
   trap - EXIT
+  # Stop hooks run before the terminal rollout record. Read it after Codex exits,
+  # and give sanitized pending metadata a bounded final delivery opportunity.
+  [ -z "${REVIEW_TRACE_RELAY_URL:-}" ] || bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
   [ -z "$SSE_PID" ] || { kill "$SSE_PID" 2>/dev/null || true; wait "$SSE_PID" 2>/dev/null || true; }
   if [ "$code" != 0 ]; then
     result failed

@@ -74,8 +74,33 @@ bun -e '
   catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
   await Bun.write(path, config);
 ' "$CODEX_HOME/config.toml"
-# Trace to Langfuse when the runner or the job provides its keys.
-if [ -n "$LANGFUSE_PUBLIC_KEY" ] || [ -f ~/.codex/langfuse.json ]; then
+# Hosted tracing sends only metadata to the coordinator. Disable the stock
+# plugin even when supplied config or a restored installation enables it: it
+# uploads prompt history and tool bodies and reads repository Langfuse config.
+if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+  export TRACE_TO_LANGFUSE=false
+  unset LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_CODEX_PUBLIC_KEY LANGFUSE_CODEX_SECRET_KEY
+  bun -e '
+    const path = process.argv[1], config = Bun.TOML.parse(await Bun.file(path).text());
+    config.plugins ??= {};
+    config.plugins["tracing@codex-observability-plugin"] = { enabled: false };
+    config.hooks ??= {};
+    for (const entries of Object.values(config.hooks)) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) if (Array.isArray(entry.hooks))
+        entry.hooks = entry.hooks.filter(hook => !/langfuse.*(?:codex|observability)|codex-observability-plugin/i.test(hook.command ?? ""));
+    }
+    const quote = "\x27", script = process.env.GITHUB_ACTION_PATH + "/scripts/review-trace.mjs";
+    const command = "bun " + quote + script.replaceAll(quote, quote + "\\" + quote + quote) + quote;
+    for (const event of ["PostToolUse", "Stop"]) {
+      config.hooks[event] ??= [];
+      config.hooks[event].push({ ...(event === "PostToolUse" ? { matcher: ".*" } : {}), hooks: [{ type: "command", command, timeout: 10 }] });
+    }
+    await Bun.write(path, Bun.TOML.stringify(config));
+  ' "$CODEX_HOME/config.toml"
+  bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --init
+# Existing non-hosted callers retain their explicitly configured tracing.
+elif [ -n "${LANGFUSE_PUBLIC_KEY:-}" ] || [ -f ~/.codex/langfuse.json ]; then
   mkdir -p "$RUNNER_TEMP/langfuse"
   bun add --cwd "$RUNNER_TEMP/langfuse" --silent @langfuse/codex-observability-plugin
   printf '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "bun %s/langfuse/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs"\ntimeout = 30\n' "$RUNNER_TEMP" >> "$CODEX_HOME/config.toml"
