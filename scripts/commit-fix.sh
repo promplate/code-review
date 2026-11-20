@@ -6,7 +6,7 @@ api() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSI
 git add -A -- "${@:2}"
 # Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
 git diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
-  base64 < "$path" | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
+  git cat-file blob ":0:$path" | base64 | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
 done
 tree=$(git diff --cached --no-renames --name-only -z HEAD | while IFS= read -r -d '' path; do
   # An unmerged path has only stage 1–3 entries, and its first line is the merge base: committing that would drop the resolution.
