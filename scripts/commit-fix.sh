@@ -3,14 +3,14 @@
 set -eo pipefail
 api() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$1" --input - --jq .sha; }
 # Stage only the paths the fix touched; tests leave untracked artifacts such as __pycache__ behind.
-git add -A -- "${@:2}"
+git --literal-pathspecs add -A -- "${@:2}"
 # Only the edited blobs are new to GitHub, which hashes them to the same SHAs as the index; whatever a merge brings in already exists there.
-git diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
+git --literal-pathspecs diff --cached --no-renames --diff-filter=AM --name-only -z -- "${@:2}" | while IFS= read -r -d '' path; do
   base64 < "$path" | tr -d '\n' | jq -Rs '{content: ., encoding: "base64"}' | api git/blobs > /dev/null
 done
 tree=$(git diff --cached --no-renames --name-only -z HEAD | while IFS= read -r -d '' path; do
   # An unmerged path has only stage 1–3 entries, and its first line is the merge base: committing that would drop the resolution.
-  entries=$(git ls-files -s -- "$path")
+  entries=$(git --literal-pathspecs ls-files -s -- "$path")
   read -r mode sha < <(awk '$3 == 0 { print $1, $2; exit }' <<< "$entries") || true
   if [ -z "$entries" ]; then mode=100644 sha=; # The tree drops a deleted path.
   elif [ -z "$sha" ]; then echo "Unresolved conflict in $path" >&2; exit 1; fi
