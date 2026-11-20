@@ -128,7 +128,7 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
       --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
       --output-last-message "$RUNNER_TEMP/review.json" \
       "$(cat "$CODEX_HOME/last-thread-id")" \
-      "Reply with the full review JSON for $SUBJECT now, running no further commands, with every field named as in $GITHUB_ACTION_PATH/review-schema.json. Put whatever remains unknown into the summary and judge on what you verified." \
+      "Reply with the full review JSON for $SUBJECT now, running no further commands, with every field named as in $GITHUB_ACTION_PATH/review-schema.json. Include a commits entry for $HEAD_SHA — the commit this run publishes for. Put whatever remains unknown into the summary and judge on what you verified." \
       < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" || {
         retry_status=$?
         supersede_stale_hosted_check
