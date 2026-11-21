@@ -85,10 +85,16 @@ if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
     config.plugins ??= {};
     config.plugins["tracing@codex-observability-plugin"] = { enabled: false };
     config.hooks ??= {};
+    // Match the installed exporter entrypoint, not arbitrary mentions of Langfuse
+    // or Codex in a checkout path, hook name, or command argument.
+    const stockHook = command => {
+      const entrypoint = String(command ?? "").match(/^\s*(?:bun|node)\s+("[^"]*"|\x27[^\x27]*\x27|[^\s"\x27]+)(?:\s|$)/)?.[1];
+      return entrypoint !== undefined && /(?:^|\/)node_modules\/@langfuse\/codex-observability-plugin\/dist\/index\.mjs$/.test(entrypoint.replace(/^["\x27]|["\x27]$/g, ""));
+    };
     for (const entries of Object.values(config.hooks)) {
       if (!Array.isArray(entries)) continue;
       for (const entry of entries) if (Array.isArray(entry.hooks))
-        entry.hooks = entry.hooks.filter(hook => !/langfuse.*(?:codex|observability)|codex-observability-plugin/i.test(hook.command ?? ""));
+        entry.hooks = entry.hooks.filter(hook => !stockHook(hook.command));
     }
     const quote = "\x27", script = process.env.GITHUB_ACTION_PATH + "/scripts/review-trace.mjs";
     const command = "bun " + quote + script.replaceAll(quote, quote + "\\" + quote + quote) + quote;

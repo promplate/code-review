@@ -2,12 +2,12 @@
 // bodies enter this transport. The Worker still treats every field as untrusted.
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, realpath, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, opendir, readFile, readdir, realpath, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const MAX_EVENTS = 4096, MAX_FILES = 512, MAX_TRANSCRIPT_BYTES = 128 * 1024 * 1024;
+const MAX_LINE_BYTES = 1024 * 1024;
 const REQUEST_SPACING = 5500, REQUEST_TIMEOUT = 4000, FLUSH_BUDGET = 15000;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const id = (value) => typeof value === "string" && value.length > 0 && value.length <= 256 ? value : undefined;
@@ -15,6 +15,80 @@ const timestamp = (value) => typeof value === "number" ? value : /^\d+$/.test(va
 const label = (value) => typeof value === "string" && /^[a-zA-Z][a-zA-Z0-9_.:/-]{0,95}$/.test(value)
   && !/(?:^|[/.:])(?:sk-|pk-|eyJ[A-Za-z0-9])|(?:secret|token|password|api[_-]?key)[=:]/i.test(value) ? value : undefined;
 const inside = (root, file) => { const rel = relative(root, file); return rel && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel); };
+
+function scanBudget(milliseconds, readStream = createReadStream) {
+  const deadline = performance.now() + milliseconds;
+  return { bytes: MAX_TRANSCRIPT_BYTES, readStream, signal: AbortSignal.timeout(Math.max(1, Math.ceil(milliseconds))),
+    remaining: () => Math.max(0, deadline - performance.now()) };
+}
+
+// Never accumulate an unbounded prompt/output line. Only complete newline-ended
+// records are parsed, so a concurrent append or an exhausted budget cannot invent
+// a terminal event from a partial record. The byte budget is shared across files.
+async function* rolloutLines(file, start, limit, budget) {
+  const length = Math.min(limit, budget.bytes);
+  if (length <= 0 || budget.remaining() <= 0) return;
+  const input = budget.readStream(file, { start, end: start + length - 1, highWaterMark: 64 * 1024, signal: budget.signal });
+  let parts = [], size = 0, discarded = false;
+  try {
+    for await (const chunk of input) {
+      budget.bytes -= chunk.length;
+      let offset = 0;
+      while (offset < chunk.length && budget.remaining() > 0) {
+        const newline = chunk.indexOf(10, offset), end = newline < 0 ? chunk.length : newline;
+        const part = chunk.subarray(offset, end);
+        size += part.length;
+        if (size > MAX_LINE_BYTES) { parts = []; discarded = true; }
+        else if (!discarded) parts.push(part);
+        if (newline < 0) break;
+        if (!discarded) {
+          let line;
+          try { line = JSON.parse(Buffer.concat(parts, size).toString("utf8")); } catch { /* An incomplete or non-JSON record carries no metadata. */ }
+          if (line) yield line;
+        }
+        parts = []; size = 0; discarded = false; offset = newline + 1;
+      }
+      if (budget.remaining() <= 0) break;
+    }
+  } catch (error) { if (!budget.signal.aborted) throw error; }
+  finally { input.destroy(); }
+}
+
+function toolOutcome(value) {
+  const result = value.result?.Ok ?? value.result;
+  if (value.status === "aborted" || value.status === "interrupted") return "aborted";
+  if (value.status === "failed" || value.status === "declined" || value.error != null || value.codex_error_info != null
+    || value.result?.Err != null || result?.isError === true || result?.is_error === true || value.success === false
+    || (typeof value.exit_code === "number" && value.exit_code !== 0)) return "error";
+  if (value.status === "completed" || value.status === "success" || value.exit_code === 0 || value.success === true
+    || value.result?.Ok != null) return "success";
+  return "unknown";
+}
+
+// These are rollout TurnItem types, not the differently shaped exec --json
+// stream. In Codex 0.171 paginated rollouts only item_completed is durable; its
+// started_at_ms supplies timing even when Code Mode has no model function_call.
+function itemToolName(item) {
+  switch (item?.type) {
+    case "CommandExecution": return "exec_command";
+    case "McpToolCall": return label(item.tool) ?? "mcp_tool";
+    case "DynamicToolCall": return label(item.tool) ?? "dynamic_tool";
+    case "CollabAgentToolCall": return label(item.tool) ?? "agent_tool";
+    case "FileChange": return "apply_patch";
+    case "WebSearch": return "web_search";
+    case "ImageView": return "view_image";
+    case "ImageGeneration": return "image_generation";
+    default: return undefined;
+  }
+}
+
+function legacyToolName(event) {
+  if (/^exec_command_(?:begin|end)$/.test(event.type)) return "exec_command";
+  if (/^mcp_tool_call_(?:begin|end)$/.test(event.type)) return label(event.invocation?.tool) ?? "mcp_tool";
+  if (/^patch_apply_(?:begin|end)$/.test(event.type)) return "apply_patch";
+  if (/^web_search_(?:begin|end)$/.test(event.type)) return "web_search";
+  return undefined;
+}
 
 function usage(value) {
   if (!value || typeof value !== "object") return undefined;
@@ -34,9 +108,9 @@ function usage(value) {
 // Stream the rollout, retaining only allowlisted metadata. A token_count closes
 // one observable generation; cumulative session totals are deliberately ignored.
 // Times describe observable spans, not precise upstream HTTP request latency.
-export async function collectRollout(file, { since, baseline = 0, finalize = false, stopped = false }) {
+export async function collectRollout(file, { since, baseline = 0, finalize = false, stopped = false, budget = scanBudget(REQUEST_TIMEOUT) }) {
   const events = [];
-  let session, turn, bytes = 0;
+  let session, turn;
   const emit = (kind, key, start, end, status, extra = {}) => {
     if (!session || !turn || events.length >= MAX_EVENTS || !Number.isFinite(start) || !Number.isFinite(end)) return;
     events.push({ eventId: hash(`${session}:${turn.id}:${kind}:${key}`), kind,
@@ -50,39 +124,38 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
     for (const call of turn.tools.values()) {
       // A response_item output may precede its execution-end event. Wait until
       // that status arrives, or until Stop/terminal/EXIT makes absence explicit.
-      if (call.status !== undefined || status !== undefined || finalize || (stopped && call.end !== undefined))
+      if (call.status !== undefined || status !== undefined || (stopped && call.end !== undefined))
         emit("tool", call.id, call.start, call.end ?? ts, call.status ?? "unknown",
         { callId: hash(`call:${session}:${turn.id}:${call.id}`), toolName: call.name });
     }
     if (status !== undefined) emit("turn", "final", turn.start, ts, status, turn.model ? { model: turn.model } : {});
     turn = undefined;
   };
-  const input = createReadStream(file, { encoding: "utf8", end: MAX_TRANSCRIPT_BYTES - 1 });
-  try {
-    for await (const raw of createInterface({ input, crlfDelay: Infinity })) {
-      const offset = bytes;
-      bytes += Buffer.byteLength(raw) + 1;
-      if (bytes > MAX_TRANSCRIPT_BYTES) break;
-      // Bound a line before parsing. Large prompt/tool records carry no required metadata.
-      if (raw.length > 1_048_576) continue;
-      let line;
-      try { line = JSON.parse(raw); } catch { continue; }
+  // Restored history may be gigabytes long. Read its identity separately, then
+  // spend the bounded scan window on bytes appended during this review run.
+  if (baseline > 0) {
+    for await (const line of rolloutLines(file, 0, MAX_LINE_BYTES, budget)) {
+      if (line.type === "session_meta") { session = id(line.payload?.id); break; }
+    }
+    if (!session) return events;
+  }
+  for await (const line of rolloutLines(file, baseline, MAX_TRANSCRIPT_BYTES, budget)) {
       const p = line?.payload;
       if (!p || typeof p !== "object") continue;
       if (line.type === "session_meta") { session ??= id(p.id); continue; }
       const ts = timestamp(line.timestamp);
-      if (offset < baseline || !Number.isFinite(ts) || ts < since) continue;
-      if (line.type === "event_msg" && p.type === "task_started") {
+      if (!Number.isFinite(ts) || ts < since) continue;
+      if (line.type === "event_msg" && ["task_started", "turn_started"].includes(p.type)) {
         finish(ts, finalize ? "unknown" : undefined);
         const turnId = id(p.turn_id);
         if (turnId) turn = { id: turnId, start: ts, last: ts, stepStart: ts, step: 0, activity: false, tools: new Map() };
         continue;
       }
-      if (!turn) continue;
+      if (!turn || (id(p.turn_id) && p.turn_id !== turn.id)) continue;
       turn.last = ts;
       if (line.type === "turn_context") { turn.model = label(p.model) ?? turn.model; continue; }
       if (line.type === "response_item") {
-        if (p.type === "reasoning" || (p.type === "message" && p.role === "assistant")) turn.activity = true;
+        if (["reasoning", "agent_message"].includes(p.type) || (p.type === "message" && p.role === "assistant")) turn.activity = true;
         if (["function_call", "custom_tool_call", "local_shell_call", "web_search_call"].includes(p.type)) {
           turn.activity = true;
           const callId = id(p.call_id) ?? id(p.id);
@@ -105,49 +178,60 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
         emit("generation", String(turn.step++), turn.stepStart, turn.firstTool ?? ts, "success",
           { ...(turn.model ? { model: turn.model } : {}), ...(counts ? { usage: counts } : {}) });
         turn.activity = false; turn.firstTool = undefined; turn.stepStart = ts;
-      } else if (p.type === "task_complete") finish(ts, p.error != null ? "error" : "success");
+      } else if (["task_complete", "turn_complete"].includes(p.type)) finish(ts, p.error != null ? "error" : "success");
       else if (p.type === "turn_aborted") finish(ts, "aborted");
       else if (p.type === "task_failed" || p.type === "turn_failed") finish(ts, "error");
       else if (typeof p.type === "string") {
-        const item = p.type === "item_completed" ? p.item : undefined;
-        const call = turn.tools.get(item?.id ?? p.call_id);
+        const item = ["item_started", "item_completed"].includes(p.type) ? p.item : undefined;
+        const callId = id(item?.id) ?? id(p.call_id), name = item ? itemToolName(item) : legacyToolName(p);
+        let call = turn.tools.get(callId);
+        const measured = (value, fallback) => Number.isSafeInteger(value) && value >= turn.start && value <= ts ? value : fallback;
+        const start = measured(p.started_at_ms, ts), end = measured(p.completed_at_ms, ts);
+        if (!call && callId && name && turn.tools.size < MAX_EVENTS) {
+          call = { id: callId, name, start };
+          turn.tools.set(callId, call);
+        }
         if (!call) continue;
-        if (p.type.endsWith("_begin")) call.start = ts;
-        if (item || p.type.endsWith("_end")) {
+        if (p.type === "item_started" || p.type.endsWith("_begin") || (item && p.started_at_ms != null)) call.start = measured(p.started_at_ms, call.start === ts ? ts : call.start);
+        if (p.type.endsWith("_begin") && p.started_at_ms == null) call.start = ts;
+        if (p.type === "item_completed" || p.type.endsWith("_end")) {
           const outcome = item ?? p;
-          call.end = ts;
-          call.status = outcome.status === "failed" || outcome.status === "declined" || outcome.error != null || outcome.codex_error_info != null
-            || (typeof outcome.exit_code === "number" && outcome.exit_code !== 0) ? "error"
-            : outcome.status === "completed" || outcome.status === "success" || outcome.exit_code === 0 ? "success" : "unknown";
-          if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
+          call.end = end;
+          call.status = toolOutcome(outcome);
+          if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, end);
         }
       }
-    }
-    // Stop can precede task_complete. Only EXIT flush marks unfinished spans;
-    // it never guesses that a missing terminal event means success.
-    if (turn && finalize) {
-      finish(turn.last, "unknown");
-    } else if (turn) finish(turn.last, undefined);
-  } finally { input.destroy(); }
+  }
+  // A truncated scan cannot prove the absence of a later terminal record. Only
+  // finalize when we reached EOF with budget left; future hooks may continue.
+  if (turn) finish(turn.last, finalize && budget.remaining() > 0 && budget.bytes > 0 ? "unknown" : undefined);
   return events;
 }
 
-async function rolloutFiles(root) {
-  const result = [];
-  async function walk(dir, depth) {
-    if (depth > 4 || result.length >= MAX_FILES) return;
-    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      if (result.length >= MAX_FILES) break;
+async function* rolloutFiles(root, budget, active = []) {
+  const seen = new Set();
+  for (const name of active) {
+    const file = resolve(root, name);
+    if (budget.remaining() <= 0 || seen.size >= MAX_FILES) return;
+    if (inside(root, file) && !seen.has(file)) { seen.add(file); yield file; }
+  }
+  async function* walk(dir, depth) {
+    if (depth > 4 || seen.size >= MAX_FILES || budget.remaining() <= 0) return;
+    const directory = await opendir(dir).catch(() => undefined);
+    if (!directory) return;
+    for await (const entry of directory) {
+      if (seen.size >= MAX_FILES || budget.remaining() <= 0) break;
       const file = join(dir, entry.name);
-      if (entry.isDirectory()) await walk(file, depth + 1);
-      else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) result.push(file);
+      if (entry.isDirectory()) yield* walk(file, depth + 1);
+      else if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl") && !seen.has(file)) {
+        seen.add(file); yield file;
+      }
     }
   }
-  await walk(root, 0);
-  return result;
+  yield* walk(root, 0);
 }
 
-const emptyState = (scope) => ({ version: 1, scope, baseline: {}, sent: [], pending: [], retryAt: 0, failures: 0, stopped: false });
+const emptyState = (scope) => ({ version: 1, scope, baseline: {}, active: [], sent: [], pending: [], retryAt: 0, failures: 0, stopped: false });
 function storedEvent(value) {
   const digest = (item) => typeof item === "string" && /^[a-f0-9]{64}$/.test(item);
   if (!value || !digest(value.eventId) || !digest(value.sessionId) || !digest(value.turnId)
@@ -170,6 +254,7 @@ async function loadState(file, scope) {
     if (value.version !== 1 || value.scope !== scope || !Array.isArray(value.sent) || !Array.isArray(value.pending)) return emptyState(scope);
     return { ...emptyState(scope),
       baseline: Object.fromEntries(Object.entries(value.baseline ?? {}).filter(([, size]) => Number.isSafeInteger(size) && size >= 0).slice(0, MAX_FILES)),
+      active: Array.isArray(value.active) ? value.active.filter((name) => typeof name === "string" && name.length <= 4096 && !isAbsolute(name)).slice(0, MAX_FILES) : [],
       sent: value.sent.filter((item) => typeof item === "string" && /^[a-f0-9]{64}$/.test(item)).slice(0, MAX_EVENTS),
       pending: value.pending.map(storedEvent).filter(Boolean).slice(0, MAX_EVENTS),
       retryAt: Number.isFinite(value.retryAt) ? value.retryAt : 0, failures: Math.min(6, Math.max(0, Number(value.failures) || 0)), stopped: value.stopped === true };
@@ -179,6 +264,38 @@ async function saveState(file, state) {
   const temporary = `${file}.${randomUUID()}`;
   await writeFile(temporary, JSON.stringify(state), { mode: 0o600, flag: "wx" });
   await rename(temporary, file);
+}
+
+async function acquireLock(lock, budget) {
+  const owner = `owner-${randomUUID()}`, candidate = `${lock}.${owner}`;
+  await mkdir(candidate, { mode: 0o700 });
+  try {
+    await writeFile(join(candidate, owner), "", { mode: 0o600, flag: "wx" });
+    for (let attempt = 0; attempt < 2 && budget.remaining() > 0; attempt++) {
+      // Capture the old owner's unique filename BEFORE checking its age. A
+      // concurrent reclaimer may replace the directory, but cannot give the new
+      // owner that filename. Never recursively remove a shared lock directory.
+      const entries = await readdir(lock).catch(error => error.code === "ENOENT" ? undefined : null);
+      if (entries === null) return;
+      if (entries) {
+        const info = await stat(lock).catch(() => undefined);
+        if (!info || Date.now() - info.mtimeMs <= 60_000 || entries.length > 1
+          || (entries.length && !/^owner-[a-f0-9-]{36}$/.test(entries[0]))) return;
+        if (entries.length) await unlink(join(lock, entries[0])).catch(() => {});
+        try { await rmdir(lock); } catch (error) { if (error.code !== "ENOENT") return; }
+      }
+      // Publish a fully populated directory in one operation. Another live
+      // owner makes rename fail because its directory is never empty.
+      try { await rename(candidate, lock); return owner; }
+      catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes(error.code)) return; }
+    }
+  } finally { await rm(candidate, { recursive: true, force: true }); }
+}
+
+async function releaseLock(lock, owner) {
+  await unlink(join(lock, owner)).catch(() => {});
+  // If a new owner arrived after our unlink, its nonempty directory survives.
+  await rmdir(lock).catch(() => {});
 }
 
 function configuration(env) {
@@ -195,32 +312,48 @@ function configuration(env) {
 
 // An ACK means the Worker durably accepted the sanitized event, not necessarily
 // that Langfuse is healthy. Tokens and response bodies never enter the local queue.
-export async function runTrace({ env = process.env, hook = {}, mode = "hook", now = Date.now, send = fetch } = {}) {
+export async function runTrace({ env = process.env, hook = {}, mode = "hook", now = Date.now, send = fetch,
+  readStream = createReadStream, budgetMs = mode === "flush" ? FLUSH_BUDGET : REQUEST_TIMEOUT } = {}) {
+  // One monotonic wall-clock budget covers setup, discovery, parsing and HTTP.
+  // The injected wall clock remains useful for expiry/Retry-After tests without
+  // letting a frozen clock extend the actual shutdown deadline.
+  const budget = scanBudget(Math.min(mode === "flush" ? FLUSH_BUDGET : REQUEST_TIMEOUT, Math.max(1, budgetMs)), readStream);
   const config = configuration(env);
   if (!config) return;
   await mkdir(config.directory, { recursive: true, mode: 0o700 });
   const lock = join(config.directory, "lock"), stateFile = join(config.directory, "state.json");
-  try { await mkdir(lock, { mode: 0o700 }); } catch {
-    // A killed hook must not disable future collection forever.
-    if (now() - (await stat(lock).catch(() => ({ mtimeMs: now() }))).mtimeMs > 60_000) await rm(lock, { recursive: true, force: true });
-    return;
-  }
+  const owner = await acquireLock(lock, budget);
+  if (!owner) return;
   try {
     const state = await loadState(stateFile, config.scope);
     if (mode === "init") {
-      for (const file of await rolloutFiles(config.sessions)) state.baseline[relative(config.sessions, file)] = (await stat(file)).size;
+      for await (const file of rolloutFiles(config.sessions, budget)) {
+        if (budget.remaining() <= 0) break;
+        const info = await stat(file).catch(() => undefined);
+        if (info?.isFile()) state.baseline[relative(config.sessions, file)] = info.size;
+      }
       await saveState(stateFile, state);
       return;
     }
     if (state.stopped || now() >= config.expiresAt) { state.stopped = true; await saveState(stateFile, state); return; }
     const root = await realpath(config.sessions).catch(() => undefined);
     if (!root) return;
-    const files = mode === "flush" ? await rolloutFiles(root) : typeof hook.transcript_path === "string" ? [hook.transcript_path] : [];
+    const files = mode === "flush" ? rolloutFiles(root, budget, state.active) : typeof hook.transcript_path === "string" ? [hook.transcript_path] : [];
     const known = new Set([...state.sent, ...state.pending.map((event) => event.eventId)]);
-    for (const candidate of files) {
+    for await (const candidate of files) {
+      // This is the relay's total per-run event allowance, including ACKs, not
+      // just a pending-queue limit. Draining a batch does not reset that quota.
+      if (known.size >= MAX_EVENTS || budget.remaining() <= 0 || budget.bytes <= 0 || now() >= config.expiresAt) break;
       const file = await realpath(candidate).catch(() => undefined);
       if (!file || !inside(root, file)) continue;
-      const events = await collectRollout(file, { since: config.since, baseline: state.baseline[relative(root, file)] ?? 0,
+      const name = relative(root, file), info = await stat(file).catch(() => undefined);
+      if (!info?.isFile()) continue;
+      if (mode === "hook") state.active = [name, ...state.active.filter((item) => item !== name)].slice(0, MAX_FILES);
+      const baseline = state.baseline[name] ?? 0;
+      // Unchanged restored history needs no parsing. A truncated/replaced file
+      // is filtered by timestamps rather than seeking past its new contents.
+      if (info.size === baseline) continue;
+      const events = await collectRollout(file, { since: config.since, baseline: info.size < baseline ? 0 : baseline, budget,
         finalize: mode === "flush", stopped: hook.hook_event_name === "Stop" });
       for (const event of events) {
         if (known.size >= MAX_EVENTS) break;
@@ -228,15 +361,14 @@ export async function runTrace({ env = process.env, hook = {}, mode = "hook", no
       }
     }
     await saveState(stateFile, state);
-    const deadline = now() + (mode === "flush" ? FLUSH_BUDGET : REQUEST_TIMEOUT);
-    while (state.pending.length && now() < config.expiresAt && now() < deadline && !state.stopped) {
+    while (state.pending.length && now() < config.expiresAt && budget.remaining() > 0 && !state.stopped) {
       const delay = Math.max(0, state.retryAt - now());
       if (delay) {
-        if (mode !== "flush" || now() + delay + REQUEST_TIMEOUT > deadline) break;
+        if (mode !== "flush" || delay + REQUEST_TIMEOUT > budget.remaining() || now() + delay >= config.expiresAt) break;
         await new Promise((done) => setTimeout(done, delay));
       }
-      const remaining = Math.min(config.expiresAt, deadline) - now();
-      if (remaining <= 0) break;
+      const remaining = Math.floor(Math.min(config.expiresAt - now(), budget.remaining()));
+      if (remaining < 1) break;
       const batch = state.pending.slice(0, 32);
       while (Buffer.byteLength(JSON.stringify({ version: 1, events: batch })) > 64 * 1024) batch.pop();
       if (!batch.length) break;
@@ -251,12 +383,14 @@ export async function runTrace({ env = process.env, hook = {}, mode = "hook", no
           state.retryAt = Math.min(config.expiresAt, now() + Math.max(REQUEST_SPACING,
             Number.isFinite(retryMs) ? retryMs : Math.min(60_000, 1000 * 2 ** Math.min(++state.failures, 6))));
         }
-        await response.body?.cancel();
+        // Discard the response without waiting for an arbitrary upstream body
+        // (or a runtime's cancellation handshake) to finish the review.
+        void response.body?.cancel().catch(() => {});
       } catch { state.retryAt = now() + Math.min(60_000, Math.max(REQUEST_SPACING, 1000 * 2 ** Math.min(++state.failures, 6))); }
       await saveState(stateFile, state);
       if (mode !== "flush") break;
     }
-  } finally { await rm(lock, { recursive: true, force: true }); }
+  } finally { await releaseLock(lock, owner); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

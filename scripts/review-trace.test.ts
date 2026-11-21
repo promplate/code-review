@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, createReadStream, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pipeline, Transform } from "node:stream";
 import { collectRollout, runTrace } from "./review-trace.mjs";
 
 const dirs: string[] = [], servers: Server[] = [];
@@ -224,4 +225,178 @@ test("the collector batches within the server limit and drains the same bounded 
   await runTrace({ env: f.env, hook: { transcript_path: f.file }, now: () => Date.now() + 10_000 });
   expect(JSON.parse(target.received[1].body).events).toHaveLength(8);
   expect(f.state().pending).toEqual([]); expect(f.state().sent).toHaveLength(40);
+});
+
+test("Codex 0.171 durable completion-only items retain Code Mode commands and MCP calls without model-issued calls", async () => {
+  const f = fixture();
+  // These are protocol TurnItem records persisted by paginated rollouts, not
+  // exec --json items. ItemStarted and ExecCommandBegin are not durable there.
+  writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
+    + f.line(100, "event_msg", { type: "task_started", turn_id: "turn" })
+    + f.line(500, "event_msg", { type: "item_completed", turn_id: "turn", started_at_ms: f.since + 200, completed_at_ms: f.since + 450,
+      item: { type: "CommandExecution", id: "code_mode-command", command: ["PRIVATE_COMMAND"], cwd: "/PRIVATE_PATH", aggregated_output: "PRIVATE_OUTPUT", status: "failed", exit_code: 7 } })
+    + f.line(900, "event_msg", { type: "item_completed", turn_id: "turn", started_at_ms: f.since + 600, completed_at_ms: f.since + 850,
+      item: { type: "McpToolCall", id: "code_mode-mcp", server: "PRIVATE_SERVER", tool: "read_file", arguments: { path: "PRIVATE_PATH" },
+        status: "completed", result: { isError: true, content: [{ type: "text", text: "PRIVATE_MCP_RESULT" }] } } })
+    + f.line(950, "event_msg", { type: "item_completed", turn_id: "different-turn", item: { type: "CommandExecution", id: "foreign", status: "completed", exit_code: 0 } })
+    + f.line(1000, "event_msg", { type: "task_complete" }));
+  const events = await collectRollout(f.file, { since: f.since });
+  expect(events.map(event => event.kind)).toEqual(["tool", "tool", "turn"]);
+  expect(events[0]).toMatchObject({ toolName: "exec_command", startedAt: f.since + 200, endedAt: f.since + 450, status: "error" });
+  expect(events[1]).toMatchObject({ toolName: "read_file", startedAt: f.since + 600, endedAt: f.since + 850, status: "error" });
+  expect(new Set(events.map(event => event.turnId)).size).toBe(1);
+  expect(events[0].callId).toMatch(/^[a-f0-9]{64}$/);
+  expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|code_mode-|different-turn|foreign/);
+});
+
+test("lifecycle and model records for the same call deduplicate; legacy MCP failures keep only their status", async () => {
+  const f = fixture();
+  writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
+    + f.line(100, "event_msg", { type: "task_started", turn_id: "turn" })
+    + f.line(150, "response_item", { type: "function_call", call_id: "same-call", name: "exec_command", arguments: "PRIVATE_ARGS" })
+    + f.line(300, "event_msg", { type: "item_completed", turn_id: "turn", started_at_ms: f.since + 200, completed_at_ms: f.since + 280,
+      item: { type: "CommandExecution", id: "same-call", status: "completed", exit_code: 0, aggregated_output: "PRIVATE_OUTPUT" } })
+    + f.line(400, "event_msg", { type: "mcp_tool_call_end", call_id: "nested-mcp", invocation: { tool: "lookup", arguments: { secret: "PRIVATE_ARGS" } }, result: { Err: "PRIVATE_ERROR" } })
+    + f.line(500, "event_msg", { type: "task_complete" }));
+  const tools = (await collectRollout(f.file, { since: f.since })).filter(event => event.kind === "tool");
+  expect(tools).toHaveLength(2);
+  expect(tools[0]).toMatchObject({ status: "success", startedAt: f.since + 200, endedAt: f.since + 280 });
+  expect(tools[1]).toMatchObject({ toolName: "lookup", status: "error" });
+  expect(JSON.stringify(tools)).not.toContain("PRIVATE_");
+});
+
+test("a restored rollout beyond 128 MiB still collects a complete appended turn without scanning history", async () => {
+  const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  const descriptor = openSync(f.file, "r+"); ftruncateSync(descriptor, 128 * 1024 * 1024 + 100); closeSync(descriptor);
+  await runTrace({ env: f.env, mode: "init" });
+  appendFileSync(f.file, f.turn("appended", 7000));
+  await runTrace({ env: f.env, mode: "flush" });
+  expect(target.received).toHaveLength(1);
+  const events = JSON.parse(target.received[0].body).events;
+  expect(events).toHaveLength(4);
+  expect(events.every(event => event.startedAt >= f.since + 7000)).toBe(true);
+  expect(events.find(event => event.kind === "turn").status).toBe("success");
+});
+
+test("final flush prioritizes an observed transcript beyond the 512-file directory cap", async () => {
+  const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  rmSync(f.file);
+  for (let i = 0; i < 513; i++) writeFileSync(join(f.sessions, `rollout-${String(i).padStart(4, "0")}.jsonl`), f.line(-1000, "session_meta", { id: `history-${i}` }));
+  await runTrace({ env: f.env, mode: "init" });
+  const name = readdirSync(f.sessions).at(-1)!, active = join(f.sessions, name);
+  appendFileSync(active, f.line(100, "event_msg", { type: "task_started", turn_id: "active-turn" }));
+  await runTrace({ env: f.env, hook: { hook_event_name: "Stop", transcript_path: active } });
+  expect(f.state().active[0]).toBe(name);
+  expect(target.received).toHaveLength(0);
+  appendFileSync(active, f.line(200, "event_msg", { type: "task_complete" }));
+  await runTrace({ env: f.env, mode: "flush" });
+  expect(target.received).toHaveLength(1);
+  expect(JSON.parse(target.received[0].body).events.map(event => [event.kind, event.status])).toEqual([["turn", "success"]]);
+});
+
+test.each([false, true])("a final flush recovers a terminated hook's stale lock (owner file: %s) and sends immediately", async owned => {
+  const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  const lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
+  if (owned) writeFileSync(join(lock, "owner-00000000-0000-0000-0000-000000000000"), "");
+  utimesSync(lock, new Date(Date.now() - 90_000), new Date(Date.now() - 90_000));
+  await runTrace({ env: f.env, mode: "flush" });
+  expect(target.received).toHaveLength(1);
+  expect(f.state().sent).toHaveLength(4);
+});
+
+test.each([false, true])("a live hook's lock (owner file: %s) is not stolen by final flush", async owned => {
+  const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  const lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
+  if (owned) writeFileSync(join(lock, "owner"), "live");
+  await runTrace({ env: f.env, mode: "flush" });
+  expect(target.received).toHaveLength(0);
+  expect(readdirSync(lock)).toEqual(owned ? ["owner"] : []);
+});
+
+test("concurrent stale-lock recovery retains one publisher and does not delete the winning owner's lock", async () => {
+  const f = fixture(), lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
+  writeFileSync(join(lock, "owner-00000000-0000-0000-0000-000000000000"), "");
+  utimesSync(lock, new Date(Date.now() - 90_000), new Date(Date.now() - 90_000));
+  let requests = 0, concurrent = 0, peak = 0;
+  const send = async () => {
+    requests++; peak = Math.max(peak, ++concurrent);
+    const owner = readdirSync(lock);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(readdirSync(lock)).toEqual(owner);
+    concurrent--;
+    return new Response(null, { status: 202 });
+  };
+  await Promise.all(Array.from({ length: 8 }, () => runTrace({ env: f.env, mode: "flush", send })));
+  expect(requests).toBe(1); expect(peak).toBe(1);
+  expect(f.state().sent).toHaveLength(4);
+  expect(readdirSync(join(f.temp, "review-trace"))).toEqual(["state.json"]);
+});
+
+test("a response body cancellation handshake cannot consume the final flush budget", async () => {
+  const f = fixture(); let cancelled = false;
+  const start = performance.now();
+  await runTrace({ env: f.env, mode: "flush", budgetMs: 100, send: async () => ({
+    status: 202, body: { cancel: () => { cancelled = true; return new Promise(() => {}); } },
+  }) });
+  expect(cancelled).toBe(true);
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(f.state().sent).toHaveLength(4);
+});
+
+test("time spent reading a transcript consumes the same flush budget as retry delivery", async () => {
+  const f = fixture(), target = await receiver(503); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  await runTrace({ env: f.env, hook: { transcript_path: f.file } });
+  expect(f.state().pending).toHaveLength(4);
+  let requests = 0;
+  const start = performance.now();
+  await runTrace({ env: f.env, mode: "flush", now: () => Date.now() + 10_000, budgetMs: 50,
+    readStream: (file, options) => {
+      // Delay real fixture bytes beyond the whole-call budget. This is stable
+      // on both fast and slow disks, unlike racing a large-file scan with 20ms.
+      const delayed = new Transform({ transform(chunk, _encoding, done) {
+        const timer = setTimeout(() => done(null, chunk), 100);
+        options.signal.addEventListener("abort", () => { clearTimeout(timer); done(new Error("test read aborted")); }, { once: true });
+      } });
+      pipeline(createReadStream(file, options), delayed, () => {});
+      return delayed;
+    }, send: async () => { requests++; return new Response(null, { status: 202 }); } });
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(requests).toBe(0);
+  expect(f.state().pending).toHaveLength(4);
+});
+
+test("oversized records are discarded without losing subsequent complete metadata", async () => {
+  const f = fixture();
+  appendFileSync(f.file, f.line(5000, "response_item", { type: "message", role: "user", content: "PRIVATE_".repeat(160_000) })
+    + f.turn("after-large-record", 6000) + "{\"type\":\"event_msg\",\"payload\":");
+  const events = await collectRollout(f.file, { since: f.since, finalize: true });
+  expect(events).toHaveLength(8);
+  expect(events.filter(event => event.kind === "turn").map(event => event.status)).toEqual(["success", "success"]);
+  expect(JSON.stringify(events)).not.toContain("PRIVATE_");
+});
+
+test("unchanged large restored transcripts cost no parsing or final network request", async () => {
+  const f = fixture(); rmSync(f.file);
+  for (let i = 0; i < 300; i++) {
+    const path = join(f.sessions, `rollout-${i}.jsonl`), descriptor = openSync(path, "w");
+    ftruncateSync(descriptor, 32 * 1024 * 1024); closeSync(descriptor);
+  }
+  await runTrace({ env: f.env, mode: "init" });
+  expect(Object.keys(f.state().baseline)).toHaveLength(300);
+  let requests = 0;
+  const start = performance.now();
+  await runTrace({ env: f.env, mode: "flush", budgetMs: 100, send: async () => { requests++; return new Response(null, { status: 202 }); } });
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(requests).toBe(0);
+});
+
+test("acknowledged events still count toward the server's 4096-event per-run quota", async () => {
+  const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
+  await runTrace({ env: f.env, mode: "init" });
+  const state = f.state(); state.sent = Array.from({ length: 4096 }, (_, i) => i.toString(16).padStart(64, "0"));
+  writeFileSync(join(f.temp, "review-trace/state.json"), JSON.stringify(state));
+  appendFileSync(f.file, f.turn("over-quota", 8000));
+  await runTrace({ env: f.env, mode: "flush" });
+  expect(target.received).toHaveLength(0);
+  expect(f.state().sent).toHaveLength(4096); expect(f.state().pending).toEqual([]);
 });

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -eo pipefail
+# Actions starts this step in a fresh shell and restores the job environment;
+# configure-review.sh cannot remove inherited project credentials for this step.
+if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+  export TRACE_TO_LANGFUSE=false
+  unset LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_CODEX_PUBLIC_KEY LANGFUSE_CODEX_SECRET_KEY
+fi
 # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
 # Start it in this step so the shell that reports usage can wait for its own child.
 (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices > install.log 2>&1) &
