@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -eo pipefail
+# Self-hosted runners can retain temp files from an earlier job. Neither its verdict
+# nor its supersession marker can authorize publishing (or skipping) this review.
+rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last-message.md"
 # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
 # Start it in this step so the shell that reports usage can wait for its own child.
 (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices > install.log 2>&1) &
