@@ -64,7 +64,7 @@ if [ "$AGENT" = true ]; then
     "$SUBJECT" "$delivery" "$HEAD_SHA" "$INSTRUCTIONS")
 fi
 fresh() {
-  $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$OPEN"
 }
 log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
@@ -81,14 +81,14 @@ if [ -n "$FORK_KEY" ]; then
   cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
   # The conversation transfers, but events filtered for the source PR were never consumed for this one.
   rm -f "$CODEX_HOME/sessions/.github-deliveries.json" "$CODEX_HOME/sessions/.github-published-head"
-  $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
     --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
     --output-last-message "$RUNNER_TEMP/review.json" \
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "You opened PR #$PR_NUMBER to keep that fix out of the change you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
      Run \`git diff $RANGE\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
 elif [ -s "$CODEX_HOME/last-thread-id" ]; then
-  $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "$CONTINUE"
 else
@@ -127,7 +127,7 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
     # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
     if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
     echo "::warning::Codex ended without a verdict; asking for the review object once."
-    $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
+    ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
       --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
       --output-last-message "$RUNNER_TEMP/review.json" \
       "$(cat "$CODEX_HOME/last-thread-id")" \

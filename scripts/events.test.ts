@@ -954,7 +954,7 @@ test("forking a review copies its conversation but not another PRs consumption p
   mkdirSync(join(source, "sessions"), { recursive: true }); mkdirSync(target);
   for (const name of [".github-deliveries.json", ".github-published-head", "conversation.jsonl"]) writeFileSync(join(source, "sessions", name), "source");
   writeFileSync(join(source, "last-thread-id"), "thread");
-  const commands = step("Run codex review").run.match(/fork=\$RUNNER_TEMP[\s\S]*?(?=\s+\$CODEX_RUNTIME)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
+  const commands = step("Run codex review").run.match(/fork=\$RUNNER_TEMP[\s\S]*?(?=\s+\$\{CODEX_RUNTIME:)/)[0].replaceAll("${{ runner.temp }}", dir).replaceAll("${{ github.repository }}", "owner/repo");
   const result = Bun.spawnSync(["bash", "-ec", commands], { env: { ...env, CODEX_HOME: target, FORK_KEY: "source" } });
   expect(result.exitCode).toBe(0);
   expect(readFileSync(join(target, "sessions/conversation.jsonl"), "utf8")).toBe("source");

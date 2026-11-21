@@ -1,0 +1,2 @@
+# Explicit, action-owned startup configuration for the reviewer.
+# Do not inherit settings from the checkout under review.

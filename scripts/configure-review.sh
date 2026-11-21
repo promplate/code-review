@@ -24,15 +24,15 @@ fi
 CODEX_BIN=$(command -v codex)
 CODEX_RUNTIME=
 # Bun runs the npm launcher, but native binaries and shell wrappers execute directly.
-case "$(file -Lb "$CODEX_BIN")" in *JavaScript*|*Node.js*|*node\ script*) CODEX_RUNTIME=bun ;; esac
-RUNTIME_INFO="Bun $(bun --version); $($CODEX_RUNTIME "$CODEX_BIN" --version)"
+case "$(file -Lb "$CODEX_BIN")" in *JavaScript*|*Node.js*|*node\ script*) CODEX_RUNTIME="$GITHUB_ACTION_PATH/scripts/review-bun.sh" ;; esac
+RUNTIME_INFO="Bun $(bun --version); $(${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" --version)"
 export CODEX_BIN CODEX_RUNTIME RUNTIME_INFO
 mkdir -p "$CODEX_HOME"
 # A literal input wins over the file it replaces, so a caller can override a repository's config for one run.
 [ -n "$CODEX_CONFIG" ] || [ -z "$CODEX_CONFIG_FILE" ] || CODEX_CONFIG=$(cat "$CODEX_CONFIG_FILE")
 [ -n "$CODEX_CONFIG" ] || { echo "::error::Provide codex-config or codex-config-file."; exit 1; }
 printf '%s\n' "$CODEX_CONFIG" > "$CODEX_HOME/config.toml"
-bun "$GITHUB_ACTION_PATH/scripts/doc-fallbacks.ts" "$CODEX_HOME/config.toml" "refs/remotes/origin/$DEFAULT_BRANCH"
+"$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/doc-fallbacks.ts" "$CODEX_HOME/config.toml" "refs/remotes/origin/$DEFAULT_BRANCH"
 [ -z "$CATALOG" ] || printf '%s' "$CATALOG" > "$CODEX_HOME/models.json"
 [ -n "$CODEX_AUTH" ] || [ -z "$CODEX_AUTH_FILE" ] || CODEX_AUTH=$(cat "$CODEX_AUTH_FILE")
 [ -z "$CODEX_AUTH" ] || printf '%s' "$CODEX_AUTH" > "$CODEX_HOME/auth.json"
@@ -55,7 +55,7 @@ command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
 EOF
 # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh.
 # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
-bun -e '
+"$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e '
   const path = process.argv[1];
   let text = await Bun.file(path).text();
   // The input overrides the root setting, including quoted or indented keys, without editing multiline strings.

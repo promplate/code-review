@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -14,7 +14,11 @@ function fixture(mode = "success") {
   git("init", "-q", "-b", "main"); git("commit", "--allow-empty", "-qm", "base");
   const head = git("rev-parse", "HEAD").stdout.toString().trim(); git("update-ref", "refs/remotes/origin/main", head);
   const executable = (name: string, contents: string) => { const path = join(bin, name); writeFileSync(path, contents); chmodSync(path, 0o755); };
-  executable("bun", `#!/usr/bin/env bash\nif [ "$1" = add ]; then exit 0; fi\nexec '${process.execPath}' "$@"\n`);
+  executable("bun", `#!/usr/bin/env bash
+if [ "$1" = add ] || [ "$PWD" = "$RUNNER_TEMP/prices" ]; then exit 0; fi
+if [ -n "$REVIEW_BUN_LOG" ]; then printf '%s\\t%s\\t%s\\n' "$PWD" "$1" "$2" >> "$REVIEW_BUN_LOG"; fi
+exec '${process.execPath}' "$@"
+`);
   executable("tail", "#!/bin/sh\nexit 0\n");
   executable("sleep", "#!/bin/sh\nexit 0\n");
   executable("gh", `#!${process.execPath}
@@ -110,6 +114,44 @@ test("hosted entry runs shared review, publishes at the exact head and returns r
   expect(JSON.parse(readFileSync(join(setup.temp,"reviews"),"utf8"))).toEqual({event:"APPROVE",commit_id:setup.head});
   expect(readFileSync(join(setup.state,"sessions/.github-published-head"),"utf8")).toBe(setup.head+"\n");
   expect(JSON.parse(readFileSync(join(setup.state,"auth.json"),"utf8"))).toEqual({tokens:{refresh_token:"refreshed"}});
+});
+
+test.each(["Actions", "hosted"])("%s uses trusted Bun startup settings without moving the review cwd", entry => {
+  const setup = fixture(), log = join(setup.temp, "bun.log"), codex = join(setup.bin, "codex");
+  const actionPath = join(setup.temp, "action path");
+  symlinkSync(root, actionPath);
+  const env = { ...setup.env, GITHUB_ACTION_PATH: actionPath, REVIEW_BUN_LOG: log, LANGFUSE_PUBLIC_KEY: "", HOME: setup.temp };
+  writeFileSync(join(setup.checkout, "bunfig.toml"), "console.depth = 1\n");
+  // Exercise detection of an npm-style launcher rather than the directly executable fixture.
+  writeFileSync(codex, readFileSync(codex, "utf8").replace(/^#!.*$/m, "#!/usr/bin/env node"));
+  if (entry === "hosted") {
+    const review = setup.run(env);
+    expect(review.exitCode).toBe(0);
+  } else {
+    const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as {
+      runs: { steps: { name?: string; run?: string }[] };
+    };
+    const runStep = (name: string, extra: Record<string, string>) => {
+      const script = action.runs.steps.find(step => step.name === name)?.run;
+      if (!script) throw new Error(`Missing Actions step ${name}`);
+      return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { cwd: setup.checkout, env: { ...env, ...extra }, timeout: 15000 });
+    };
+    const githubEnv = join(setup.temp, "github-env"), stepEnv = {
+      AGENT: "true", ISSUE_NUMBER: "7", PR_NUMBER: "", GITHUB_ENV: githubEnv,
+      GITHUB_STEP_SUMMARY: join(setup.temp, "summary.md"),
+    };
+    expect(runStep("Configure codex", stepEnv).exitCode).toBe(0);
+    const output = Object.fromEntries(readFileSync(githubEnv, "utf8").trimEnd().split("\n").map(line => {
+      const equal = line.indexOf("=");
+      return [line.slice(0, equal), line.slice(equal + 1)];
+    }));
+    expect(runStep("Run codex review", { ...stepEnv, ...output }).exitCode).toBe(0);
+  }
+  const calls = readFileSync(log, "utf8").trimEnd().split("\n").map(line => line.split("\t"))
+    .filter(([cwd, arg]) => cwd === setup.checkout && arg !== "--version");
+  expect(calls).toEqual([
+    codex, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), codex,
+  ].map(arg => [setup.checkout, `--config=${join(actionPath, "scripts", "review-bun.toml")}`, arg]));
 });
 
 test("a head that moves during hosted review is superseded without publishing a review", () => {
