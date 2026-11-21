@@ -43,6 +43,11 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
   # A check names its job and provider; its workflow comes from the run that owns the same suite and head.
   | ([$frames[] | select(.event == "workflow_run") | (.body | fromjson? // empty) | .workflow_run
       | select(.check_suite_id != null) | {key: (.check_suite_id | tostring), value: {name, head_sha}}] | from_entries) as $workflows
+  # Job webhooks link a workflow name to its exact check, even before the workflow run arrives.
+  | ([$frames[] | select(.event == "workflow_job") | (.body | fromjson? // empty) | .workflow_job
+      | select(.head_sha == env.HEAD_SHA and (.check_run_url | type) == "string" and .check_run_url != ""
+          and (.workflow_name | type) == "string" and .workflow_name != "")
+      | {key: .check_run_url, value: .workflow_name}] | from_entries) as $jobs
   | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
@@ -76,7 +81,7 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
         app: ($body.check_run.app | if . == null then null else {name, slug} | with_entries(select(.value != null)) end),
         check_suite_id: $body.check_run.check_suite.id,
         workflow: (if $frame.event == "check_run" and $body.check_run.app.slug == "github-actions"
-          then $workflows[$body.check_run.check_suite.id | tostring] as $run | if $run.head_sha == $body.check_run.head_sha then $run.name else null end else null end),
+          then $jobs[$body.check_run.url // ""] // ($workflows[$body.check_run.check_suite.id | tostring] as $run | if $run.head_sha == $body.check_run.head_sha then $run.name else null end) else null end),
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end),
         # An edited title or description is the change itself; other pull request events do not need the PR text again.
         title: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),

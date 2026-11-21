@@ -13,6 +13,7 @@ const homes: string[] = [];
 const human = { login: "collaborator", type: "User" };
 const bot = { login: "ci[bot]", type: "Bot" };
 const check = (overrides = {}) => ({ id: 100, name: "test", status: "completed", conclusion: "success", head_sha: "head", app: { slug: "github-actions" }, ...overrides });
+const workflowJob = (overrides = {}) => ({ id: 200, run_id: 90, run_attempt: 1, head_sha: "head", name: "test", workflow_name: "CI", check_run_url: "https://api.github.com/repos/owner/repo/check-runs/100", ...overrides });
 const frame = (event: string, body: object, delivery = event, writer = true) => `id: ${delivery}\ndata: ${JSON.stringify({ event, delivery, writer, body: JSON.stringify({ sender: human, ...body }) })}\n\n`;
 
 function fixture() {
@@ -1425,6 +1426,75 @@ test("CI labels identify Blacksmith Proof by its app rather than its GitHub Acti
   expect(text.trim()).toBe("check_run/completed blacksmith.sh / Proof:skipped https://app.blacksmith.sh/promplate/usage");
 });
 
+test.each(["queued", "in_progress", "completed", "waiting"])("workflow job %s metadata labels only the exact check without delivering another event", action => {
+  const sender = { login: "dependabot[bot]", type: "Bot" };
+  const metadata = frame("workflow_job", { action, sender, workflow_job: workflowJob({ name: "reusable / tests" }) }, `job-${action}`);
+  const completed = frame("check_run", { action: "completed", sender, check_run: check({ url: workflowJob().check_run_url, name: "test (windows, 3.12)", check_suite: { id: 500 } }) }, "checked");
+  const unrelated = frame("workflow_run", { action: "requested", workflow_run: { id: 91, name: "Other workflow", check_suite_id: 501, head_sha: "head" } });
+  for (const log of [metadata + unrelated + completed, completed + unrelated + metadata]) {
+    const { activities, text, dir, run } = runLoggedHook(log);
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({ event: "check_run", actor: sender.login, name: "test (windows, 3.12)", check_suite_id: 500, workflow: "CI" });
+    expect(text.trim()).toBe("check_run/completed CI / test (windows, 3.12):success");
+    expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("checked\n");
+    expect(run().stdout.toString()).toBe("");
+  }
+});
+
+test.each([
+  { reason: "another check", job: { check_run_url: "https://api.github.com/repos/owner/repo/check-runs/101" } },
+  { reason: "another repository", job: { check_run_url: "https://api.github.com/repos/other/repo/check-runs/100" } },
+  { reason: "another head", job: { head_sha: "other" } },
+  { reason: "a missing check URL", job: { check_run_url: undefined } },
+  { reason: "an empty check URL", job: { check_run_url: "" } },
+  { reason: "a missing workflow name", job: { workflow_name: null } },
+  { reason: "an empty workflow name", job: { workflow_name: "" } },
+  { reason: "an invalid workflow name", job: { workflow_name: 123 } },
+  { reason: "an external provider", job: {}, app: { name: "External CI", slug: "external-ci" } },
+])("workflow job metadata from $reason cannot change a CI label", ({ job, app = { name: "GitHub Actions", slug: "github-actions" } }) => {
+  const log = frame("workflow_job", { action: "completed", workflow_job: workflowJob(job) })
+    + frame("check_run", { action: "completed", check_run: check({ url: workflowJob().check_run_url, app, conclusion: "failure" }) });
+  const { activities, text } = runLoggedHook(log);
+  expect(activities).toHaveLength(1);
+  expect(activities[0]).not.toHaveProperty("workflow");
+  expect(text.trim()).toBe(`check_run/completed ${app.name} / test:failure`);
+});
+
+test.each([undefined, null, ""])("workflow job metadata preserves suite fallback when the check URL is %j", url => {
+  const log = frame("workflow_job", { action: "completed", workflow_job: workflowJob({ workflow_name: "Other workflow" }) })
+    + frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: "Suite workflow", check_suite_id: 500, head_sha: "head" } })
+    + frame("check_run", { action: "completed", check_run: check({ url, check_suite: { id: 500 } }) });
+  const { activities, text } = runLoggedHook(log);
+  expect(activities).toHaveLength(1);
+  expect(activities[0].workflow).toBe("Suite workflow");
+  expect(text.trim()).toBe("check_run/completed Suite workflow / test:success");
+});
+
+test("later workflow job metadata does not redeliver a completed check", () => {
+  const completed = frame("check_run", { action: "completed", check_run: check({ url: workflowJob().check_run_url }) }, "checked");
+  const { dir, run, activities } = runLoggedHook(completed);
+  expect(activities[0]).not.toHaveProperty("workflow");
+  const injected = readFileSync(join(dir, "injected.log"), "utf8");
+  const metadata = ["queued", "in_progress", "completed"].map(action => frame("workflow_job", { action, workflow_job: workflowJob() }, `job-${action}`)).join("");
+  writeFileSync(join(dir, "sse.jsonl"), completed + metadata);
+  const repeated = run();
+  expect(repeated.exitCode).toBe(0);
+  expect(repeated.stderr.toString()).toBe("");
+  expect(repeated.stdout.toString()).toBe("");
+  expect(readFileSync(join(dir, "injected.log"), "utf8")).toBe(injected);
+  expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("checked\n");
+});
+
+test("workflow job metadata does not deliver the review workflow or its checks", () => {
+  const log = frame("workflow_job", { action: "completed", workflow_job: workflowJob({ workflow_name: "agent invoke" }) })
+    + frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: "agent invoke", path: ".github/workflows/agent.yml", check_suite_id: 500, head_sha: "head" } })
+    + frame("check_run", { action: "completed", check_run: check({ url: workflowJob().check_run_url, check_suite: { id: 500 } }) });
+  const { output, dir } = runHook(log);
+  expect(output).toBe("");
+  expect(readFileSync(join(dir, "injected.log"), "utf8")).toBe("");
+  expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("");
+});
+
 test.each([
   { reason: "different suite", suite: 501, head: "head", app: { name: "GitHub Actions", slug: "github-actions" } },
   { reason: "different head", suite: 500, head: "other", app: { name: "GitHub Actions", slug: "github-actions" } },
@@ -1466,14 +1536,16 @@ test("CI labels escape workflow names and both app labels before writing runner 
   const log = frame("workflow_run", { action: "requested", workflow_run: { id: 90, name: crafted, path: ".github/workflows/ci.yml", check_suite_id: 500, head_sha: "head" } })
     + frame("check_run", { action: "completed", check_run: check({ check_suite: { id: 500 } }) }, "workflow-label")
     + frame("check_run", { action: "completed", check_run: check({ app: { name: crafted, slug: "external-ci" } }) }, "app-name")
-    + frame("check_run", { action: "completed", check_run: check({ app: { slug: crafted } }) }, "app-slug");
+    + frame("check_run", { action: "completed", check_run: check({ app: { slug: crafted } }) }, "app-slug")
+    + frame("workflow_job", { action: "queued", workflow_job: workflowJob({ workflow_name: crafted }) })
+    + frame("check_run", { action: "completed", check_run: check({ url: workflowJob().check_run_url }) }, "job-workflow-label");
   const { activities, text } = runLoggedHook(log);
-  expect([activities[0].workflow, activities[1].app.name, activities[2].app.slug]).toEqual([crafted, crafted, crafted]);
+  expect([activities[0].workflow, activities[1].app.name, activities[2].app.slug, activities[3].workflow]).toEqual([crafted, crafted, crafted, crafted]);
   expect(text).not.toContain("::");
   expect(text).not.toContain("##[");
   expect(text).not.toContain("\r");
-  expect(text.match(/:\u200b:error:\u200b:forged/g)).toHaveLength(3);
-  expect(text.match(/#\u200b#\[error\]synthetic/g)).toHaveLength(3);
+  expect(text.match(/:\u200b:error:\u200b:forged/g)).toHaveLength(4);
+  expect(text.match(/#\u200b#\[error\]synthetic/g)).toHaveLength(4);
 });
 
 test("injected command markers stay escaped when concurrent output splits a line", () => {
