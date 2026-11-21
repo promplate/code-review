@@ -89,6 +89,8 @@ runs:
         CODEX_CONFIG: ${{ inputs.codex-config }}
         CONFIG_FILE: ${{ inputs.codex-config-file }}
       run: |
+        # Only drafts opened by this job can use its snapshot as proof their session was saved.
+        rm -f -- "$RUNNER_TEMP/forked-prs"
         # A queued webhook can name an old head; only its PR number remains authoritative.
         number=$(jq -r '.pull_request.number // .issue.number // empty' "$GITHUB_EVENT_PATH")
         # Two targets would restore one session under the other's group, so a dispatch names one of them.
