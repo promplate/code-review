@@ -125,7 +125,7 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
       // A response_item output may precede its execution-end event. Wait until
       // that status arrives, or until Stop/terminal/EXIT makes absence explicit.
       if (call.status !== undefined || status !== undefined || (stopped && call.end !== undefined))
-        emit("tool", call.id, call.start, call.end ?? ts, call.status ?? "unknown",
+        emit("tool", call.id, call.start, call.measuredEnd ?? call.end ?? ts, call.status ?? "unknown",
         { callId: hash(`call:${session}:${turn.id}:${call.id}`), toolName: call.name });
     }
     if (status !== undefined) emit("turn", "final", turn.start, ts, status, turn.model ? { model: turn.model } : {});
@@ -140,67 +140,68 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
     if (!session) return events;
   }
   for await (const line of rolloutLines(file, baseline, MAX_TRANSCRIPT_BYTES, budget)) {
-      const p = line?.payload;
-      if (!p || typeof p !== "object") continue;
-      if (line.type === "session_meta") { session ??= id(p.id); continue; }
-      const ts = timestamp(line.timestamp);
-      if (!Number.isFinite(ts) || ts < since) continue;
-      if (line.type === "event_msg" && ["task_started", "turn_started"].includes(p.type)) {
-        finish(ts, finalize ? "unknown" : undefined);
-        const turnId = id(p.turn_id);
-        if (turnId) turn = { id: turnId, start: ts, last: ts, stepStart: ts, step: 0, activity: false, tools: new Map() };
-        continue;
-      }
-      if (!turn || (id(p.turn_id) && p.turn_id !== turn.id)) continue;
-      turn.last = ts;
-      if (line.type === "turn_context") { turn.model = label(p.model) ?? turn.model; continue; }
-      if (line.type === "response_item") {
-        if (["reasoning", "agent_message"].includes(p.type) || (p.type === "message" && p.role === "assistant")) turn.activity = true;
-        if (["function_call", "custom_tool_call", "local_shell_call", "web_search_call"].includes(p.type)) {
-          turn.activity = true;
-          const callId = id(p.call_id) ?? id(p.id);
-          turn.firstTool ??= ts;
-          if (callId && turn.tools.size < MAX_EVENTS) {
-            const name = p.type === "local_shell_call" ? "local_shell" : p.type === "web_search_call" ? "web_search" : label(p.name) ?? "unknown";
-            if (!turn.tools.has(callId)) turn.tools.set(callId, { id: callId, name, start: ts });
-          }
-        } else if (["function_call_output", "custom_tool_call_output"].includes(p.type)) {
-          const call = turn.tools.get(id(p.call_id));
-          if (call) {
-            call.end = Math.max(call.end ?? ts, ts);
-            if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
-          }
+    const p = line?.payload;
+    if (!p || typeof p !== "object") continue;
+    if (line.type === "session_meta") { session ??= id(p.id); continue; }
+    const ts = timestamp(line.timestamp);
+    if (!Number.isFinite(ts) || ts < since) continue;
+    if (line.type === "event_msg" && ["task_started", "turn_started"].includes(p.type)) {
+      finish(ts, finalize ? "unknown" : undefined);
+      const turnId = id(p.turn_id);
+      if (turnId) turn = { id: turnId, start: ts, last: ts, stepStart: ts, step: 0, activity: false, tools: new Map() };
+      continue;
+    }
+    if (!turn || (id(p.turn_id) && p.turn_id !== turn.id)) continue;
+    turn.last = ts;
+    if (line.type === "turn_context") { turn.model = label(p.model) ?? turn.model; continue; }
+    if (line.type === "response_item") {
+      if (["reasoning", "agent_message"].includes(p.type) || (p.type === "message" && p.role === "assistant")) turn.activity = true;
+      if (["function_call", "custom_tool_call", "local_shell_call", "web_search_call"].includes(p.type)) {
+        turn.activity = true;
+        const callId = id(p.call_id) ?? id(p.id);
+        turn.firstTool ??= ts;
+        if (callId && turn.tools.size < MAX_EVENTS) {
+          const name = p.type === "local_shell_call" ? "local_shell" : p.type === "web_search_call" ? "web_search" : label(p.name) ?? "unknown";
+          if (!turn.tools.has(callId)) turn.tools.set(callId, { id: callId, name, start: ts });
+        }
+      } else if (["function_call_output", "custom_tool_call_output"].includes(p.type)) {
+        const call = turn.tools.get(id(p.call_id));
+        if (call) {
+          call.end = Math.max(call.end ?? ts, ts);
+          if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
         }
       }
-      if (line.type !== "event_msg") continue;
-      if (p.type === "token_count" && turn.activity && p.info?.last_token_usage) {
-        const counts = usage(p.info.last_token_usage);
-        emit("generation", String(turn.step++), turn.stepStart, turn.firstTool ?? ts, "success",
-          { ...(turn.model ? { model: turn.model } : {}), ...(counts ? { usage: counts } : {}) });
-        turn.activity = false; turn.firstTool = undefined; turn.stepStart = ts;
-      } else if (["task_complete", "turn_complete"].includes(p.type)) finish(ts, p.error != null ? "error" : "success");
-      else if (p.type === "turn_aborted") finish(ts, "aborted");
-      else if (p.type === "task_failed" || p.type === "turn_failed") finish(ts, "error");
-      else if (typeof p.type === "string") {
-        const item = ["item_started", "item_completed"].includes(p.type) ? p.item : undefined;
-        const callId = id(item?.id) ?? id(p.call_id), name = item ? itemToolName(item) : legacyToolName(p);
-        let call = turn.tools.get(callId);
-        const measured = (value, fallback) => Number.isSafeInteger(value) && value >= turn.start && value <= ts ? value : fallback;
-        const start = measured(p.started_at_ms, ts), end = measured(p.completed_at_ms, ts);
-        if (!call && callId && name && turn.tools.size < MAX_EVENTS) {
-          call = { id: callId, name, start };
-          turn.tools.set(callId, call);
-        }
-        if (!call) continue;
-        if (p.type === "item_started" || p.type.endsWith("_begin") || (item && p.started_at_ms != null)) call.start = measured(p.started_at_ms, call.start === ts ? ts : call.start);
-        if (p.type.endsWith("_begin") && p.started_at_ms == null) call.start = ts;
-        if (p.type === "item_completed" || p.type.endsWith("_end")) {
-          const outcome = item ?? p;
-          call.end = end;
-          call.status = toolOutcome(outcome);
-          if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, end);
-        }
+    }
+    if (line.type !== "event_msg") continue;
+    if (p.type === "token_count" && turn.activity && p.info?.last_token_usage) {
+      const counts = usage(p.info.last_token_usage);
+      emit("generation", String(turn.step++), turn.stepStart, turn.firstTool ?? ts, "success",
+        { ...(turn.model ? { model: turn.model } : {}), ...(counts ? { usage: counts } : {}) });
+      turn.activity = false; turn.firstTool = undefined; turn.stepStart = ts;
+    } else if (["task_complete", "turn_complete"].includes(p.type)) finish(ts, p.error != null ? "error" : "success");
+    else if (p.type === "turn_aborted") finish(ts, "aborted");
+    else if (p.type === "task_failed" || p.type === "turn_failed") finish(ts, "error");
+    else if (typeof p.type === "string") {
+      const item = ["item_started", "item_completed"].includes(p.type) ? p.item : undefined;
+      const callId = id(item?.id) ?? id(p.call_id), name = item ? itemToolName(item) : legacyToolName(p);
+      let call = turn.tools.get(callId);
+      const measured = (value, fallback) => Number.isSafeInteger(value) && value >= turn.start && value <= ts ? value : fallback;
+      const start = measured(p.started_at_ms, ts);
+      if (!call && callId && name && turn.tools.size < MAX_EVENTS) {
+        call = { id: callId, name, start };
+        turn.tools.set(callId, call);
       }
+      if (!call) continue;
+      if (p.type === "item_started" || p.type.endsWith("_begin") || (item && p.started_at_ms != null)) call.start = measured(p.started_at_ms, call.start);
+      if (p.type.endsWith("_begin") && p.started_at_ms == null) call.start = ts;
+      if (p.type === "item_completed" || p.type.endsWith("_end")) {
+        const outcome = item ?? p;
+        call.measuredEnd = measured(p.completed_at_ms, call.measuredEnd);
+        call.end = call.measuredEnd ?? ts;
+        call.status = toolOutcome(outcome);
+        if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, call.end);
+      }
+    }
   }
   // A truncated scan cannot prove the absence of a later terminal record. Only
   // finalize when we reached EOF with budget left; future hooks may continue.

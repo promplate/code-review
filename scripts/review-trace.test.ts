@@ -256,6 +256,7 @@ test("lifecycle and model records for the same call deduplicate; legacy MCP fail
     + f.line(150, "response_item", { type: "function_call", call_id: "same-call", name: "exec_command", arguments: "PRIVATE_ARGS" })
     + f.line(300, "event_msg", { type: "item_completed", turn_id: "turn", started_at_ms: f.since + 200, completed_at_ms: f.since + 280,
       item: { type: "CommandExecution", id: "same-call", status: "completed", exit_code: 0, aggregated_output: "PRIVATE_OUTPUT" } })
+    + f.line(350, "response_item", { type: "function_call_output", call_id: "same-call", output: "PRIVATE_OUTPUT" })
     + f.line(400, "event_msg", { type: "mcp_tool_call_end", call_id: "nested-mcp", invocation: { tool: "lookup", arguments: { secret: "PRIVATE_ARGS" } }, result: { Err: "PRIVATE_ERROR" } })
     + f.line(500, "event_msg", { type: "task_complete" }));
   const tools = (await collectRollout(f.file, { since: f.since })).filter(event => event.kind === "tool");

@@ -60,6 +60,11 @@ if(process.env.REVIEW_TRACE_RELAY_URL||process.env.TEST_TRACE_ENV==='true') awai
   stockEnabled:process.env.TRACE_TO_LANGFUSE, projectKeyPresent:['LANGFUSE_PUBLIC_KEY','LANGFUSE_SECRET_KEY','LANGFUSE_CODEX_PUBLIC_KEY','LANGFUSE_CODEX_SECRET_KEY'].some(key=>!!process.env[key]),
   relayTokenPresent:!!process.env.REVIEW_TRACE_RELAY_TOKEN
 }));
+if(process.env.TEST_TRACE_ENV==='true' && process.env.REVIEW_TRACE_RELAY_URL) {
+  const timestamp=new Date().toISOString();
+  const records=[{type:'session_meta',payload:{id:'fixture'}},{type:'event_msg',payload:{type:'task_started',turn_id:'turn'}},{type:'event_msg',payload:{type:'task_complete'}}];
+  await Bun.write(process.env.CODEX_HOME+'/sessions/rollout-fixture.jsonl',records.map(record=>JSON.stringify({...record,timestamp})).join('\\n')+'\\n');
+}
 if(retry) await Bun.write(process.env.RUNNER_TEMP+'/retried','');
 if(mode==='codex-fails'||(retry&&mode==='moved-on-retry-error')) process.exit(1);
 const invalid=mode==='stale-verdict'||mode==='invalid-verdict'||mode.startsWith('moved-on-retry');
@@ -120,13 +125,18 @@ test("a superseded attempt skips tracing restored sessions", () => {
   expect(existsSync(join(f.temp, "review-trace"))).toBe(false);
 });
 
-test.each([false, true])("Actions relay strips inherited project credentials in the fresh run step (relay: %s)", relay => {
+test.each([false, true])("Actions relay strips inherited project credentials in the fresh run step (relay: %s)", async relay => {
   const f = fixture(), now = Date.now(), githubEnv = join(f.temp, "github-env");
+  const events: { kind: string; status: string }[] = [];
+  using receiver = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    events.push(...(await request.json()).events);
+    return new Response(null, { status: 202 });
+  } });
   writeFileSync(githubEnv, "");
   const jobEnv = { ...f.env, AGENT: "false", BASE: "main", GITHUB_ENV: githubEnv, GITHUB_STEP_SUMMARY: join(f.temp, "summary.md"), TEST_TRACE_ENV: "true",
     LANGFUSE_PUBLIC_KEY: "PRIVATE_PROJECT_KEY", LANGFUSE_SECRET_KEY: "PRIVATE_PROJECT_SECRET",
     LANGFUSE_CODEX_PUBLIC_KEY: "PRIVATE_CODEX_PROJECT_KEY", LANGFUSE_CODEX_SECRET_KEY: "PRIVATE_CODEX_PROJECT_SECRET", TRACE_TO_LANGFUSE: "true",
-    REVIEW_TRACE_RELAY_URL: relay ? "http://127.0.0.1:1/trace" : "", REVIEW_TRACE_RELAY_TOKEN: relay ? "rrt_" + "a".repeat(64) : "",
+    REVIEW_TRACE_RELAY_URL: relay ? new URL("/trace", receiver.url).href : "", REVIEW_TRACE_RELAY_TOKEN: relay ? "rrt_" + "a".repeat(64) : "",
     REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) };
   const steps = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps;
   const configure = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", steps.find((step: any) => step.name === "Configure codex").run], { cwd: f.checkout, env: jobEnv, timeout: 15000 });
@@ -134,10 +144,13 @@ test.each([false, true])("Actions relay strips inherited project credentials in 
   // GitHub starts the next step from the job environment plus GITHUB_ENV; a shell
   // unset in Configure codex does not remove the original job-level credentials.
   const persisted = Object.fromEntries(readFileSync(githubEnv, "utf8").trim().split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
-  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", steps.find((step: any) => step.name === "Run codex review").run], { cwd: f.checkout, env: { ...jobEnv, ...persisted }, timeout: 15000 });
-  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  const child = Bun.spawn(["bash", "-eo", "pipefail", "-c", steps.find((step: any) => step.name === "Run codex review").run],
+    { cwd: f.checkout, env: { ...jobEnv, ...persisted }, stdout: "pipe", stderr: "pipe", timeout: 15000 });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exitCode, stderr).toBe(0);
   expect(JSON.parse(readFileSync(join(f.temp, "trace-env.json"), "utf8"))).toEqual({ stockEnabled: relay ? "false" : "true", projectKeyPresent: !relay, relayTokenPresent: relay });
-  expect(configure.stdout.toString() + configure.stderr.toString() + result.stdout.toString() + result.stderr.toString()).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
+  expect(events.map(event => [event.kind, event.status])).toEqual(relay ? [["turn", "success"]] : []);
+  expect(configure.stdout.toString() + configure.stderr.toString() + stdout + stderr).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
 });
 
 test("relay removes recognized content exporters without deleting unrelated hooks with Langfuse or Codex in their path", () => {

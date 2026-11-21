@@ -76,7 +76,14 @@ log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACT
 : > "$RUNNER_TEMP/injected.log"
 tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
 INJECTED_TAIL=$!
-trap 'kill "$INJECTED_TAIL" 2> /dev/null || true' EXIT
+finish_review() {
+  kill "$INJECTED_TAIL" 2> /dev/null || true
+  # The hosted parent flushes during cleanup. Actions runs this script directly.
+  if [ "${REVIEW_HOSTED:-}" != true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+    bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
+  fi
+}
+trap finish_review EXIT
 review() {
 if [ -n "$FORK_KEY" ]; then
   fork=$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/$FORK_KEY
