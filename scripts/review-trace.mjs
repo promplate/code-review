@@ -167,7 +167,7 @@ export async function collectRollout(file, { since, baseline = 0, finalize = fal
       } else if (["function_call_output", "custom_tool_call_output"].includes(p.type)) {
         const call = turn.tools.get(id(p.call_id));
         if (call) {
-          call.end = Math.max(call.end ?? ts, ts);
+          if (call.status === undefined) call.end = Math.max(call.end ?? ts, ts);
           if (!turn.activity) turn.stepStart = Math.max(turn.stepStart, ts);
         }
       }
@@ -267,28 +267,44 @@ async function saveState(file, state) {
   await rename(temporary, file);
 }
 
-async function acquireLock(lock, budget) {
-  const owner = `owner-${randomUUID()}`, candidate = `${lock}.${owner}`;
+function ownerExited(owner) {
+  const match = /^owner-([1-9][0-9]{0,9})-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.exec(owner);
+  const pid = match ? Number(match[1]) : 0;
+  // Never probe process groups (0/negative IDs), malformed or out-of-range IDs.
+  if (!Number.isSafeInteger(pid) || pid < 1 || pid > 0x7fffffff) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error.code === "ESRCH"; }
+}
+
+async function acquireLock(lock, budget, wait) {
+  // The PID is bounded metadata in the unique name; do not read arbitrary marker
+  // contents. A reused PID or an unverifiable legacy owner is kept conservatively.
+  const owner = `owner-${process.pid}-${randomUUID()}`, candidate = `${lock}.${owner}`;
   await mkdir(candidate, { mode: 0o700 });
   try {
     await writeFile(join(candidate, owner), "", { mode: 0o600, flag: "wx" });
-    for (let attempt = 0; attempt < 2 && budget.remaining() > 0; attempt++) {
-      // Capture the old owner's unique filename BEFORE checking its age. A
-      // concurrent reclaimer may replace the directory, but cannot give the new
-      // owner that filename. Never recursively remove a shared lock directory.
+    while (budget.remaining() > 0) {
+      // Capture the exact old marker before proving that process has exited. A
+      // concurrent reclaimer cannot give a new owner this UUID. Age is never
+      // evidence of process death, including when the owner is still alive.
       const entries = await readdir(lock).catch(error => error.code === "ENOENT" ? undefined : null);
       if (entries === null) return;
-      if (entries) {
-        const info = await stat(lock).catch(() => undefined);
-        if (!info || Date.now() - info.mtimeMs <= 60_000 || entries.length > 1
-          || (entries.length && !/^owner-[a-f0-9-]{36}$/.test(entries[0]))) return;
-        if (entries.length) await unlink(join(lock, entries[0])).catch(() => {});
-        try { await rmdir(lock); } catch (error) { if (error.code !== "ENOENT") return; }
+      let available = entries === undefined;
+      if (entries?.length === 1 && ownerExited(entries[0])) {
+        await unlink(join(lock, entries[0])).catch(() => {});
+        try { await rmdir(lock); available = true; }
+        catch (error) { if (error.code === "ENOENT") available = true; else if (error.code !== "ENOTEMPTY") return; }
       }
       // Publish a fully populated directory in one operation. Another live
       // owner makes rename fail because its directory is never empty.
-      try { await rename(candidate, lock); return owner; }
-      catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes(error.code)) return; }
+      if (available && budget.remaining() > 0) {
+        try { await rename(candidate, lock); return owner; }
+        catch (error) { if (!["EEXIST", "ENOTEMPTY"].includes(error.code)) return; }
+      }
+      // Hooks may skip a busy exporter. EXIT is the last chance to observe a
+      // terminal record, so wait for the owner using the same total call budget.
+      if (!wait || budget.remaining() <= 0) return;
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, budget.remaining())));
     }
   } finally { await rm(candidate, { recursive: true, force: true }); }
 }
@@ -323,7 +339,7 @@ export async function runTrace({ env = process.env, hook = {}, mode = "hook", no
   if (!config) return;
   await mkdir(config.directory, { recursive: true, mode: 0o700 });
   const lock = join(config.directory, "lock"), stateFile = join(config.directory, "state.json");
-  const owner = await acquireLock(lock, budget);
+  const owner = await acquireLock(lock, budget, mode === "flush");
   if (!owner) return;
   try {
     const state = await loadState(stateFile, config.scope);

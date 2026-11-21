@@ -7,7 +7,9 @@ import { pipeline, Transform } from "node:stream";
 import { collectRollout, runTrace } from "./review-trace.mjs";
 
 const dirs: string[] = [], servers: Server[] = [];
+const children = new Set<ReturnType<typeof Bun.spawn>>();
 afterEach(async () => {
+  await Promise.all([...children].map(async child => { child.kill("SIGKILL"); await child.exited; }));
   await Promise.all(servers.splice(0).map(server => new Promise<void>((done) => { server.closeAllConnections(); server.close(() => done()); })));
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -53,6 +55,24 @@ async function receiver(status = 202, headers: Record<string, string> = {}) {
   return { received, url: `http://127.0.0.1:${address.port}/trace`, status: (value: number) => { currentStatus = value; } };
 }
 
+async function heldCollector(f: ReturnType<typeof fixture>) {
+  const source = `import { runTrace } from ${JSON.stringify(new URL("./review-trace.mjs", import.meta.url).href)};
+await runTrace({ hook: { transcript_path: process.env.TEST_TRANSCRIPT }, send: async () => {
+  process.stdout.write("locked\\n");
+  await new Promise(resolve => process.stdin.once("data", resolve));
+  return new Response(null, { status: 202 });
+} });`;
+  const child = Bun.spawn([process.execPath, "--eval", source], {
+    env: { ...process.env, ...f.env, TEST_TRANSCRIPT: f.file }, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  children.add(child);
+  void child.exited.then(() => children.delete(child));
+  const reader = child.stdout.getReader();
+  const { value } = await reader.read(); reader.releaseLock();
+  expect(new TextDecoder().decode(value)).toBe("locked\n");
+  return child;
+}
+
 test("rollout projection omits prompts, reasoning, tool bodies and cumulative historical usage", async () => {
   const f = fixture(), events = await collectRollout(f.file, { since: f.since });
   expect(events.map(e => e.kind)).toEqual(["generation", "generation", "tool", "turn"]);
@@ -60,7 +80,7 @@ test("rollout projection omits prompts, reasoning, tool bodies and cumulative hi
     { inputTokens: 10, cachedInputTokens: 3, outputTokens: 4, reasoningOutputTokens: 2 },
     { inputTokens: 14, cachedInputTokens: 10, outputTokens: 5, reasoningOutputTokens: 3 },
   ]);
-  expect(events.find(e => e.kind === "tool")).toMatchObject({ status: "error", toolName: "exec_command", startedAt: f.since + 1202, endedAt: f.since + 1301 });
+  expect(events.find(e => e.kind === "tool")).toMatchObject({ status: "error", toolName: "exec_command", startedAt: f.since + 1202, endedAt: f.since + 1300 });
   for (const event of events) for (const key of ["eventId", "sessionId", "turnId", ...(event.callId ? ["callId"] : [])]) expect(event[key]).toMatch(/^[a-f0-9]{64}$/);
   expect(new Set(events.map(e => e.turnId)).size).toBe(1);
   expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|raw-session|raw-call|new-turn|99999|100013|private@example/);
@@ -266,6 +286,24 @@ test("lifecycle and model records for the same call deduplicate; legacy MCP fail
   expect(JSON.stringify(tools)).not.toContain("PRIVATE_");
 });
 
+test.each([
+  { type: "exec_command_end", call_id: "same-call", exit_code: 0 },
+  { type: "item_completed", turn_id: "turn", item: { type: "CommandExecution", id: "same-call", status: "completed", exit_code: 0 } },
+])("a completion record without explicit milliseconds still wins over a delayed output (%j)", async completion => {
+  const f = fixture();
+  writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
+    + f.line(100, "event_msg", { type: "task_started", turn_id: "turn" })
+    + f.line(150, "response_item", { type: "function_call", call_id: "same-call", name: "exec_command" })
+    + f.line(200, "event_msg", { type: "exec_command_begin", call_id: "same-call" })
+    + f.line(300, "event_msg", completion)
+    + f.line(60_000, "response_item", { type: "function_call_output", call_id: "same-call", output: "PRIVATE_OUTPUT" })
+    + f.line(60_100, "event_msg", { type: "task_complete" }));
+  const events = await collectRollout(f.file, { since: f.since });
+  expect(events.find(event => event.kind === "tool")).toMatchObject({
+    startedAt: f.since + 200, endedAt: f.since + 300, status: "success",
+  });
+});
+
 test("a restored rollout beyond 128 MiB still collects a complete appended turn without scanning history", async () => {
   const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
   const descriptor = openSync(f.file, "r+"); ftruncateSync(descriptor, 128 * 1024 * 1024 + 100); closeSync(descriptor);
@@ -295,29 +333,64 @@ test("final flush prioritizes an observed transcript beyond the 512-file directo
   expect(JSON.parse(target.received[0].body).events.map(event => [event.kind, event.status])).toEqual([["turn", "success"]]);
 });
 
-test.each([false, true])("a final flush recovers a terminated hook's stale lock (owner file: %s) and sends immediately", async owned => {
+test("final flush immediately recovers a real collector killed after acquiring its fresh lock", async () => {
   const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
-  const lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
-  if (owned) writeFileSync(join(lock, "owner-00000000-0000-0000-0000-000000000000"), "");
-  utimesSync(lock, new Date(Date.now() - 90_000), new Date(Date.now() - 90_000));
+  const child = await heldCollector(f), lock = join(f.temp, "review-trace", "lock");
+  expect(readdirSync(lock)[0]).toStartWith(`owner-${child.pid}-`);
+  expect(f.state().pending).toHaveLength(4);
+  child.kill("SIGKILL"); await child.exited;
   await runTrace({ env: f.env, mode: "flush" });
   expect(target.received).toHaveLength(1);
   expect(f.state().sent).toHaveLength(4);
+  expect(f.state().pending).toEqual([]);
 });
 
-test.each([false, true])("a live hook's lock (owner file: %s) is not stolen by final flush", async owned => {
+test("an old live owner stays protected, and final flush waits for its release to collect a newly appended terminal record", async () => {
   const f = fixture(), target = await receiver(); f.env.REVIEW_TRACE_RELAY_URL = target.url;
-  const lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
-  if (owned) writeFileSync(join(lock, "owner"), "live");
-  await runTrace({ env: f.env, mode: "flush" });
+  writeFileSync(f.file, readFileSync(f.file, "utf8").split("\n").filter(line => line && JSON.parse(line).payload.type !== "task_complete").join("\n") + "\n");
+  const child = await heldCollector(f), lock = join(f.temp, "review-trace", "lock"), owner = readdirSync(lock);
+  utimesSync(lock, new Date(Date.now() - 90_000), new Date(Date.now() - 90_000));
+  // Hook mode can skip a busy publisher, including an old but still-live owner.
+  await runTrace({ env: f.env, hook: { transcript_path: f.file } });
+  let finished = false;
+  const flushed = runTrace({ env: f.env, mode: "flush", budgetMs: 2000, now: () => Date.now() + 10_000 }).then(() => { finished = true; });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(finished).toBe(false);
   expect(target.received).toHaveLength(0);
-  expect(readdirSync(lock)).toEqual(owned ? ["owner"] : []);
+  expect(readdirSync(lock)).toEqual(owner);
+  appendFileSync(f.file, f.line(1700, "event_msg", { type: "task_complete" }));
+  child.stdin.write("release\n"); child.stdin.end();
+  expect(await child.exited).toBe(0);
+  await flushed;
+  expect(target.received).toHaveLength(1);
+  expect(JSON.parse(target.received[0].body).events.map(event => [event.kind, event.status])).toEqual([["turn", "success"]]);
+  expect(f.state().sent).toHaveLength(4);
 });
 
-test("concurrent stale-lock recovery retains one publisher and does not delete the winning owner's lock", async () => {
+test("waiting for a live owner consumes the same final-flush budget without deleting its lock", async () => {
+  const f = fixture(), child = await heldCollector(f), lock = join(f.temp, "review-trace", "lock"), owner = readdirSync(lock);
+  let requests = 0;
+  const start = performance.now();
+  await runTrace({ env: f.env, mode: "flush", budgetMs: 75, send: async () => { requests++; return new Response(null, { status: 202 }); } });
+  expect(performance.now() - start).toBeLessThan(1000);
+  expect(requests).toBe(0); expect(readdirSync(lock)).toEqual(owner);
+  expect(f.state().pending).toHaveLength(4);
+  child.kill("SIGKILL"); await child.exited;
+});
+
+test.each([null, "owner-00000000-0000-0000-0000-000000000000", "owner-0-00000000-0000-0000-0000-000000000000",
+  "owner--1-00000000-0000-0000-0000-000000000000", "owner-2147483648-00000000-0000-0000-0000-000000000000"])("unverifiable or invalid owner %j is never reclaimed by age", async owner => {
   const f = fixture(), lock = join(f.temp, "review-trace", "lock"); mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, "owner-00000000-0000-0000-0000-000000000000"), "");
+  if (owner) writeFileSync(join(lock, owner), "");
   utimesSync(lock, new Date(Date.now() - 90_000), new Date(Date.now() - 90_000));
+  let requests = 0;
+  await runTrace({ env: f.env, mode: "flush", budgetMs: 20, send: async () => { requests++; return new Response(null, { status: 202 }); } });
+  expect(requests).toBe(0); expect(readdirSync(lock)).toEqual(owner ? [owner] : []);
+});
+
+test("concurrent dead-owner recovery retains one publisher and does not delete the winning owner's lock", async () => {
+  const f = fixture(), child = await heldCollector(f), lock = join(f.temp, "review-trace", "lock");
+  child.kill("SIGKILL"); await child.exited;
   let requests = 0, concurrent = 0, peak = 0;
   const send = async () => {
     requests++; peak = Math.max(peak, ++concurrent);
