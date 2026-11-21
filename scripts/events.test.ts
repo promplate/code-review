@@ -303,9 +303,9 @@ test("activity links drop this repository's prefix and keep external ones", () =
     frame("check_run", { action: "completed", check_run: check({ details_url: "https://ci.example.test/run/1" }) }, "external"),
   ].join("");
   const { output } = runHook(log);
-  expect(output).toContain('\\"url\\":\\"/pull/7#issuecomment-1\\"');
-  expect(output).toContain('\\"url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
-  expect(output).toContain('\\"url\\":\\"https://ci.example.test/run/1\\"');
+  expect(output).toContain('\\"html_url\\":\\"/pull/7#issuecomment-1\\"');
+  expect(output).toContain('\\"html_url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
+  expect(output).toContain('\\"details_url\\":\\"https://ci.example.test/run/1\\"');
 });
 
 test("an edited pull request title and body reach the review", () => {
@@ -317,7 +317,7 @@ test("an edited pull request title and body reach the review", () => {
 test.each([null, ""])("clearing a PR description preserves an explicit empty body (%j)", (body) => {
   const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
   const activity = JSON.parse(JSON.parse(output).reason.split("\n")[1]);
-  expect(activity.body).toBe("");
+  expect(activity.pull_request.body).toBe("");
 });
 
 test("a truncated edit says so instead of hiding the change", () => {
@@ -333,7 +333,7 @@ test("another app's review activity reaches the review, while its issue comments
   const review = (sender: object, text: string) => frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { path: "a.ts", line: 3, body: text }, sender }, "bot-review", false);
   const included = runHook(review(other, "bot finding")).output;
   expect(included).toContain("bot finding");
-  expect(included).toContain('\\"actor_type\\":\\"Bot\\"');
+  expect(included).toContain('\\"type\\":\\"Bot\\"');
   expect(runHook(review({ login: "reviewer[bot]", type: "Bot" }, "own finding")).output).toBe("");
   expect(runHook(review(human, "stranger finding")).output).toBe("");
   expect(runHook(frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "bot chatter" }, sender: other }, "bot-chatter", false)).output).toBe("");
@@ -1334,14 +1334,14 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
 
 test("injected GitHub activity is logged with a colour per meaning", () => {
   const input = [
-    JSON.stringify({ event: "issue_comment", action: "created", actor: "alice", url: "https://example.test/c/1" }),
-    JSON.stringify({ event: "pull_request_review_thread", action: "resolved", url: "https://example.test/t/9" }),
-    JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
-    JSON.stringify({ event: "check_run", name: "CI", conclusion: "success", url: "https://example.test/r/5" }),
-    JSON.stringify({ event: "workflow_run", name: "CI", conclusion: "cancelled", url: "https://example.test/r/6" }),
-    JSON.stringify({ event: "status", state: "failure", url: "https://example.test/s/7" }),
-    JSON.stringify({ event: "push", commit: "abc", url: "https://example.test/p/8" }),
-    JSON.stringify({ event: "pull_request", action: "synchronize", url: "https://example.test/p/9" }),
+    JSON.stringify({ event: "issue_comment", action: "created", sender: { login: "alice" }, comment: { html_url: "https://example.test/c/1" } }),
+    JSON.stringify({ event: "pull_request_review_thread", action: "resolved", thread: { comments: [{ html_url: "https://example.test/t/9" }] } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI", app: { slug: "blacksmith-sh" }, conclusion: "failure", details_url: "https://example.test/r/2" } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI", app: { slug: "blacksmith-sh" }, conclusion: "success", details_url: "https://example.test/r/5" } }),
+    JSON.stringify({ event: "workflow_run", workflow_run: { name: "CI", conclusion: "cancelled", html_url: "https://example.test/r/6" } }),
+    JSON.stringify({ event: "status", context: "external", state: "failure", target_url: "https://example.test/s/7" }),
+    JSON.stringify({ event: "push", after: "abc" }),
+    JSON.stringify({ event: "pull_request", action: "synchronize", pull_request: { head: { sha: "abc" } } }),
     JSON.stringify({ event: "subscription_recovery", reason: "subscription_failed" }),
   ].join("\n") + "\n";
   const log = (input: string) => {
@@ -1353,11 +1353,11 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // Cyan: something a person wrote.
   expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
   expect(output).toContain("\u001b[96mpull_request_review_thread/resolved\u001b[0m");
-  // Green, red and yellow: how CI ended.
-  expect(output).toContain("\u001b[91mcheck_run\u001b[0m CI:failure https://example.test/r/2");
-  expect(output).toContain("\u001b[92mcheck_run\u001b[0m CI:success https://example.test/r/5");
+  // Green, red and yellow: how CI ended, led by the app that owns the check rather than the run's actor.
+  expect(output).toContain("\u001b[91mcheck_run\u001b[0m blacksmith-sh CI:failure https://example.test/r/2");
+  expect(output).toContain("\u001b[92mcheck_run\u001b[0m blacksmith-sh CI:success https://example.test/r/5");
   expect(output).toContain("\u001b[93mworkflow_run\u001b[0m CI:cancelled https://example.test/r/6");
-  expect(output).toContain("\u001b[91mstatus\u001b[0m:failure https://example.test/s/7");
+  expect(output).toContain("\u001b[91mstatus\u001b[0m external:failure https://example.test/s/7");
   // Blue: the branch or pull request moved.
   expect(output).toContain("\u001b[94mpush\u001b[0m");
   expect(output).toContain("\u001b[94mpull_request/synchronize\u001b[0m");
@@ -1366,8 +1366,8 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // A payload field that carries a workflow command must not run as one, in either form the runner parses.
   // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
   const crafted = log([
-    JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }),
-    JSON.stringify({ event: "check_run", name: "CI ##[error]synthetic", url: "https://example.test/r/4" }),
+    JSON.stringify({ event: "check_run", check_run: { name: "ci\n::error::forged", details_url: "https://example.test/r/3" } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI ##[error]synthetic", details_url: "https://example.test/r/4" } }),
   ].join("\n") + "\n");
   expect(crafted).not.toContain("::stop-commands::");
   expect(crafted).not.toMatch(/^ *::/m);
@@ -1557,14 +1557,14 @@ test("a repeated thread transition is not skipped as an older trigger", () => {
 test("review thread context derives resolution from the webhook action", () => {
   for (const action of ["resolved", "unresolved"]) {
     const { output } = runHook(frame("pull_request_review_thread", { action, pull_request: { number: 7 }, thread: { node_id: "thread", comments: [{ path: "file.ts", html_url: "https://github.com/owner/repo/pull/7#discussion_r1" }] } }, `webhook:${action}`));
-    expect(output).toContain(`\\"resolved\\":${action === "resolved"}`);
+    expect(output).toContain(`\\"action\\":\\"${action}\\"`);
     expect(output).toContain("discussion_r1");
   }
 });
 
 test("a review comment carries the id its answer replies to", () => {
   const { output } = runHook(frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { id: 4242, body: "how do I fix it", path: "file.ts", line: 8 } }));
-  expect(output).toContain('\\"comment_id\\":4242');
+  expect(output).toContain('\\"id\\":4242');
   expect(output).toContain("how do I fix it");
 });
 
@@ -1642,7 +1642,7 @@ test("check suite identities retain their suite id and reviewed head", () => {
 
 test("injected changes link to the received commit in its PR when available", () => {
   const head = "0123456789abcdef0123456789abcdef01234567";
-  const input = [{ event: "push", head }, { event: "pull_request", action: "synchronize", head }, { event: "push", head: "unknown" }, { event: "push", head: "0".repeat(40) }, { event: "issue_comment", url: "/pull/7#issuecomment-1" }].map((event) => JSON.stringify(event)).join("\n");
+  const input = [{ event: "push", after: head }, { event: "pull_request", action: "synchronize", pull_request: { head: { sha: head } } }, { event: "push", after: "unknown" }, { event: "push", after: "0".repeat(40) }, { event: "issue_comment", comment: { html_url: "/pull/7#issuecomment-1" } }].map((event) => JSON.stringify(event)).join("\n");
   for (const pr of ["7", ""]) {
     const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input), env: { ...process.env, PR_NUMBER: pr } });
     expect(result.exitCode).toBe(0);
