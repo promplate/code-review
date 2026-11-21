@@ -17,8 +17,14 @@ def target_url: .url // (if (.event == "push" or (.event == "pull_request" and .
     and ((.head // "") | test("^(?!0{40}$)[a-fA-F0-9]{40}$"))
   then (env.PR_NUMBER // "") as $pr | (if $pr == "" then "/commit/" else "/pull/\($pr)/commits/" end) + .head
   else null end);
+# A CI webhook sender is the triggering actor, not the workflow or the app providing its checks.
+def nonempty: strings | select(length > 0);
+def event_subject:
+  if .event == "check_run" then [((.workflow | nonempty) // (.app.name | nonempty) // (.app.slug | nonempty)), .name] | map(nonempty) | join(" / ")
+  elif (.event | IN("workflow_run", "status")) then (.name // "")
+  else [.actor, .name] | map(nonempty) | join(" ") end;
 def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action else "" end)\u001b[0m"
-  + (if .actor then " " + .actor else "" end) + (if .name then " " + .name else "" end)
+  + (event_subject | if . == "" then "" else " " + . end)
   + (if .conclusion then ":" + .conclusion else "" end) + (if .state then ":" + .state else "" end)
   + (target_url | if . then " " + . else "" end);
 # Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading whitespace, and legacy `##[` anywhere.

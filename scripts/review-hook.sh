@@ -40,6 +40,9 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
   | ((env.GITHUB_WORKFLOW_REF // "") | split("@")[0] // "" | sub("^[^/]+/[^/]+/"; "")) as $own_path
   | ([$frames[] | select(.event == "workflow_run") | (.body | fromjson? // empty)
       | select(.workflow_run.path == $own_path) | .workflow_run.check_suite_id | tostring] | unique) as $own_suites
+  # A check names its job and provider; its workflow comes from the run that owns the same suite and head.
+  | ([$frames[] | select(.event == "workflow_run") | (.body | fromjson? // empty) | .workflow_run
+      | select(.check_suite_id != null) | {key: (.check_suite_id | tostring), value: {name, head_sha}}] | from_entries) as $workflows
   | [$frames[]
     | . as $frame | ($frame.body | fromjson) as $body
     | select(
@@ -70,6 +73,10 @@ result=$(jq -Rrs --arg pr "$PR_NUMBER" --argjson seen "$seen" '
         url: (($body.comment.html_url // $body.review.html_url // $body.thread.comments[0].html_url // $body.check_run.details_url // $body.workflow_run.html_url // $body.target_url) | repo_url),
         head: ($body.after // $body.pull_request.head.sha // $body.check_run.head_sha // $body.workflow_run.head_sha // $body.sha), commit: $body.comment.commit_id,
         name: ($body.check_run.name // $body.workflow_run.name // $body.context), conclusion: ($body.check_run.conclusion // $body.workflow_run.conclusion), state: $body.state,
+        app: ($body.check_run.app | if . == null then null else {name, slug} | with_entries(select(.value != null)) end),
+        check_suite_id: $body.check_run.check_suite.id,
+        workflow: (if $frame.event == "check_run" and $body.check_run.app.slug == "github-actions"
+          then $workflows[$body.check_run.check_suite.id | tostring] as $run | if $run.head_sha == $body.check_run.head_sha then $run.name else null end else null end),
         merged: (if $body.action == "closed" then $body.pull_request.merged else null end),
         # An edited title or description is the change itself; other pull request events do not need the PR text again.
         title: (if $frame.event == "pull_request" and $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),
