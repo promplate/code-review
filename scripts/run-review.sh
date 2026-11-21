@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
+# Setup children must not inherit the CI-name lookup credential either.
+export -n REVIEW_ACTIONS_TOKEN
 # Self-hosted runners can retain temp files from an earlier job. Neither its verdict
 # nor its supersession marker can authorize publishing (or skipping) this review.
 rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last-message.md"
@@ -72,7 +74,7 @@ log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACT
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
 rm -f "$RUNNER_TEMP/injected.done"
-bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
+REVIEW_ACTIONS_TOKEN="${REVIEW_ACTIONS_TOKEN:-}" bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
 INJECTED_TAIL=$!
 # Only the background log worker needs the GitHub Actions lookup credential.
 unset REVIEW_ACTIONS_TOKEN

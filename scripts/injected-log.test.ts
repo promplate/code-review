@@ -139,19 +139,34 @@ test("a timed-out CI lookup cannot drop the final event or hold the worker open"
   expect(log.output()).toContain("GitHub Actions / check (windows, 3.12):success");
 }, 7000);
 
-test("only the log worker inherits the Actions lookup credential", () => {
-  const { dir, env } = fixture({ 100: { body: run() } });
-  const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");
-  const region = source.slice(source.indexOf(': > "$RUNNER_TEMP/injected.log"'), source.indexOf("trap finish_injected EXIT") + "trap finish_injected EXIT".length);
-  writeFileSync(join(dir, "records"), JSON.stringify(event()) + "\n");
-  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${region}
-cat "$RUNNER_TEMP/records" >> "$RUNNER_TEMP/injected.log"
-for _ in {1..100}; do [ ! -s "$RUNNER_TEMP/calls" ] || break; sleep 0.02; done
-bash -c 'test -z "\${REVIEW_ACTIONS_TOKEN+x}" && test "$GH_TOKEN" = app-token'
-`], { env, timeout: 4000 });
+test.each(["job-token", ""])("the review isolates its optional Actions credential (%j)", token => {
+  const { dir, env } = fixture({ 100: { body: run() } }, { REVIEW_ACTIONS_TOKEN: token });
+  writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "opened", sender: { login: "alice" }, issue: { number: 7 } }));
+  writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\nprintf "%s\\n" "${REVIEW_ACTIONS_TOKEN-unset}" >> "$RUNNER_TEMP/price-tokens"\n');
+  writeFileSync(join(dir, "codex"), `#!${process.execPath}
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const dir = process.env.RUNNER_TEMP;
+writeFileSync(dir + "/codex-env", JSON.stringify({ token: process.env.REVIEW_ACTIONS_TOKEN ?? null, appToken: process.env.GH_TOKEN, config: process.env.GH_CONFIG_DIR }));
+appendFileSync(dir + "/injected.log", JSON.stringify(${JSON.stringify(event())}) + "\\n");
+const deadline = Date.now() + 2000;
+while (!existsSync(dir + "/calls")) {
+  if (Date.now() > deadline) process.exit(1);
+  await Bun.sleep(10);
+}
+console.log(JSON.stringify({ type: "thread.started", thread_id: "fixture" }));
+`);
+  for (const name of ["bun", "codex"]) chmodSync(join(dir, name), 0o755);
+  const result = Bun.spawnSync(["bash", join(import.meta.dir, "run-review.sh")], {
+    env: { ...env, AGENT: "true", PR_NUMBER: "", CHECK_ID: "", ISSUE_NUMBER: "7", BASE: "main", FORK_KEY: "", HEAD_SHA: head,
+      CODEX_HOME: dir, CODEX_BIN: join(dir, "codex"), CODEX_RUNTIME: "", GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_STEP_SUMMARY: join(dir, "summary.md") },
+    timeout: 5000,
+  });
   expect(result.exitCode).toBe(0);
-  expect(JSON.parse(readFileSync(join(dir, "calls"), "utf8")).token).toBe("job-token");
-});
+  expect(JSON.parse(readFileSync(join(dir, "codex-env"), "utf8"))).toEqual({ token: null, appToken: "app-token", config: env.GH_CONFIG_DIR });
+  expect(readFileSync(join(dir, "price-tokens"), "utf8").trim().split("\n")).toEqual(["unset", "unset"]);
+  expect(JSON.parse(readFileSync(join(dir, "calls"), "utf8").trim()).token).toBe(token || "app-token");
+  expect(result.stdout.toString()).toContain("CI / check (windows, 3.12):success");
+}, 7000);
 
 test.each([0, 7])("review log cleanup preserves exit code %i and drains its final row", code => {
   const { dir, env } = fixture();
