@@ -139,6 +139,20 @@ test("a timed-out CI lookup cannot drop the final event or hold the worker open"
   expect(log.output()).toContain("GitHub Actions / check (windows, 3.12):success");
 }, 7000);
 
+test("only the log worker inherits the Actions lookup credential", () => {
+  const { dir, env } = fixture({ 100: { body: run() } });
+  const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");
+  const region = source.slice(source.indexOf(': > "$RUNNER_TEMP/injected.log"'), source.indexOf("trap finish_injected EXIT") + "trap finish_injected EXIT".length);
+  writeFileSync(join(dir, "records"), JSON.stringify(event()) + "\n");
+  const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${region}
+cat "$RUNNER_TEMP/records" >> "$RUNNER_TEMP/injected.log"
+for _ in {1..100}; do [ ! -s "$RUNNER_TEMP/calls" ] || break; sleep 0.02; done
+bash -c 'test -z "\${REVIEW_ACTIONS_TOKEN+x}" && test "$GH_TOKEN" = app-token'
+`], { env, timeout: 4000 });
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(dir, "calls"), "utf8")).token).toBe("job-token");
+});
+
 test.each([0, 7])("review log cleanup preserves exit code %i and drains its final row", code => {
   const { dir, env } = fixture();
   const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");

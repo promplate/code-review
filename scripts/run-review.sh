@@ -74,6 +74,8 @@ log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACT
 rm -f "$RUNNER_TEMP/injected.done"
 bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
 INJECTED_TAIL=$!
+# Only the background log worker needs the GitHub Actions lookup credential.
+unset REVIEW_ACTIONS_TOKEN
 finish_injected() {
   # Stop optional lookups, then drain the records already delivered, including one whose lookup is in flight.
   if ! { touch "$RUNNER_TEMP/injected.done" && printf '%s\n' '{"review_log_end":true}' >> "$RUNNER_TEMP/injected.log"; }; then
