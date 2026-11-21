@@ -664,6 +664,23 @@ esac
   expect(JSON.parse(readFileSync(join(setup.dir, "published.json"), "utf8")).conclusion).toBe("success");
 });
 
+test("a new job cannot release a draft with another session's snapshot", () => {
+  const setup = fixture({}), base = "https://github.com/owner/repo/pull";
+  writeFileSync(join(setup.dir, "forked-prs"), `${base}/8\n`);
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *actions/artifacts/27*|"pr view "*) echo true ;;
+  "pr ready "*) echo "$3" >> "$RUNNER_TEMP/ready" ;;
+  *) exit 1 ;;
+esac
+`);
+  expect(run("Resolve the review target", setup, { GITHUB_EVENT_NAME: "push", GITHUB_REF_NAME: "main" }).exitCode).toBe(0);
+  // The current session restores its own pending draft before the new snapshot is saved.
+  writeFileSync(join(setup.dir, "sessions/.github-pending-drafts"), `${base}/9\n`);
+  expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "27" }).exitCode).toBe(0);
+  expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${base}/9\n`);
+});
+
 test("a failed publication releases only drafts an earlier run left pending", () => {
   const setup = fixture();
   writeFileSync(join(setup.dir, "forked-prs"), "https://github.com/owner/repo/pull/8\n");
@@ -771,4 +788,22 @@ esac
   expect(run("Mark forked PRs ready", setup, { SNAPSHOT_ID: "" }).exitCode).toBe(0);
   expect(readFileSync(join(setup.dir, "ready"), "utf8")).toBe(`${base}/8\n`);
   expect(existsSync(join(setup.dir, "sessions/.github-pending-drafts"))).toBe(false);
+});
+
+test("a new review cannot reuse a previous job's verdict or supersession marker", () => {
+  const setup = fixture();
+  for (const file of ["review.json", "superseded", "last-message.md"]) writeFileSync(join(setup.dir, file), "previous run");
+  writeFileSync(join(setup.dir, "sessions", ".github-published-head"), "recorded head");
+  executable(setup.dir, "bun", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+for file in review.json superseded last-message.md; do
+  [ ! -e "$RUNNER_TEMP/$file" ] || exit 19
+done
+touch "$RUNNER_TEMP/clean-at-start"
+exit 23
+`);
+  const result = run("Run codex review", setup, { AGENT: "false" });
+  expect(result.exitCode).toBe(1);
+  expect(existsSync(join(setup.dir, "clean-at-start"))).toBe(true);
+  expect(readFileSync(join(setup.dir, "sessions", ".github-published-head"), "utf8")).toBe("recorded head");
 });
