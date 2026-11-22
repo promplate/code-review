@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const script = join(root, "scripts/snapshot.sh");
+const warning = "::warning::Snapshots are not encrypted; anyone who can read this repository can download them.";
 
 // Stands in for the broker: the OIDC value names the repository, and the key is derived from that alone.
 let recoveringRequests = 0;
@@ -41,11 +42,11 @@ const runnerTemp = home({});
 // The broker answers on this process, so the script must run without blocking the event loop.
 async function run(args: string[], repo = "23", extraEnv: Record<string, string> = {}) {
   const proc = Bun.spawn(["bash", script, ...args], {
-    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
+    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, GITHUB_ENV: "", CODE_REVIEW_PLAINTEXT_SNAPSHOT_WARNED: "", BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
-  const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-  return { exitCode, stderr };
+  const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  return { exitCode, stdout, stderr };
 }
 
 test("save encrypts the session and load restores it", async () => {
@@ -105,10 +106,52 @@ test("encryption is off unless the repository asks for it, and needs no broker",
   const archive = join(home({}), "snapshot.bin");
   const saved = await run(["save", archive, source, "last-thread-id"], "23", { ENCRYPT_SNAPSHOTS: "false", BROKER: "" });
   expect(saved.exitCode).toBe(0);
+  expect(saved.stdout).toContain(warning);
   expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP0\n");
   const target = home({});
   expect((await run(["load", archive, target], "23", { BROKER: "" })).exitCode).toBe(0);
   expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
+});
+
+test.each(["session", "events"])("plaintext archives warn once per job when %s is saved first", async first => {
+  const source = home({ "last-thread-id": "thread-1\n", "codex.jsonl": "review event\n", "first-env": "OTHER=value\n", "next-env": "" });
+  const session = ["save", join(source, "snapshot.bin"), source];
+  const events = ["save", join(source, "codex.jsonl.bin"), source, "codex.jsonl"];
+  const [firstSave, nextSave] = first === "session" ? [session, events] : [events, session];
+  const env = { ENCRYPT_SNAPSHOTS: "false", BROKER: "", GITHUB_ENV: join(source, "first-env") };
+  const saved = await run(firstSave, "23", env);
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout.split("\n").filter(line => line === warning)).toHaveLength(1);
+  // Each Actions step has a new env file; the runner carries its additions into the next process.
+  const persisted = Object.fromEntries(readFileSync(env.GITHUB_ENV, "utf8").trim().split("\n").map(line => line.split("=")));
+  expect(persisted.OTHER).toBe("value");
+  const next = await run(nextSave, "23", { ...env, ...persisted, GITHUB_ENV: join(source, "next-env") });
+  expect(next.exitCode).toBe(0);
+  expect(next.stdout).not.toContain(warning);
+  expect(readFileSync(join(source, "next-env"), "utf8")).toBe("");
+  for (const archive of [session[1], events[1]]) expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP0\n");
+  // A fresh job on the same runner must warn again, even when its source files are reused.
+  const fresh = await run(nextSave, "23", { ...env, GITHUB_ENV: join(source, "next-env") });
+  expect(fresh.exitCode).toBe(0);
+  expect(fresh.stdout).toContain(warning);
+});
+
+test("failed and encrypted saves leave the first plaintext warning available", async () => {
+  const source = home({ "last-thread-id": "thread-1\n", "codex.jsonl": "review event\n", "github-env": "" });
+  const env = { GITHUB_ENV: join(source, "github-env") };
+  const archive = join(source, "snapshot.bin");
+  const failed = await run(["save", archive, home({})], "23", { ...env, ENCRYPT_SNAPSHOTS: "false" });
+  expect(failed.exitCode).not.toBe(0);
+  expect(failed.stdout).not.toContain(warning);
+  expect(readFileSync(env.GITHUB_ENV, "utf8")).toBe("");
+  const encrypted = await run(["save", archive, source], "23", env);
+  expect(encrypted.exitCode).toBe(0);
+  expect(encrypted.stdout).not.toContain(warning);
+  expect(readFileSync(archive).subarray(0, 7).toString()).toBe("CRSNP1\n");
+  expect(readFileSync(env.GITHUB_ENV, "utf8")).toBe("");
+  const plain = await run(["save", join(source, "codex.jsonl.bin"), source, "codex.jsonl"], "23", { ...env, ENCRYPT_SNAPSHOTS: "false" });
+  expect(plain.exitCode).toBe(0);
+  expect(plain.stdout).toContain(warning);
 });
 
 test("turning encryption off still restores what an encrypted save wrote", async () => {

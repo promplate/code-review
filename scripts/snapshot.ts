@@ -2,7 +2,7 @@
 // artifacts can download them. The broker derives the key from the repository alone, so changing the App,
 // the provider or the model never strands an older snapshot.
 // Usage: snapshot.ts save <archive> <dir> [path...]  |  snapshot.ts load <archive> <dir>
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const [command, archive, dir, ...paths] = process.argv.slice(2);
@@ -49,7 +49,11 @@ if (command === "save") {
   if (await tar.exited) throw new Error("Could not read the session into an archive");
   const key = encryption === "true" ? await fetchKey() : null;
   if (!key) {
-    console.log("::warning::Snapshots are not encrypted; anyone who can read this repository can download them.");
+    if (process.env.CODE_REVIEW_PLAINTEXT_SNAPSHOT_WARNED !== "true") {
+      console.log("::warning::Snapshots are not encrypted; anyone who can read this repository can download them.");
+      // Session and debug archives are saved in separate steps; the marker lasts only for this job.
+      if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, "CODE_REVIEW_PLAINTEXT_SNAPSHOT_WARNED=true\n");
+    }
     await Bun.write(archive, Buffer.concat([plainMark, plain]));
   } else {
     const iv = crypto.getRandomValues(new Uint8Array(12));
