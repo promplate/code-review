@@ -44,8 +44,18 @@ async function run(args: string[], repo = "23", extraEnv: Record<string, string>
     env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
-  const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-  return { exitCode, stderr };
+  const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  return { exitCode, stdout, stderr };
+}
+
+// GitHub exports $GITHUB_ENV writes into the later steps of the same job.
+function jobEnv(file: string) {
+  const env: Record<string, string> = {};
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const mark = line.indexOf("=");
+    if (mark > 0) env[line.slice(0, mark)] = line.slice(mark + 1);
+  }
+  return env;
 }
 
 test("save encrypts the session and load restores it", async () => {
@@ -157,4 +167,42 @@ test("saving nothing fails instead of uploading an empty archive", async () => {
   const archive = join(home({}), "snapshot.bin");
   expect((await run(["save", archive, home({}), "sessions", "last-thread-id"])).exitCode).not.toBe(0);
   expect(existsSync(archive)).toBe(false);
+});
+
+test("an unencrypted job warns once for its first plaintext archive", async () => {
+  const job = home({}), envFile = join(job, "github-env");
+  writeFileSync(envFile, "");
+  const source = home({ "sessions/a.jsonl": "{}\n" }), events = home({ "codex.jsonl": "review event\n" });
+  const base = { GITHUB_ENV: envFile, ENCRYPT_SNAPSHOTS: "false", BROKER: "" };
+  const session = await run(["save", join(job, "snapshot.bin"), source, "sessions"], "23", base);
+  expect(session.exitCode).toBe(0);
+  expect(session.stdout).toContain("::warning::Snapshots are not encrypted");
+  // The later step inherits the marker, so its plaintext debug archive does not repeat the annotation.
+  const debug = await run(["save", join(job, "codex.jsonl.bin"), events, "codex.jsonl"], "23", { ...base, ...jobEnv(envFile) });
+  expect(debug.exitCode).toBe(0);
+  expect(debug.stdout).not.toContain("::warning::");
+  expect(readFileSync(join(job, "codex.jsonl.bin")).subarray(0, 7).toString()).toBe("CRSNP0\n");
+});
+
+test("the unencrypted warning still appears when only one archive is written", async () => {
+  const job = home({}), envFile = join(job, "github-env");
+  writeFileSync(envFile, "");
+  const events = home({ "codex.jsonl": "review event\n" });
+  const base = { GITHUB_ENV: envFile, ENCRYPT_SNAPSHOTS: "false", BROKER: "" };
+  // A save that wrote nothing marks nothing, so the only artifact actually written keeps the warning.
+  expect((await run(["save", join(job, "snapshot.bin"), home({}), "sessions"], "23", base)).exitCode).not.toBe(0);
+  const debug = await run(["save", join(job, "codex.jsonl.bin"), events, "codex.jsonl"], "23", { ...base, ...jobEnv(envFile) });
+  expect(debug.exitCode).toBe(0);
+  expect(debug.stdout).toContain("::warning::Snapshots are not encrypted");
+});
+
+test("an encrypted save never warns about unencrypted snapshots", async () => {
+  const job = home({}), envFile = join(job, "github-env");
+  writeFileSync(envFile, "");
+  const source = home({ "last-thread-id": "thread-1\n" });
+  for (const archive of ["snapshot.bin", "again.bin"]) {
+    const saved = await run(["save", join(job, archive), source, "last-thread-id"], "23", { GITHUB_ENV: envFile });
+    expect(saved.exitCode).toBe(0);
+    expect(saved.stdout).not.toContain("::warning::");
+  }
 });
