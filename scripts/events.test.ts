@@ -305,10 +305,11 @@ test("a subagent tool round leaves shared activity for the main review", () => {
   expect(stop.stdout.toString()).toContain("parent-only");
 });
 
-test("parallel tool rounds never lose activity to a shared receipt file", async () => {
+test.each([false, true])("parallel tool rounds serialize delivery with a legacy lock directory: %j", async legacy => {
   const setup = fixture();
+  if (legacy) mkdirSync(join(setup.dir, "injected-deliveries.lock"));
   writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "concurrent" } }, "concurrent", true));
-  const rounds = Array.from({ length: 4 }, () => Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), stdout: "pipe", stderr: "pipe" }));
+  const rounds = Array.from({ length: 4 }, () => Bun.spawn(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}'), stdout: "pipe", stderr: "pipe", timeout: 3000 }));
   const outputs = await Promise.all(rounds.map(async child => {
     const [output, error, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect(exitCode).toBe(0);
@@ -320,6 +321,98 @@ test("parallel tool rounds never lose activity to a shared receipt file", async 
   const stop = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: setup.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000 });
   expect(stop.stdout.toString()).toBe("");
 });
+
+async function waitForHookFile(path: string) {
+  for (const deadline = performance.now() + 3000; !existsSync(path) && performance.now() < deadline;) await Bun.sleep(5);
+  expect(existsSync(path)).toBe(true);
+}
+
+function holdHook() {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "sse.jsonl"), frame("issue_comment", { issue: { number: 7 }, comment: { body: "pending" } }, "pending"));
+  executable(setup.dir, "jq", `#!/usr/bin/env bash
+if [ "$1" = -Rrs ]; then
+  printf '%s\\n' "\${HOLD_HOOK:-waiter}" >> "$RUNNER_TEMP/hook-entries"
+  if [ "\${HOLD_HOOK:-}" = owner ]; then
+    printf '%s\\n' "$$" > "$RUNNER_TEMP/hook-jq-pid"
+    : > "$RUNNER_TEMP/hook-ready"
+    while [ ! -f "$RUNNER_TEMP/hook-release" ]; do
+      [ "$SECONDS" -lt 12 ] || exit 1
+      sleep 0.01
+    done
+    '${realJq}' "$@"
+    code=$?
+    : > "$RUNNER_TEMP/hook-jq-finished"
+    exit "$code"
+  fi
+fi
+exec '${realJq}' "$@"
+`);
+  const owner = Bun.spawn(["bash", join(scripts, "review-hook.sh")], {
+    env: { ...setup.env, HOLD_HOOK: "owner" }, stdin: Buffer.from('{"hook_event_name":"Stop"}'), stdout: "pipe", stderr: "pipe", timeout: 10000,
+  });
+  const output = new Response(owner.stdout).text(), error = new Response(owner.stderr).text();
+  const release = () => writeFileSync(join(setup.dir, "hook-release"), "");
+  return { ...setup, owner, output, error, release, async cleanup() {
+    release();
+    if (owner.exitCode === null) owner.kill("SIGKILL");
+    await Promise.all([owner.exited, output, error]);
+  } };
+}
+
+test.each(["SIGTERM", "SIGKILL"] as const)("a %s owner releases delivery while its read-only child is still alive", async signal => {
+  const hook = holdHook();
+  try {
+    await waitForHookFile(join(hook.dir, "hook-ready"));
+    hook.owner.kill(signal);
+    expect(await hook.owner.exited).not.toBe(0);
+    const orphan = readFileSync(join(hook.dir, "hook-jq-pid"), "utf8").trim();
+    expect(Bun.spawnSync(["bash", "-c", 'kill -0 "$1"', "_", orphan]).exitCode).toBe(0);
+    expect(existsSync(join(hook.dir, "injected-deliveries.log"))).toBe(false);
+    const rounds = Array.from({ length: 4 }, () => Bun.spawn(["bash", join(scripts, "review-hook.sh")], {
+      env: hook.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), stdout: "pipe", stderr: "pipe", timeout: 3000,
+    }));
+    const outputs = await Promise.all(rounds.map(async child => {
+      const [output, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(code).toBe(0); expect(error).toBe(""); return output;
+    }));
+    expect(outputs.filter(output => output.includes("pending"))).toHaveLength(1);
+    const receipts = readFileSync(join(hook.dir, "injected-deliveries.log"), "utf8");
+    const log = readFileSync(join(hook.dir, "injected.log"), "utf8");
+    expect(receipts).toBe("pending\n");
+    hook.release();
+    await waitForHookFile(join(hook.dir, "hook-jq-finished"));
+    expect(await hook.output).toBe("");
+    expect(readFileSync(join(hook.dir, "injected-deliveries.log"), "utf8")).toBe(receipts);
+    expect(readFileSync(join(hook.dir, "injected.log"), "utf8")).toBe(log);
+  } finally { await hook.cleanup(); }
+});
+
+test("a live owner makes waiters time out without entering or consuming pending activity", async () => {
+  const hook = holdHook();
+  try {
+    await waitForHookFile(join(hook.dir, "hook-ready"));
+    const started = performance.now();
+    const waiter = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], {
+      env: hook.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 7000,
+    });
+    expect(waiter.exitCode).toBe(1);
+    expect(waiter.stderr.toString()).toContain("Timed out waiting for the review hook delivery lock");
+    expect(performance.now() - started).toBeGreaterThanOrEqual(4500);
+    expect(waiter.stdout.toString()).toBe("");
+    expect(readFileSync(join(hook.dir, "hook-entries"), "utf8")).toBe("owner\n");
+    expect(existsSync(join(hook.dir, "injected-deliveries.log"))).toBe(false);
+    expect(existsSync(join(hook.dir, "injected.size"))).toBe(false);
+    hook.owner.kill("SIGKILL");
+    await hook.owner.exited;
+    const retried = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], {
+      env: hook.env, stdin: Buffer.from('{"hook_event_name":"Stop"}'), timeout: 3000,
+    });
+    expect(retried.exitCode).toBe(0);
+    expect(retried.stdout.toString()).toContain("pending");
+    expect(readFileSync(join(hook.dir, "injected-deliveries.log"), "utf8")).toBe("pending\n");
+  } finally { await hook.cleanup(); }
+}, 10000);
 
 test("activity links drop this repository's prefix and keep external ones", () => {
   const log = [
