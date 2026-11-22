@@ -7,7 +7,12 @@ const root = resolve(import.meta.dir, "..");
 const realTail = Bun.which("tail")!;
 const head = "c342a0e73079da37ef300f6ed1473d3ca63982b4";
 const fixtures: { dir: string; process?: ReturnType<typeof Bun.spawn> }[] = [];
-const event = (suite = 100, name = "check (windows, 3.12)", extra = {}) => ({ event: "check_run", action: "completed", actor: "dependabot[bot]", app: { name: "GitHub Actions", slug: "github-actions" }, check_suite_id: suite, head, name, conclusion: "success", ...extra });
+const event = (suite = 100, name = "check (windows, 3.12)", extra: Record<string, unknown> = {}) => {
+  const { workflow, ...check } = extra;
+  return { event: "check_run", action: "completed", sender: { login: "dependabot[bot]", type: "Bot" },
+    check_run: { id: 1, app: { name: "GitHub Actions", slug: "github-actions" }, check_suite: { id: suite }, head_sha: head, name, conclusion: "success", ...check },
+    ...(workflow === undefined ? {} : { workflow }) };
+};
 const run = (suite = 100, name = "CI", extra = {}) => ({ workflow_runs: [{ id: 90, check_suite_id: suite, head_sha: head, name, ...extra }] });
 
 function fixture(responses: Record<string, object> = {}, env = {}) {
@@ -83,6 +88,48 @@ test("CI log resolves and caches the exact suite using only the Actions credenti
 });
 
 test.each([
+  { path: "GitHub Action", REVIEW_HOSTED: "", REVIEW_ACTIONS_TOKEN: "job-token", GH_TOKEN: "app-token" },
+  { path: "Hosted Review", REVIEW_HOSTED: "true", REVIEW_ACTIONS_TOKEN: "", GH_TOKEN: "" },
+])("$path logs faithful webhook records once with their owners and links", async ({ path, ...env }) => {
+  const log = start({ 100: { body: run() } }, { ...env, PR_NUMBER: "7" });
+  const sender = { login: "alice", type: "User" };
+  const records = [
+    event(100, "dependabot job", { details_url: "/actions/runs/90/job/1" }),
+    { ...event(100, "human job", { id: 2, details_url: "/actions/runs/90/job/2" }), sender },
+    { ...event(200, "Proof", { app: { name: "blacksmith.sh", slug: "blacksmith-sh" }, conclusion: "skipped", details_url: "https://blacksmith.sh/check/3" }), sender },
+    { event: "workflow_run", action: "completed", sender, workflow_run: { id: 90, name: "CI", check_suite_id: 100, head_sha: head, conclusion: "success", html_url: "/actions/runs/90" } },
+    { event: "issue_comment", action: "created", sender, issue: { number: 7 }, comment: { id: 4, body: "Please check this", html_url: "/pull/7#issuecomment-4" } },
+    { event: "pull_request_review", action: "submitted", sender, pull_request: { number: 7, head: { sha: head } }, review: { state: "approved", body: "Reviewed", html_url: "/pull/7#pullrequestreview-5" } },
+    { event: "pull_request_review_comment", action: "created", sender, pull_request: { number: 7 }, comment: { id: 6, commit_id: head, path: "file.ts", line: 12, body: "This line", html_url: "/pull/7#discussion_r6" } },
+    { event: "pull_request_review_thread", action: "resolved", sender, pull_request: { number: 7 }, thread: { node_id: "thread-7", comments: [{ body: "Resolved", path: "file.ts", line: 12, html_url: "/pull/7#discussion_r6" }] } },
+    { event: "commit_comment", action: "created", sender, comment: { id: 8, commit_id: head, path: "file.ts", line: 12, body: "Commit note", html_url: `/commit/${head}#commitcomment-8` } },
+    { event: "push", sender, ref: "refs/heads/feature", after: head },
+    { event: "status", sender: { login: "github-actions[bot]", type: "Bot" }, context: "external/check", state: "failure", sha: head, target_url: "https://ci.example.test/9" },
+    { event: "subscription_recovery", reason: "connection_closed", status: 502, recovery: "Reconcile the current GitHub state." },
+  ];
+  log.append(...records);
+  await until(() => log.output().includes("subscription_recovery"));
+  await log.finish();
+  expect(log.output().trim().split("\n").filter(Boolean)).toEqual([
+    "check_run/completed CI / dependabot job:success /actions/runs/90/job/1",
+    "check_run/completed CI / human job:success /actions/runs/90/job/2",
+    "check_run/completed blacksmith.sh / Proof:skipped https://blacksmith.sh/check/3",
+    "workflow_run/completed CI:success /actions/runs/90",
+    "issue_comment/created alice /pull/7#issuecomment-4",
+    "pull_request_review/submitted alice /pull/7#pullrequestreview-5",
+    "pull_request_review_comment/created alice /pull/7#discussion_r6",
+    "pull_request_review_thread/resolved alice /pull/7#discussion_r6",
+    `commit_comment/created alice /commit/${head}#commitcomment-8`,
+    `push alice /pull/7/commits/${head}`,
+    "status external/check:failure https://ci.example.test/9",
+    "subscription_recovery",
+  ]);
+  expect(log.calls()).toHaveLength(1);
+  expect(log.calls()[0]).toMatchObject({ token: env.REVIEW_ACTIONS_TOKEN || env.GH_TOKEN, config: log.env.GH_CONFIG_DIR, stdin: "" });
+  expect(readFileSync(join(log.dir, "injected.log"), "utf8").trim().split("\n").map(row => JSON.parse(row))).toEqual([...records, { review_log_end: true }]);
+});
+
+test.each([
   { reason: "permission denied", response: { fail: true } },
   { reason: "wrong suite", response: { body: run(101) } },
   { reason: "wrong head", response: { body: run(100, "Other workflow", { head_sha: "0".repeat(40) }) } },
@@ -109,7 +156,7 @@ test("CI log uses the hosted credential and escapes API-supplied names", async (
 
 test("CI log never looks up other providers, missing identities or a supplied workflow", async () => {
   const log = start();
-  log.append(event(100, "Proof", { app: { name: "blacksmith.sh", slug: "blacksmith-sh" } }), event(100, "known", { workflow: "Build" }), event(-1, "invalid suite"), event(100, "missing head", { head: undefined }), { event: "issue_comment", actor: "alice" });
+  log.append(event(100, "Proof", { app: { name: "blacksmith.sh", slug: "blacksmith-sh" } }), event(100, "known", { workflow: "Build" }), event(-1, "invalid suite"), event(100, "missing head", { head_sha: undefined }), { event: "issue_comment", sender: { login: "alice" } });
   await until(() => log.output().includes("issue_comment alice"));
   await log.finish();
   expect(log.calls()).toHaveLength(0);
@@ -121,7 +168,7 @@ test("CI log drains an in-flight lookup and queued events when the review ends",
   const log = start({ 100: { wait: true, body: run() }, 200: { body: run(200, "Never requested") } });
   log.append(event());
   await until(() => log.calls().length === 1);
-  log.append(event(200, "last job"), { event: "issue_comment", actor: "alice" });
+  log.append(event(200, "last job"), { event: "issue_comment", sender: { login: "alice" } });
   const finished = log.finish();
   writeFileSync(join(log.dir, "release"), "");
   await finished;
