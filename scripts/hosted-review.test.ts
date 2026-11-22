@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -7,14 +7,19 @@ const root = resolve(import.meta.dir, ".."), dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 function fixture(mode = "success") {
-  const dir = mkdtempSync(join(tmpdir(), "hosted-review-")); dirs.push(dir);
+  // macOS resolves the /var tmpdir alias in process.cwd() of spawned stand-ins; compare canonical paths.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "hosted-review-"))); dirs.push(dir);
   const checkout = join(dir, "repo"), bin = join(dir, "bin"), state = join(dir, "state"), temp = join(dir, "temp");
   for (const path of [checkout, bin, state, temp]) mkdirSync(path);
   const git = (...args: string[]) => Bun.spawnSync(["git", "-C", checkout, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]);
   git("init", "-q", "-b", "main"); git("commit", "--allow-empty", "-qm", "base");
   const head = git("rev-parse", "HEAD").stdout.toString().trim(); git("update-ref", "refs/remotes/origin/main", head);
   const executable = (name: string, contents: string) => { const path = join(bin, name); writeFileSync(path, contents); chmodSync(path, 0o755); };
-  executable("bun", `#!/usr/bin/env bash\nif [ "$1" = add ]; then exit 0; fi\nexec '${process.execPath}' "$@"\n`);
+  executable("bun", `#!/usr/bin/env bash
+if [ "$1" = add ] || [ "$PWD" = "$RUNNER_TEMP/prices" ]; then exit 0; fi
+if [ -n "$REVIEW_BUN_LOG" ]; then printf '%s\\t%s\\t%s\\n' "$PWD" "$1" "$2" >> "$REVIEW_BUN_LOG"; fi
+exec '${process.execPath}' "$@"
+`);
   executable("tail", "#!/bin/sh\nexit 0\n");
   executable("sleep", "#!/bin/sh\nexit 0\n");
   executable("gh", `#!${process.execPath}
@@ -203,6 +208,82 @@ test("hosted entry runs shared review, publishes at the exact head and returns r
   expect(JSON.parse(readFileSync(join(setup.temp,"reviews"),"utf8"))).toEqual({event:"APPROVE",commit_id:setup.head});
   expect(readFileSync(join(setup.state,"sessions/.github-published-head"),"utf8")).toBe(setup.head+"\n");
   expect(JSON.parse(readFileSync(join(setup.state,"auth.json"),"utf8"))).toEqual({tokens:{refresh_token:"refreshed"}});
+});
+
+test.each([["Actions", "npm"], ["hosted", "npm"], ["Actions", "direct"], ["hosted", "direct"]])("%s isolates checkout preload without moving the review cwd (%s Codex)", (entry, launcher) => {
+  const setup = fixture(), log = join(setup.temp, "bun.log"), codex = join(setup.bin, "codex");
+  const marker = join(setup.temp, "preload-ran"), startup = join(setup.temp, "codex-startup.jsonl");
+  const actionPath = join(setup.temp, "action path");
+  symlinkSync(root, actionPath);
+  const env = { ...setup.env, GITHUB_ACTION_PATH: actionPath, REVIEW_BUN_LOG: log, LANGFUSE_PUBLIC_KEY: "", HOME: setup.temp };
+  writeFileSync(join(setup.checkout, "bunfig.toml"), 'preload = ["./untrusted-preload.ts"]\nconsole.depth = 1\n');
+  writeFileSync(join(setup.checkout, "untrusted-preload.ts"), `
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "executed");
+throw new Error("checkout preload executed");
+`);
+  writeFileSync(join(setup.checkout, ".env"), "REVIEW_STARTUP_DOTENV=checkout-dotenv\n");
+  // An absolute trusted entry point alone must still reproduce the unsafe startup.
+  const probe = join(setup.temp, "trusted-probe.ts");
+  writeFileSync(probe, 'console.log("trusted entry reached");\n');
+  const unsafe = Bun.spawnSync([process.execPath, probe], { cwd: setup.checkout, env });
+  expect(unsafe.exitCode).not.toBe(0);
+  expect(unsafe.stderr.toString()).toContain("checkout preload executed");
+  expect(unsafe.stdout.toString()).not.toContain("trusted entry reached");
+  expect(existsSync(marker)).toBe(true);
+  rmSync(marker);
+  // These stand-ins use Bun, unlike native gh/Codex; isolate them independently of the wrapper under test.
+  const mockConfig = join(setup.temp, "mock-bun.toml");
+  writeFileSync(mockConfig, "# Only the native command stand-ins use this configuration.\n");
+  const direct = `#!${process.execPath} --config=${mockConfig}`;
+  const gh = join(setup.bin, "gh");
+  writeFileSync(gh, readFileSync(gh, "utf8").replace(/^#!.*$/m, direct));
+  writeFileSync(codex, readFileSync(codex, "utf8").replace(/^#!.*$/m, `${launcher === "npm" ? "#!/usr/bin/env node" : direct}
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(startup)}, JSON.stringify({ cwd: process.cwd(), dotenv: process.env.REVIEW_STARTUP_DOTENV, args: process.argv.slice(2) }) + "\\n");`));
+  if (launcher === "direct") {
+    writeFileSync(join(setup.temp, "direct-codex.ts"), readFileSync(codex, "utf8"));
+    writeFileSync(codex, `#!/usr/bin/env bash
+exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/direct-codex.ts" "$@"
+`);
+  }
+  if (entry === "hosted") {
+    const review = setup.run(env);
+    expect({ exitCode: review.exitCode, preload: existsSync(marker) }).toEqual({ exitCode: 0, preload: false });
+  } else {
+    const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as {
+      runs: { steps: { name?: string; run?: string }[] };
+    };
+    const runStep = (name: string, extra: Record<string, string>) => {
+      const script = action.runs.steps.find(step => step.name === name)?.run;
+      if (!script) throw new Error(`Missing Actions step ${name}`);
+      return Bun.spawnSync(["bash", "-eo", "pipefail", "-c", script], { cwd: setup.checkout, env: { ...env, ...extra }, timeout: 15000 });
+    };
+    const githubEnv = join(setup.temp, "github-env"), stepEnv = {
+      AGENT: "true", ISSUE_NUMBER: "7", PR_NUMBER: "", GITHUB_ENV: githubEnv,
+      GITHUB_STEP_SUMMARY: join(setup.temp, "summary.md"),
+    };
+    const configured = runStep("Configure codex", stepEnv);
+    expect({ exitCode: configured.exitCode, preload: existsSync(marker) }).toEqual({ exitCode: 0, preload: false });
+    const output = Object.fromEntries(readFileSync(githubEnv, "utf8").trimEnd().split("\n").map(line => {
+      const equal = line.indexOf("=");
+      return [line.slice(0, equal), line.slice(equal + 1)];
+    }));
+    expect(output.CODEX_RUNTIME).toBe(launcher === "npm" ? join(actionPath, "scripts", "review-bun.sh") : "");
+    expect(runStep("Run codex review", { ...stepEnv, ...output }).exitCode).toBe(0);
+  }
+  expect(existsSync(marker)).toBe(false);
+  const launches = readFileSync(startup, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+  expect(launches.map(({ cwd }) => cwd)).toEqual([setup.checkout, setup.checkout]);
+  expect(launches[0].args).toEqual(["--version"]);
+  expect(launches[1].args[0]).toBe("exec");
+  if (launcher === "npm") expect(launches.map(({ dotenv }) => dotenv)).toEqual(["checkout-dotenv", "checkout-dotenv"]);
+  const calls = readFileSync(log, "utf8").trimEnd().split("\n").map(line => line.split("\t"))
+    .filter(([cwd, arg]) => cwd === setup.checkout && arg !== "--version");
+  const launch = launcher === "npm" ? [codex] : [];
+  expect(calls).toEqual([
+    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
+  ].map(arg => [setup.checkout, `--config=${join(actionPath, "scripts", "review-bun.toml")}`, arg]));
 });
 
 test("a head that moves during hosted review is superseded without publishing a review", () => {

@@ -50,6 +50,9 @@ fi
 if [ "$AGENT" = true ]; then INSTRUCTIONS="$AGENT_INSTRUCTIONS"; else INSTRUCTIONS="$REVIEW_INSTRUCTIONS"; fi
 # The caller appends repository rules after the built-in prompt, so they can override it without replacing it.
 [ -z "$EXTRA_INSTRUCTIONS" ] || INSTRUCTIONS="$INSTRUCTIONS"$'\n\n'"$EXTRA_INSTRUCTIONS"
+. "$GITHUB_ACTION_PATH/scripts/review-prompt.sh"
+prompt_version=$(review_prompt_version)
+resume_compactions=0
 # Production reviews may opt into a faster provider tier; workflows that do not ask for one keep the provider default.
 tier=()
 case "$SERVICE_TIER" in
@@ -59,20 +62,24 @@ esac
 # An agent turn ends in the actions it took, so it writes no verdict object to parse.
 SCHEMA=(--output-schema "$GITHUB_ACTION_PATH/review-schema.json" --output-last-message "$RUNNER_TEMP/review.json")
 OPEN="Review $SUBJECT: run \`git diff $RANGE\` and inspect the changed files. $CONFLICT$INSTRUCTIONS"
-CONTINUE="Continue reviewing $SUBJECT. The workspace is a fresh checkout at the current HEAD; do not rely on earlier filesystem state or artifacts. Run \`git diff $RANGE\`, \
-     re-check what changed, reply to the activity the hooks report, and output the JSON review covering what this run saw. $CONFLICT$INSTRUCTIONS"
+if [ -n "$PR_NUMBER" ]; then MERGE_CONTEXT="${CONFLICT:-No merge conflicts were found with $BASE in this checkout. }"; else MERGE_CONTEXT=""; fi
+CONTINUE="Continue reviewing $SUBJECT at HEAD_SHA=$HEAD_SHA (branch=$HEAD_BRANCH, base=$BASE) in a fresh checkout of $GITHUB_REPOSITORY. \
+     Current tools are at $GITHUB_ACTION_PATH ($RUNTIME_INFO); this run was triggered by $GITHUB_EVENT_NAME from $TRIGGER_SENDER ($TRIGGER_TYPE). \
+     This run context supersedes earlier HEAD, checkout paths and trigger metadata. Do not rely on earlier filesystem state or artifacts. \
+     Run git diff $RANGE, re-check the current diff, CI and GitHub discussion, reply to activity the hooks report, \
+     and output the JSON review for the check attached to $HEAD_SHA. $MERGE_CONTEXT"
 if [ "$AGENT" = true ]; then
   # An agent turn posts no verdict, but its closing message is what the run page shows as the summary.
   SCHEMA=(--output-last-message "$RUNNER_TEMP/last-message.md")
   # The event is delivered in the shape the hooks inject into a running review, so both paths read the same context.
-  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, actor: .sender.login, url: (.issue.html_url // .comment.html_url), comment: .comment.body, comment_id: .comment.id} | with_entries(select(.value != null))' "$GITHUB_EVENT_PATH")
+  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, sender: {login: .sender.login, type: .sender.type}, issue: (if .issue then .issue | {number, html_url} else null end), comment: (if .comment then .comment | {id, body, html_url} else null end)} | walk(if type == "object" then with_entries(select(.value != null)) else . end)' "$GITHUB_EVENT_PATH")
   OPEN=$(printf 'New GitHub activity on %s:\n%s\nRead the issue and its discussion with `gh issue view %s --comments`; the checkout is %s at %s. Decide what response, if any, it calls for and do it. %s' \
     "$SUBJECT" "$delivery" "$ISSUE_NUMBER" "$BASE" "$HEAD_SHA" "$INSTRUCTIONS")
-  CONTINUE=$(printf 'New GitHub activity on %s:\n%s\nContinue what you were doing in a fresh checkout at %s; do not rely on earlier filesystem state or artifacts. Re-read the issue if the discussion moved on, finish the response, and reply there. %s' \
-    "$SUBJECT" "$delivery" "$HEAD_SHA" "$INSTRUCTIONS")
+  CONTINUE=$(printf 'New GitHub activity on %s:\n%s\nContinue what you were doing in a fresh checkout at HEAD_SHA=%s (base=%s, action path=%s, runtime=%s). The trigger was %s from %s (%s). This run context supersedes older head, paths and trigger metadata; do not rely on earlier filesystem state or artifacts. Re-read the issue if the discussion moved on, finish the response, and reply there.' \
+    "$SUBJECT" "$delivery" "$HEAD_SHA" "$BASE" "$GITHUB_ACTION_PATH" "$RUNTIME_INFO" "$GITHUB_EVENT_NAME" "$TRIGGER_SENDER" "$TRIGGER_TYPE")
 fi
 fresh() {
-  $CODEX_RUNTIME "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$OPEN"
 }
 log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
@@ -96,6 +103,15 @@ finish_injected() {
   fi
 }
 trap finish_injected EXIT
+# Resend stable rules only after a policy change, compaction, or legacy/unknown restore.
+# Capture the checkpoint before this run: a compaction during the turn must refresh rules next time.
+if [ -z "$FORK_KEY" ] && [ -s "$CODEX_HOME/last-thread-id" ]; then
+  thread=$(cat "$CODEX_HOME/last-thread-id")
+  resume_compactions=$(review_prompt_compactions "$thread")
+  if review_prompt_needs_rules "$thread" "$prompt_version" "$resume_compactions"; then
+    CONTINUE=$(printf 'Current review instructions (supersede earlier versions): %s\n\n%s' "$INSTRUCTIONS" "$CONTINUE")
+  fi
+fi
 review() {
 if [ -n "$FORK_KEY" ]; then
   fork=$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/$FORK_KEY
@@ -103,14 +119,14 @@ if [ -n "$FORK_KEY" ]; then
   cp -R "$fork/sessions" "$fork/last-thread-id" "$CODEX_HOME/"
   # The conversation transfers, but events filtered for the source PR were never consumed for this one.
   rm -f "$CODEX_HOME/sessions/.github-deliveries.json" "$CODEX_HOME/sessions/.github-published-head"
-  $CODEX_RUNTIME "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec fork --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
     --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
     --output-last-message "$RUNNER_TEMP/review.json" \
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "You opened PR #$PR_NUMBER to keep that fix out of the change you were reviewing; now review it as its own PR. The workspace is a fresh checkout of its head; do not rely on earlier filesystem state or artifacts. \
      Run \`git diff $RANGE\`, inspect the changed files, and output the JSON review for PR #$PR_NUMBER. $INSTRUCTIONS"
 elif [ -s "$CODEX_HOME/last-thread-id" ]; then
-  $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
+  ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$(cat "$CODEX_HOME/last-thread-id")" \
     "$CONTINUE"
 else
@@ -124,6 +140,7 @@ review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
 if grep -Eq '^(Error: .*|.*"type":"(error|turn\.failed)".*)(unsupported_persisted_item_context|modelProviderMismatch)' "$RUNNER_TEMP/codex.jsonl"; then
   echo "::warning::The saved session cannot continue here; reviewing from a new thread."
   rm -f "$CODEX_HOME/last-thread-id"
+  resume_compactions=0
   : > "$RUNNER_TEMP/codex.jsonl"
   fresh < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
 fi
@@ -133,6 +150,10 @@ fi
 # Recorded before the verdict check, so a fresh review can resume the thread it just started.
 jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id // empty' \
   < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
+# A successfully resumed thread remembers the policy and pre-run compaction count in its next snapshot.
+if [ "$ran" = 1 ] && [ -s "$CODEX_HOME/last-thread-id" ]; then
+  review_prompt_record "$(cat "$CODEX_HOME/last-thread-id")" "$prompt_version" "$resume_compactions"
+fi
 # A turn can end without a verdict, such as when the model stops to report progress; ask once more and let it name what it still does not know.
 # A commit without a conclusion, or without the one being reviewed, would fail the publish step instead of this one.
 # A failure that names nothing is unreadable on the pull request, so it is asked again like a missing verdict.
@@ -149,7 +170,7 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
     # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
     if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
     echo "::warning::Codex ended without a verdict; asking for the review object once."
-    $CODEX_RUNTIME "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
+    ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
       --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
       --output-last-message "$RUNNER_TEMP/review.json" \
       "$(cat "$CODEX_HOME/last-thread-id")" \

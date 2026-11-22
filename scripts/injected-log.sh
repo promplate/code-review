@@ -11,10 +11,10 @@ declare -A workflows
 while IFS= read -r line <&3; do
   request=$(jq -er '
     if .review_log_end == true then "end"
-    else select(.event == "check_run" and .app.slug == "github-actions" and ((.workflow // "") == ""))
-      | select(.check_suite_id | type == "number" and . > 0 and . <= 9007199254740991 and floor == .)
-      | select(.head | type == "string" and test("^[a-fA-F0-9]{40}$"))
-      | [.check_suite_id, .head] | @tsv end
+    else select(.event == "check_run" and .check_run.app.slug == "github-actions" and ((.workflow // "") == ""))
+      | select(.check_run.check_suite.id | type == "number" and . > 0 and . <= 9007199254740991 and floor == .)
+      | select(.check_run.head_sha | type == "string" and test("^[a-fA-F0-9]{40}$"))
+      | [.check_run.check_suite.id, .check_run.head_sha] | @tsv end
   ' <<< "$line" 2>/dev/null) || request=
   [ "$request" != end ] || break
   if [ -n "$request" ]; then
