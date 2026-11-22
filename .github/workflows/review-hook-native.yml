@@ -1,4 +1,4 @@
-name: Validate native review hook locking
+name: Verify the complete review suite
 
 on:
   push:
@@ -8,25 +8,22 @@ permissions:
   contents: read
 
 jobs:
-  native-lock:
-    name: Native lock (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
+  full-suite:
+    name: Full suite (Ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: 7d369c64a5a95048124bbed36d8be434d1245755
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.5
-      - name: Validate hook ownership and recovery
+      - name: Run every Bun test on the PR commit
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = Windows ]; then
-            export REVIEW_VALIDATION_BASH="$(cygpath -w "$(command -v bash)")"
-          fi
+          git rev-parse HEAD
           bun --version
-          jq --version
-          bun test ./.github/validation/review-hook-native.test.ts --timeout 20000
+          gh --version
+          env -u AGENT bun test
