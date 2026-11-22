@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: 7d369c64a5a95048124bbed36d8be434d1245755
+          fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
