@@ -504,6 +504,8 @@ runs:
       env:
         BEFORE: ${{ github.event.before }}
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
+        # Only the optional CI-name lookup uses this token; the reviewer keeps the App identity.
+        REVIEW_ACTIONS_TOKEN: ${{ github.token }}
         # Without the empty-string fallback, a failed restore check sets FORK_KEY to "false", which run-review.sh treats as a session key.
         FORK_KEY: ${{ ((steps.decrypt-fork.outputs.restored == 'true' || steps.verify-fork.outputs.restored == 'true') && steps.check.outputs.fork-key) || '' }}
         JOB_CHECK_RUN_ID: ${{ job.check_run_id }}

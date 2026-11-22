@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -eo pipefail
+# Setup children must not inherit the CI-name lookup credential either.
+export -n REVIEW_ACTIONS_TOKEN
 # Self-hosted runners can retain temp files from an earlier job. Neither its verdict
 # nor its supersession marker can authorize publishing (or skipping) this review.
 rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last-message.md"
@@ -57,7 +59,7 @@ if [ "$AGENT" = true ]; then
   # An agent turn posts no verdict, but its closing message is what the run page shows as the summary.
   SCHEMA=(--output-last-message "$RUNNER_TEMP/last-message.md")
   # The event is delivered in the shape the hooks inject into a running review, so both paths read the same context.
-  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, actor: .sender.login, url: (.issue.html_url // .comment.html_url), comment: .comment.body, comment_id: .comment.id} | with_entries(select(.value != null))' "$GITHUB_EVENT_PATH")
+  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, sender: {login: .sender.login, type: .sender.type}, issue: (if .issue then .issue | {number, html_url} else null end), comment: (if .comment then .comment | {id, body, html_url} else null end)} | walk(if type == "object" then with_entries(select(.value != null)) else . end)' "$GITHUB_EVENT_PATH")
   OPEN=$(printf 'New GitHub activity on %s:\n%s\nRead the issue and its discussion with `gh issue view %s --comments`; the checkout is %s at %s. Decide what response, if any, it calls for and do it. %s' \
     "$SUBJECT" "$delivery" "$ISSUE_NUMBER" "$BASE" "$HEAD_SHA" "$INSTRUCTIONS")
   CONTINUE=$(printf 'New GitHub activity on %s:\n%s\nContinue what you were doing in a fresh checkout at %s; do not rely on earlier filesystem state or artifacts. Re-read the issue if the discussion moved on, finish the response, and reply there. %s' \
@@ -71,9 +73,19 @@ log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACT
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
-tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
+rm -f "$RUNNER_TEMP/injected.done"
+REVIEW_ACTIONS_TOKEN="${REVIEW_ACTIONS_TOKEN:-}" bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
 INJECTED_TAIL=$!
-trap 'kill "$INJECTED_TAIL" 2> /dev/null || true' EXIT
+# Only the background log worker needs the GitHub Actions lookup credential.
+unset REVIEW_ACTIONS_TOKEN
+finish_injected() {
+  # Stop optional lookups, then drain the records already delivered, including one whose lookup is in flight.
+  if ! { touch "$RUNNER_TEMP/injected.done" && printf '%s\n' '{"review_log_end":true}' >> "$RUNNER_TEMP/injected.log"; }; then
+    kill "$INJECTED_TAIL" 2>/dev/null || true
+  fi
+  wait "$INJECTED_TAIL" 2>/dev/null || true
+}
+trap finish_injected EXIT
 review() {
 if [ -n "$FORK_KEY" ]; then
   fork=$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/$FORK_KEY
