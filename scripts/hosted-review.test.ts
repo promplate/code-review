@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -7,7 +7,8 @@ const root = resolve(import.meta.dir, ".."), dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 function fixture(mode = "success") {
-  const dir = mkdtempSync(join(tmpdir(), "hosted-review-")); dirs.push(dir);
+  // macOS resolves the /var tmpdir alias in process.cwd() of spawned stand-ins; compare canonical paths.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "hosted-review-"))); dirs.push(dir);
   const checkout = join(dir, "repo"), bin = join(dir, "bin"), state = join(dir, "state"), temp = join(dir, "temp");
   for (const path of [checkout, bin, state, temp]) mkdirSync(path);
   const git = (...args: string[]) => Bun.spawnSync(["git", "-C", checkout, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]);
