@@ -53,8 +53,9 @@ function runLoggedHook(log: string, overrides = {}) {
   expect(formatted.exitCode).toBe(0);
   expect(formatted.stderr.toString()).toBe("");
   const activities = injected.split("\n").filter(Boolean).map(line => JSON.parse(line));
-  expect(JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line))).toEqual(activities);
-  return { ...hook, activities, text: formatted.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "") };
+  const contexts = JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line));
+  expect(contexts).toEqual(activities.map(({ workflow, ...context }) => context));
+  return { ...hook, contexts, activities, text: formatted.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "") };
 }
 
 type CIResponse = { pages?: object[]; error?: string };
@@ -327,9 +328,9 @@ test("activity links drop this repository's prefix and keep external ones", () =
     frame("check_run", { action: "completed", check_run: check({ details_url: "https://ci.example.test/run/1" }) }, "external"),
   ].join("");
   const { output } = runHook(log);
-  expect(output).toContain('\\"url\\":\\"/pull/7#issuecomment-1\\"');
-  expect(output).toContain('\\"url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
-  expect(output).toContain('\\"url\\":\\"https://ci.example.test/run/1\\"');
+  expect(output).toContain('\\"html_url\\":\\"/pull/7#issuecomment-1\\"');
+  expect(output).toContain('\\"html_url\\":\\"https://github.com/owner/repo2/pull/7#issuecomment-2\\"');
+  expect(output).toContain('\\"details_url\\":\\"https://ci.example.test/run/1\\"');
 });
 
 test("an edited pull request title and body reach the review", () => {
@@ -341,7 +342,7 @@ test("an edited pull request title and body reach the review", () => {
 test.each([null, ""])("clearing a PR description preserves an explicit empty body (%j)", (body) => {
   const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
   const activity = JSON.parse(JSON.parse(output).reason.split("\n")[1]);
-  expect(activity.body).toBe("");
+  expect(activity.pull_request.body).toBe("");
 });
 
 test("a truncated edit says so instead of hiding the change", () => {
@@ -357,7 +358,7 @@ test("another app's review activity reaches the review, while its issue comments
   const review = (sender: object, text: string) => frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { path: "a.ts", line: 3, body: text }, sender }, "bot-review", false);
   const included = runHook(review(other, "bot finding")).output;
   expect(included).toContain("bot finding");
-  expect(included).toContain('\\"actor_type\\":\\"Bot\\"');
+  expect(included).toContain('\\"type\\":\\"Bot\\"');
   expect(runHook(review({ login: "reviewer[bot]", type: "Bot" }, "own finding")).output).toBe("");
   expect(runHook(review(human, "stranger finding")).output).toBe("");
   expect(runHook(frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "bot chatter" }, sender: other }, "bot-chatter", false)).output).toBe("");
@@ -946,7 +947,8 @@ test("an issue wakes the agent without a verdict schema", () => {
   expect(result.exitCode).toBe(0);
   const out = result.stdout.toString();
   expect(out).toContain("New GitHub activity on issue #7:");
-  expect(out).toContain('"event":"issues"');
+  expect(JSON.parse(out.split("\n")[1])).toEqual({ event: "issues", action: "labeled", sender: human,
+    issue: { number: 7, html_url: "https://github.com/owner/repo/issues/7" } });
   expect(out).toContain("gh issue view 7 --comments");
   expect(out).toContain("never invent work");
   expect(out).not.toContain("JSON review");
@@ -1358,14 +1360,14 @@ test("log cleanup keeps workflow commands in command output escaped", () => {
 
 test("injected GitHub activity is logged with a colour per meaning", () => {
   const input = [
-    JSON.stringify({ event: "issue_comment", action: "created", actor: "alice", url: "https://example.test/c/1" }),
-    JSON.stringify({ event: "pull_request_review_thread", action: "resolved", url: "https://example.test/t/9" }),
-    JSON.stringify({ event: "check_run", name: "CI", conclusion: "failure", url: "https://example.test/r/2" }),
-    JSON.stringify({ event: "check_run", name: "CI", conclusion: "success", url: "https://example.test/r/5" }),
-    JSON.stringify({ event: "workflow_run", name: "CI", conclusion: "cancelled", url: "https://example.test/r/6" }),
-    JSON.stringify({ event: "status", state: "failure", url: "https://example.test/s/7" }),
-    JSON.stringify({ event: "push", commit: "abc", url: "https://example.test/p/8" }),
-    JSON.stringify({ event: "pull_request", action: "synchronize", url: "https://example.test/p/9" }),
+    JSON.stringify({ event: "issue_comment", action: "created", sender: { login: "alice" }, comment: { html_url: "https://example.test/c/1" } }),
+    JSON.stringify({ event: "pull_request_review_thread", action: "resolved", thread: { comments: [{ html_url: "https://example.test/t/9" }] } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI", app: { slug: "blacksmith-sh" }, conclusion: "failure", details_url: "https://example.test/r/2" } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI", app: { slug: "blacksmith-sh" }, conclusion: "success", details_url: "https://example.test/r/5" } }),
+    JSON.stringify({ event: "workflow_run", workflow_run: { name: "CI", conclusion: "cancelled", html_url: "https://example.test/r/6" } }),
+    JSON.stringify({ event: "status", context: "external", state: "failure", target_url: "https://example.test/s/7" }),
+    JSON.stringify({ event: "push", after: "abc" }),
+    JSON.stringify({ event: "pull_request", action: "synchronize", pull_request: { head: { sha: "abc" } } }),
     JSON.stringify({ event: "subscription_recovery", reason: "subscription_failed" }),
   ].join("\n") + "\n";
   const log = (input: string) => {
@@ -1377,11 +1379,11 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // Cyan: something a person wrote.
   expect(output).toContain("\u001b[96missue_comment/created\u001b[0m alice https://example.test/c/1");
   expect(output).toContain("\u001b[96mpull_request_review_thread/resolved\u001b[0m");
-  // Green, red and yellow: how CI ended.
-  expect(output).toContain("\u001b[91mcheck_run\u001b[0m CI:failure https://example.test/r/2");
-  expect(output).toContain("\u001b[92mcheck_run\u001b[0m CI:success https://example.test/r/5");
+  // Green, red and yellow: how CI ended, led by the app that owns the check rather than the run's actor.
+  expect(output).toContain("\u001b[91mcheck_run\u001b[0m blacksmith-sh / CI:failure https://example.test/r/2");
+  expect(output).toContain("\u001b[92mcheck_run\u001b[0m blacksmith-sh / CI:success https://example.test/r/5");
   expect(output).toContain("\u001b[93mworkflow_run\u001b[0m CI:cancelled https://example.test/r/6");
-  expect(output).toContain("\u001b[91mstatus\u001b[0m:failure https://example.test/s/7");
+  expect(output).toContain("\u001b[91mstatus\u001b[0m external:failure https://example.test/s/7");
   // Blue: the branch or pull request moved.
   expect(output).toContain("\u001b[94mpush\u001b[0m");
   expect(output).toContain("\u001b[94mpull_request/synchronize\u001b[0m");
@@ -1390,8 +1392,8 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   // A payload field that carries a workflow command must not run as one, in either form the runner parses.
   // Escaping rather than stopping commands matters because the tool log that writes to the same stdout holds the runner's one suppression token.
   const crafted = log([
-    JSON.stringify({ event: "check_run", name: "ci\n::error::forged", url: "https://example.test/r/3" }),
-    JSON.stringify({ event: "check_run", name: "CI ##[error]synthetic", url: "https://example.test/r/4" }),
+    JSON.stringify({ event: "check_run", check_run: { name: "ci\n::error::forged", details_url: "https://example.test/r/3" } }),
+    JSON.stringify({ event: "check_run", check_run: { name: "CI ##[error]synthetic", details_url: "https://example.test/r/4" } }),
   ].join("\n") + "\n");
   expect(crafted).not.toContain("::stop-commands::");
   expect(crafted).not.toMatch(/^ *::/m);
@@ -1404,6 +1406,85 @@ test("hook deliveries are published for the live log", () => {
   const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
   expect(JSON.parse(output).decision).toBe("block");
   expect(readFileSync(join(dir, "injected.log"), "utf8")).toContain('"event":"issue_comment"');
+});
+
+test.each([
+  { mode: "GitHub Action", env: {} },
+  { mode: "Hosted Review", env: { REVIEW_HOSTED: "true", GITHUB_RUN_ID: "hosted-uuid" } },
+])("faithful webhook context and the live worker preserve fields once in $mode", ({ env }) => {
+  const pull_request = { number: 7, head: { sha: "head" } };
+  const comment = { id: 42, commit_id: "reviewed-commit", body: "Check this line", path: "src/check.ts", line: 8,
+    html_url: "https://github.com/owner/repo/pull/7#discussion_r42" };
+  const check_run = { id: 100, name: "Proof", app: { name: "blacksmith.sh", slug: "blacksmith-sh" },
+    check_suite: { id: 500 }, head_sha: "head", conclusion: "skipped", url: workflowJob().check_run_url,
+    details_url: "https://app.blacksmith.sh/owner/repo/usage" };
+  const workflow_run = { id: 90, name: "CI", path: ".github/workflows/ci.yml", check_suite_id: 501,
+    head_sha: "head", conclusion: "success", html_url: "https://github.com/owner/repo/actions/runs/90" };
+  const cases = [
+    { event: "check_run", body: { action: "completed", check_run }, expected: { check_run } },
+    { event: "workflow_run", body: { action: "completed", sender: bot, workflow_run },
+      expected: { workflow_run: { ...workflow_run, html_url: "/actions/runs/90" } } },
+    { event: "issue_comment", body: { action: "created", issue: { number: 7 },
+      comment: { id: 43, body: "Please review", html_url: "https://github.com/owner/repo/pull/7#issuecomment-43" } },
+      expected: { issue: { number: 7 }, comment: { id: 43, body: "Please review", html_url: "/pull/7#issuecomment-43" } } },
+    { event: "pull_request_review", body: { action: "submitted", pull_request,
+      review: { state: "changes_requested", body: "Please fix", html_url: "https://github.com/owner/repo/pull/7#pullrequestreview-1" } },
+      expected: { pull_request, review: { state: "changes_requested", body: "Please fix", html_url: "/pull/7#pullrequestreview-1" } } },
+    { event: "pull_request_review_comment", body: { action: "created", pull_request, comment },
+      expected: { pull_request, comment: { ...comment, html_url: "/pull/7#discussion_r42" } } },
+    { event: "pull_request_review_thread", body: { action: "unresolved", pull_request,
+      thread: { node_id: "thread-1", comments: [{ body: "Still failing", path: "src/check.ts", line: 8, html_url: "https://github.com/owner/repo/pull/7#discussion_r42" }] } },
+      expected: { pull_request, thread: { node_id: "thread-1", comments: [{ body: "Still failing", path: "src/check.ts", line: 8, html_url: "/pull/7#discussion_r42" }] } } },
+    { event: "push", body: { ref: "refs/heads/feature", after: "a".repeat(40) }, expected: { ref: "refs/heads/feature", after: "a".repeat(40) } },
+    { event: "pull_request", body: { action: "synchronize", pull_request: { number: 7, head: { sha: "b".repeat(40) } } },
+      expected: { pull_request: { number: 7, head: { sha: "b".repeat(40) } } } },
+    { event: "status", body: { sender: bot, state: "failure", context: "external/scan", sha: "head", target_url: "https://ci.example.test/scan" },
+      expected: { state: "failure", context: "external/scan", sha: "head", target_url: "https://ci.example.test/scan" } },
+    { event: "subscription_recovery", body: { reason: "connection_failed", status: "0" }, expected: { reason: "connection_failed", status: "0" } },
+  ];
+  const events = cases.map(({ event, body }) => frame(event, body));
+  const { dir, run, contexts, text, env: hookEnv } = runLoggedHook(events.join("") + events.join(""), env);
+  expect(contexts).toHaveLength(cases.length);
+  for (const [index, { event, body, expected }] of cases.entries()) {
+    const context = contexts[index];
+    const { recovery, ...parameters } = context;
+    expect(parameters).toEqual({ event, ...("action" in body ? { action: body.action } : {}),
+      sender: "sender" in body ? body.sender : human, ...expected });
+    if (event === "subscription_recovery") {
+      expect(recovery).toContain("events may have been missed");
+      expect(recovery).toContain("Paginate these reads");
+    } else expect(recovery).toBeUndefined();
+  }
+  expect(text.trim().split(/\n+/)).toEqual([
+    "check_run/completed blacksmith.sh / Proof:skipped https://app.blacksmith.sh/owner/repo/usage",
+    "workflow_run/completed CI:success /actions/runs/90",
+    "issue_comment/created collaborator /pull/7#issuecomment-43",
+    "pull_request_review/submitted collaborator /pull/7#pullrequestreview-1",
+    "pull_request_review_comment/created collaborator /pull/7#discussion_r42",
+    "pull_request_review_thread/unresolved collaborator /pull/7#discussion_r42",
+    `push collaborator /pull/7/commits/${"a".repeat(40)}`,
+    `pull_request/synchronize collaborator /pull/7/commits/${"b".repeat(40)}`,
+    "status external/scan:failure https://ci.example.test/scan",
+    "subscription_recovery",
+  ]);
+  expect(run().stdout.toString()).toBe("");
+  expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8").trim().split("\n")).toEqual(cases.map(({ event }) => event));
+  // Run the same records through the actual shared worker used by both entry points.
+  const path = join(dir, "injected.log");
+  writeFileSync(path, readFileSync(path, "utf8") + '{"review_log_end":true}\n');
+  const worker = Bun.spawnSync(["bash", join(scripts, "injected-log.sh"), path], { env: { ...hookEnv, ...env }, timeout: 3000 });
+  expect(worker.exitCode).toBe(0);
+  expect(worker.stderr.toString()).toBe("");
+  expect(worker.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "")).toBe(text);
+});
+
+test("branch commit comments retain their commit, file, line and original sender", () => {
+  const comment = { id: 42, commit_id: "head", body: "Check this line", path: "src/check.ts", line: 8,
+    html_url: "https://github.com/owner/repo/commit/head#commitcomment-42" };
+  const { contexts, text } = runLoggedHook(frame("commit_comment", { action: "created", comment }), { PR_NUMBER: "" });
+  expect(contexts).toEqual([{ event: "commit_comment", action: "created", sender: human,
+    comment: { ...comment, html_url: "/commit/head#commitcomment-42" } }]);
+  expect(text.trim()).toBe("commit_comment/created collaborator /commit/head#commitcomment-42");
 });
 
 test("CI labels use the owning workflow for Dependabot-triggered jobs while retaining their actor", () => {
@@ -1420,8 +1501,9 @@ test("CI labels use the owning workflow for Dependabot-triggered jobs while reta
     const { activities, text } = runLoggedHook(log, { HEAD_SHA: head, GITHUB_REPOSITORY: "promplate/hmr" });
     expect(activities).toHaveLength(2);
     for (const [index, activity] of activities.entries()) {
-      expect(activity).toMatchObject({ actor: sender.login, actor_type: "Bot", name: `check (windows, ${jobs[index][1]})`, workflow: "CI", check_suite_id: 120432515379 });
-      expect(activity.app).toEqual({ name: "GitHub Actions", slug: "github-actions" });
+      expect(activity).toMatchObject({ sender, check_run: { id: jobs[index][0], head_sha: head,
+        name: `check (windows, ${jobs[index][1]})`, check_suite: { id: 120432515379 } }, workflow: "CI" });
+      expect(activity.check_run.app).toEqual({ name: "GitHub Actions", slug: "github-actions" });
     }
     expect(text.trim().split(/\n+/)).toEqual(jobs.map(([id, version]) => `check_run/completed CI / check (windows, ${version}):success /actions/runs/44491434000/job/${id}`));
     expect(text).not.toContain(sender.login);
@@ -1434,7 +1516,7 @@ test("CI labels identify Blacksmith Proof by its app rather than its GitHub Acti
     id: 136840164514, name: "Proof", conclusion: "skipped", app: { id: 807020, name: "blacksmith.sh", slug: "blacksmith-sh" },
     details_url: "https://app.blacksmith.sh/promplate/usage",
   }) }));
-  expect(activities[0]).toMatchObject({ actor: sender.login, name: "Proof", app: { name: "blacksmith.sh", slug: "blacksmith-sh" } });
+  expect(activities[0]).toMatchObject({ sender, check_run: { name: "Proof", app: { name: "blacksmith.sh", slug: "blacksmith-sh" } } });
   expect(text.trim()).toBe("check_run/completed blacksmith.sh / Proof:skipped https://app.blacksmith.sh/promplate/usage");
 });
 
@@ -1446,7 +1528,7 @@ test.each(["queued", "in_progress", "completed", "waiting"])("workflow job %s me
   for (const log of [metadata + unrelated + completed, completed + unrelated + metadata]) {
     const { activities, text, dir, run } = runLoggedHook(log);
     expect(activities).toHaveLength(1);
-    expect(activities[0]).toMatchObject({ event: "check_run", actor: sender.login, name: "test (windows, 3.12)", check_suite_id: 500, workflow: "CI" });
+    expect(activities[0]).toMatchObject({ event: "check_run", sender, check_run: { name: "test (windows, 3.12)", check_suite: { id: 500 } }, workflow: "CI" });
     expect(text.trim()).toBe("check_run/completed CI / test (windows, 3.12):success");
     expect(readFileSync(join(dir, "injected-deliveries.log"), "utf8")).toBe("checked\n");
     expect(run().stdout.toString()).toBe("");
@@ -1524,7 +1606,7 @@ test("CI labels preserve events when workflow or app metadata is unavailable", (
   for (const [app, prefix] of [[{ name: "GitHub Actions", slug: "github-actions" }, "GitHub Actions / "], [{ slug: "external-ci" }, "external-ci / "], [{ name: "", slug: "github-actions" }, "github-actions / "], [undefined, ""]] as const) {
     const { activities, text } = runLoggedHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ app, conclusion: "failure" }) }));
     expect(activities).toHaveLength(1);
-    expect(activities[0]).toMatchObject({ actor: bot.login, name: "test", conclusion: "failure" });
+    expect(activities[0]).toMatchObject({ sender: bot, check_run: { name: "test", conclusion: "failure" } });
     expect(activities[0]).not.toHaveProperty("workflow");
     expect(text.trim()).toBe(`check_run/completed ${prefix}test:failure`);
   }
@@ -1535,7 +1617,7 @@ test("CI labels omit workflow and status senders while comments still identify t
     + frame("status", { sha: "head", state: "error", context: "security/scan", sender: bot })
     + frame("issue_comment", { action: "created", issue: { number: 7 }, comment: { body: "Please check", html_url: "https://github.com/owner/repo/pull/7#issuecomment-1" } });
   const { activities, text } = runLoggedHook(log);
-  expect(activities.map(activity => activity.actor)).toEqual([bot.login, bot.login, human.login]);
+  expect(activities.map(activity => activity.sender.login)).toEqual([bot.login, bot.login, human.login]);
   expect(text.trim().split(/\n+/)).toEqual([
     "workflow_run/completed Build and lint:success",
     "status security/scan:error",
@@ -1552,7 +1634,7 @@ test("CI labels escape workflow names and both app labels before writing runner 
     + frame("workflow_job", { action: "queued", workflow_job: workflowJob({ workflow_name: crafted }) })
     + frame("check_run", { action: "completed", check_run: check({ url: workflowJob().check_run_url }) }, "job-workflow-label");
   const { activities, text } = runLoggedHook(log);
-  expect([activities[0].workflow, activities[1].app.name, activities[2].app.slug, activities[3].workflow]).toEqual([crafted, crafted, crafted, crafted]);
+  expect([activities[0].workflow, activities[1].check_run.app.name, activities[2].check_run.app.slug, activities[3].workflow]).toEqual([crafted, crafted, crafted, crafted]);
   expect(text).not.toContain("::");
   expect(text).not.toContain("##[");
   expect(text).not.toContain("\r");
@@ -1735,14 +1817,14 @@ test("a repeated thread transition is not skipped as an older trigger", () => {
 test("review thread context derives resolution from the webhook action", () => {
   for (const action of ["resolved", "unresolved"]) {
     const { output } = runHook(frame("pull_request_review_thread", { action, pull_request: { number: 7 }, thread: { node_id: "thread", comments: [{ path: "file.ts", html_url: "https://github.com/owner/repo/pull/7#discussion_r1" }] } }, `webhook:${action}`));
-    expect(output).toContain(`\\"resolved\\":${action === "resolved"}`);
+    expect(output).toContain(`\\"action\\":\\"${action}\\"`);
     expect(output).toContain("discussion_r1");
   }
 });
 
 test("a review comment carries the id its answer replies to", () => {
   const { output } = runHook(frame("pull_request_review_comment", { action: "created", pull_request: { number: 7 }, comment: { id: 4242, body: "how do I fix it", path: "file.ts", line: 8 } }));
-  expect(output).toContain('\\"comment_id\\":4242');
+  expect(output).toContain('\\"id\\":4242');
   expect(output).toContain("how do I fix it");
 });
 
@@ -1820,7 +1902,7 @@ test("check suite identities retain their suite id and reviewed head", () => {
 
 test("injected changes link to the received commit in its PR when available", () => {
   const head = "0123456789abcdef0123456789abcdef01234567";
-  const input = [{ event: "push", head }, { event: "pull_request", action: "synchronize", head }, { event: "push", head: "unknown" }, { event: "push", head: "0".repeat(40) }, { event: "issue_comment", url: "/pull/7#issuecomment-1" }].map((event) => JSON.stringify(event)).join("\n");
+  const input = [{ event: "push", after: head }, { event: "pull_request", action: "synchronize", pull_request: { head: { sha: head } } }, { event: "push", after: "unknown" }, { event: "push", after: "0".repeat(40) }, { event: "issue_comment", comment: { html_url: "/pull/7#issuecomment-1" } }].map((event) => JSON.stringify(event)).join("\n");
   for (const pr of ["7", ""]) {
     const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input), env: { ...process.env, PR_NUMBER: pr } });
     expect(result.exitCode).toBe(0);
