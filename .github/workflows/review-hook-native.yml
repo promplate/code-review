@@ -29,4 +29,4 @@ jobs:
           fi
           bun --version
           jq --version
-          bun test .github/validation/review-hook-native.test.ts --timeout 20000
+          bun test ./.github/validation/review-hook-native.test.ts --timeout 20000
