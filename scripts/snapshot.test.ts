@@ -41,7 +41,7 @@ const runnerTemp = home({});
 // The broker answers on this process, so the script must run without blocking the event loop.
 async function run(args: string[], repo = "23", extraEnv: Record<string, string> = {}) {
   const proc = Bun.spawn(["bash", script, ...args], {
-    env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
+    env: { ...process.env, GITHUB_ENV: "", UNENCRYPTED_SNAPSHOT_WARNED: "", RUNNER_TEMP: runnerTemp, GITHUB_ACTION_PATH: root, BROKER: `http://127.0.0.1:${server.port}`, ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${server.port}/oidc?repo=${repo}&`, ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner", ENCRYPT_SNAPSHOTS: "true", ...extraEnv },
     stdout: "pipe", stderr: "pipe",
   });
   const [exitCode, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -169,19 +169,27 @@ test("saving nothing fails instead of uploading an empty archive", async () => {
   expect(existsSync(archive)).toBe(false);
 });
 
-test("an unencrypted job warns once for its first plaintext archive", async () => {
-  const job = home({}), envFile = join(job, "github-env");
-  writeFileSync(envFile, "");
+test.each(["session", "events"])("an unencrypted job warns once when %s is saved first", async first => {
+  const job = home({ "first-env": "", "next-env": "", "fresh-env": "" }), envFile = join(job, "first-env");
   const source = home({ "sessions/a.jsonl": "{}\n" }), events = home({ "codex.jsonl": "review event\n" });
-  const base = { GITHUB_ENV: envFile, ENCRYPT_SNAPSHOTS: "false", BROKER: "" };
-  const session = await run(["save", join(job, "snapshot.bin"), source, "sessions"], "23", base);
-  expect(session.exitCode).toBe(0);
-  expect(session.stdout).toContain("::warning::Snapshots are not encrypted");
-  // The later step inherits the marker, so its plaintext debug archive does not repeat the annotation.
-  const debug = await run(["save", join(job, "codex.jsonl.bin"), events, "codex.jsonl"], "23", { ...base, ...jobEnv(envFile) });
-  expect(debug.exitCode).toBe(0);
-  expect(debug.stdout).not.toContain("::warning::");
+  const archives = [
+    ["save", join(job, "snapshot.bin"), source, "sessions"],
+    ["save", join(job, "codex.jsonl.bin"), events, "codex.jsonl"],
+  ];
+  if (first === "events") archives.reverse();
+  const base = { ENCRYPT_SNAPSHOTS: "false", BROKER: "" };
+  const saved = await run(archives[0], "23", { ...base, GITHUB_ENV: envFile });
+  expect(saved.exitCode).toBe(0);
+  expect(saved.stdout.match(/^::warning::/gm) ?? []).toHaveLength(1);
+  // Each step gets a new env file; only the exported variables carry over.
+  const next = await run(archives[1], "23", { ...base, ...jobEnv(envFile), GITHUB_ENV: join(job, "next-env") });
+  expect(next.exitCode).toBe(0);
+  expect(next.stdout).not.toMatch(/^::warning::/m);
   expect(readFileSync(join(job, "codex.jsonl.bin")).subarray(0, 7).toString()).toBe("CRSNP0\n");
+  // A fresh job on the same runner must warn again despite reusing the same source and archive paths.
+  const fresh = await run(archives[1], "23", { ...base, GITHUB_ENV: join(job, "fresh-env") });
+  expect(fresh.exitCode).toBe(0);
+  expect(fresh.stdout.match(/^::warning::/gm) ?? []).toHaveLength(1);
 });
 
 test("the unencrypted warning still appears when only one archive is written", async () => {
