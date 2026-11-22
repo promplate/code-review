@@ -66,7 +66,7 @@ if [ "$AGENT" = true ]; then
   # An agent turn posts no verdict, but its closing message is what the run page shows as the summary.
   SCHEMA=(--output-last-message "$RUNNER_TEMP/last-message.md")
   # The event is delivered in the shape the hooks inject into a running review, so both paths read the same context.
-  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, actor: .sender.login, url: (.issue.html_url // .comment.html_url), comment: .comment.body, comment_id: .comment.id} | with_entries(select(.value != null))' "$GITHUB_EVENT_PATH")
+  delivery=$(jq -c --arg event "$GITHUB_EVENT_NAME" '{event: $event, action: .action, sender: {login: .sender.login, type: .sender.type}, issue: (if .issue then .issue | {number, html_url} else null end), comment: (if .comment then .comment | {id, body, html_url} else null end)} | walk(if type == "object" then with_entries(select(.value != null)) else . end)' "$GITHUB_EVENT_PATH")
   OPEN=$(printf 'New GitHub activity on %s:\n%s\nRead the issue and its discussion with `gh issue view %s --comments`; the checkout is %s at %s. Decide what response, if any, it calls for and do it. %s' \
     "$SUBJECT" "$delivery" "$ISSUE_NUMBER" "$BASE" "$HEAD_SHA" "$INSTRUCTIONS")
   CONTINUE=$(printf 'New GitHub activity on %s:\n%s\nContinue what you were doing in a fresh checkout at HEAD_SHA=%s (base=%s, action path=%s, runtime=%s). The trigger was %s from %s (%s). This run context supersedes older head, paths and trigger metadata; do not rely on earlier filesystem state or artifacts. Re-read the issue if the discussion moved on, finish the response, and reply there.' \
