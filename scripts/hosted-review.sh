@@ -51,7 +51,7 @@ cleanup() {
   # Stop hooks run before the terminal rollout record. Read it after Codex exits,
   # and give sanitized pending metadata a bounded final delivery opportunity.
   if [ "$review_started" = true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
-    bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
+    "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
   fi
   [ -z "$SSE_PID" ] || { kill "$SSE_PID" 2>/dev/null || true; wait "$SSE_PID" 2>/dev/null || true; }
   if [ "$code" != 0 ]; then

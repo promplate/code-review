@@ -80,7 +80,7 @@ EOF
 if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
   export TRACE_TO_LANGFUSE=false
   unset LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_CODEX_PUBLIC_KEY LANGFUSE_CODEX_SECRET_KEY
-  bun -e '
+  "$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e '
     const path = process.argv[1], config = Bun.TOML.parse(await Bun.file(path).text());
     config.plugins ??= {};
     config.plugins["tracing@codex-observability-plugin"] = { enabled: false };
@@ -96,15 +96,16 @@ if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
       for (const entry of entries) if (Array.isArray(entry.hooks))
         entry.hooks = entry.hooks.filter(hook => !stockHook(hook.command));
     }
-    const quote = "\x27", script = process.env.GITHUB_ACTION_PATH + "/scripts/review-trace.mjs";
-    const command = "bun " + quote + script.replaceAll(quote, quote + "\\" + quote + quote) + quote;
+    const quote = "\x27", shell = s => quote + s.replaceAll(quote, quote + "\\" + quote + quote) + quote;
+    // The wrapper keeps a reviewed checkout bunfig preload out of the hook process, as in every other reviewer-side launch.
+    const command = shell(process.env.GITHUB_ACTION_PATH + "/scripts/review-bun.sh") + " " + shell(process.env.GITHUB_ACTION_PATH + "/scripts/review-trace.mjs");
     for (const event of ["PostToolUse", "Stop"]) {
       config.hooks[event] ??= [];
       config.hooks[event].push({ ...(event === "PostToolUse" ? { matcher: ".*" } : {}), hooks: [{ type: "command", command, timeout: 10 }] });
     }
     await Bun.write(path, Bun.TOML.stringify(config));
   ' "$CODEX_HOME/config.toml"
-  bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --init
+  "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --init
 # Existing non-hosted callers retain their explicitly configured tracing.
 elif [ -n "${LANGFUSE_PUBLIC_KEY:-}" ] || [ -f ~/.codex/langfuse.json ]; then
   mkdir -p "$RUNNER_TEMP/langfuse"

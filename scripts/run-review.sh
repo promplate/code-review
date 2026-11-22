@@ -99,7 +99,7 @@ finish_injected() {
   wait "$INJECTED_TAIL" 2>/dev/null || true
   # The hosted parent flushes during cleanup. Actions runs this script directly.
   if [ "${REVIEW_HOSTED:-}" != true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
-    bun "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
+    "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
   fi
 }
 trap finish_injected EXIT
