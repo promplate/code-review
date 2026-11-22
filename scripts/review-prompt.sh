@@ -3,7 +3,7 @@
 review_prompt_version() {
   { cat "$GITHUB_ACTION_PATH/scripts/instructions.sh" "$GITHUB_ACTION_PATH/scripts/run-review.sh"
     printf '%s\0' "$AGENT" "$MODE_INSTRUCTIONS" "$EXTRA_INSTRUCTIONS"
-  } | sha256sum | cut -d ' ' -f1
+  } | openssl dgst -sha256 | cut -d ' ' -f2
 }
 
 # An unknown rollout format must re-inject rules rather than assume they survived.
