@@ -1,0 +1,32 @@
+name: Validate native review hook locking
+
+on:
+  push:
+    branches: [validate/review-hook-lock-native]
+
+permissions:
+  contents: read
+
+jobs:
+  native-lock:
+    name: Native lock (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      - name: Validate hook ownership and recovery
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            export REVIEW_VALIDATION_BASH="$(cygpath -w "$(command -v bash)")"
+          fi
+          bun --version
+          jq --version
+          bun test .github/validation/review-hook-native.test.ts --timeout 20000
