@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -eo pipefail
+# Setup children must not inherit the CI-name lookup credential either.
+export -n REVIEW_ACTIONS_TOKEN
+# Self-hosted runners can retain temp files from an earlier job. Neither its verdict
+# nor its supersession marker can authorize publishing (or skipping) this review.
+rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last-message.md"
 # Prices come from https://github.com/pydantic/genai-prices; installing it while Codex reviews keeps it off the critical path.
 # Start it in this step so the shell that reports usage can wait for its own child.
 (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices > install.log 2>&1) &
@@ -68,9 +73,19 @@ log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACT
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
-tail -f "$RUNNER_TEMP/injected.log" 2> /dev/null | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" &
+rm -f "$RUNNER_TEMP/injected.done"
+REVIEW_ACTIONS_TOKEN="${REVIEW_ACTIONS_TOKEN:-}" bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
 INJECTED_TAIL=$!
-trap 'kill "$INJECTED_TAIL" 2> /dev/null || true' EXIT
+# Only the background log worker needs the GitHub Actions lookup credential.
+unset REVIEW_ACTIONS_TOKEN
+finish_injected() {
+  # Stop optional lookups, then drain the records already delivered, including one whose lookup is in flight.
+  if ! { touch "$RUNNER_TEMP/injected.done" && printf '%s\n' '{"review_log_end":true}' >> "$RUNNER_TEMP/injected.log"; }; then
+    kill "$INJECTED_TAIL" 2>/dev/null || true
+  fi
+  wait "$INJECTED_TAIL" 2>/dev/null || true
+}
+trap finish_injected EXIT
 review() {
 if [ -n "$FORK_KEY" ]; then
   fork=$RUNNER_TEMP/code-review-homes/$GITHUB_REPOSITORY/$FORK_KEY
