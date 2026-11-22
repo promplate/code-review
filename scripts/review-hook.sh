@@ -23,8 +23,9 @@ size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
 [ "$event" = Stop ] || [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
 # Serialize deduplication through output and receipt recording. A failed output must
 # leave the event replayable; a crash between output and receipt can still duplicate it.
-exec 9>"$RUNNER_TEMP/injected-deliveries.lock"
-flock -x 9 || exit 1
+# mkdir is the one atomic lock every runner has; flock is missing on macOS and Windows.
+until mkdir "$RUNNER_TEMP/injected-deliveries.lock" 2> /dev/null; do sleep 0.01; done
+trap 'rmdir "$RUNNER_TEMP/injected-deliveries.lock"' EXIT
 SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
