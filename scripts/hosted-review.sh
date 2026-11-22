@@ -20,7 +20,7 @@ export UV_CACHE_DIR="$RUNNER_TEMP/uv/cache" UV_TOOL_DIR="$RUNNER_TEMP/uv/tools" 
 mkdir -p "$CODEX_HOME/sessions" "$RUNNER_TEMP"
 umask 077
 rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json"
-SSE_PID= published=false check_published=false check_started=false
+SSE_PID= review_started=false published=false check_published=false check_started=false
 # Optional progress index for callers that redirect stdout and stderr to a file. The
 # newline makes each boundary safe for line-oriented readers and credential masking.
 step() {
@@ -48,6 +48,11 @@ finish_without_review() {
 cleanup() {
   code=$?
   trap - EXIT
+  # Stop hooks run before the terminal rollout record. Read it after Codex exits,
+  # and give sanitized pending metadata a bounded final delivery opportunity.
+  if [ "$review_started" = true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+    "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
+  fi
   [ -z "$SSE_PID" ] || { kill "$SSE_PID" 2>/dev/null || true; wait "$SSE_PID" 2>/dev/null || true; }
   if [ "$code" != 0 ]; then
     result failed
@@ -102,6 +107,7 @@ step configure
 . "$GITHUB_ACTION_PATH/scripts/configure-review.sh"
 export MODEL_NAME="$("$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
 step review
+review_started=true
 bash "$GITHUB_ACTION_PATH/scripts/run-review.sh"
 if [ ! -s "$RUNNER_TEMP/superseded" ]; then
   step publish-check

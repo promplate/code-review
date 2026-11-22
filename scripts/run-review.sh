@@ -2,6 +2,12 @@
 set -eo pipefail
 # Setup children must not inherit the CI-name lookup credential either.
 export -n REVIEW_ACTIONS_TOKEN
+# Actions starts this step in a fresh shell and restores the job environment;
+# configure-review.sh cannot remove inherited project credentials for this step.
+if [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+  export TRACE_TO_LANGFUSE=false
+  unset LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_CODEX_PUBLIC_KEY LANGFUSE_CODEX_SECRET_KEY
+fi
 # Self-hosted runners can retain temp files from an earlier job. Neither its verdict
 # nor its supersession marker can authorize publishing (or skipping) this review.
 rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last-message.md"
@@ -91,6 +97,10 @@ finish_injected() {
     kill "$INJECTED_TAIL" 2>/dev/null || true
   fi
   wait "$INJECTED_TAIL" 2>/dev/null || true
+  # The hosted parent flushes during cleanup. Actions runs this script directly.
+  if [ "${REVIEW_HOSTED:-}" != true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
+    "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
+  fi
 }
 trap finish_injected EXIT
 # Resend stable rules only after a policy change, compaction, or legacy/unknown restore.

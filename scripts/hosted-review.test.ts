@@ -61,6 +61,15 @@ else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
   executable("codex", `#!${process.execPath}
 if(process.argv.includes('--version')) {console.log('codex 0.169.0'); process.exit(0);}
 const mode=process.env.TEST_MODE, retry=process.argv.includes('resume');
+if(process.env.REVIEW_TRACE_RELAY_URL||process.env.TEST_TRACE_ENV==='true') await Bun.write(process.env.RUNNER_TEMP+'/trace-env.json', JSON.stringify({
+  stockEnabled:process.env.TRACE_TO_LANGFUSE, projectKeyPresent:['LANGFUSE_PUBLIC_KEY','LANGFUSE_SECRET_KEY','LANGFUSE_CODEX_PUBLIC_KEY','LANGFUSE_CODEX_SECRET_KEY'].some(key=>!!process.env[key]),
+  relayTokenPresent:!!process.env.REVIEW_TRACE_RELAY_TOKEN
+}));
+if(process.env.TEST_TRACE_ENV==='true' && process.env.REVIEW_TRACE_RELAY_URL) {
+  const timestamp=new Date().toISOString();
+  const records=[{type:'session_meta',payload:{id:'fixture'}},{type:'event_msg',payload:{type:'task_started',turn_id:'turn'}},{type:'event_msg',payload:{type:'task_complete'}}];
+  await Bun.write(process.env.CODEX_HOME+'/sessions/rollout-fixture.jsonl',records.map(record=>JSON.stringify({...record,timestamp})).join('\\n')+'\\n');
+}
 if(retry) await Bun.write(process.env.RUNNER_TEMP+'/retried','');
 if(mode==='codex-fails'||(retry&&mode==='moved-on-retry-error')) process.exit(1);
 const invalid=mode==='stale-verdict'||mode==='invalid-verdict'||mode.startsWith('moved-on-retry');
@@ -82,6 +91,90 @@ console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',tex
     REVIEW_OUTPUT_LOG:"",REVIEW_STEP_INDEX:""};
   return {head,state,temp,env,bin,checkout, run:(extra: Record<string, string> = {})=>Bun.spawnSync(["bash",join(root,"scripts/hosted-review.sh")],{cwd:checkout,env:{...env,...extra},timeout:15000})};
 }
+
+test("hosted relay disables installed content tracing and installs metadata hooks without storing its token in the session", () => {
+  const f = fixture(), now = Date.now();
+  mkdirSync(join(f.checkout, ".codex"));
+  writeFileSync(join(f.checkout, ".codex/langfuse.json"), JSON.stringify({ enabled: true, public_key: "PRIVATE_PROJECT_KEY", secret_key: "PRIVATE_PROJECT_SECRET" }));
+  const config = `model = "test-model"
+[plugins."tracing@codex-observability-plugin"]
+enabled = true
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "bun /tmp/langfuse/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs"
+`;
+  const token = "rrt_" + "a".repeat(64);
+  const result = f.run({ CODEX_CONFIG: config, LANGFUSE_PUBLIC_KEY: "PRIVATE_PROJECT_KEY", LANGFUSE_SECRET_KEY: "PRIVATE_PROJECT_SECRET",
+    LANGFUSE_CODEX_SECRET_KEY: "PRIVATE_CODEX_PROJECT_SECRET", TRACE_TO_LANGFUSE: "true",
+    REVIEW_TRACE_RELAY_URL: "http://127.0.0.1:1/trace", REVIEW_TRACE_RELAY_TOKEN: token,
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) });
+  expect(result.exitCode).toBe(0);
+  const installed = Bun.TOML.parse(readFileSync(join(f.state, "config.toml"), "utf8")) as any;
+  expect(installed.plugins["tracing@codex-observability-plugin"].enabled).toBe(false);
+  const commands = Object.values(installed.hooks).flatMap((entries: any) => entries.flatMap((entry: any) => entry.hooks.map((hook: any) => hook.command)));
+  expect(commands.filter((command: string) => command.includes("review-trace.mjs"))).toHaveLength(2);
+  expect(commands.some((command: string) => command.includes("@langfuse"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(f.temp, "trace-env.json"), "utf8"))).toEqual({ stockEnabled: "false", projectKeyPresent: false, relayTokenPresent: true });
+  expect(existsSync(join(f.temp, "langfuse"))).toBe(false);
+  expect(readFileSync(join(f.state, "config.toml"), "utf8")).not.toContain(token);
+  expect(readFileSync(join(f.temp, "review-trace/state.json"), "utf8")).not.toContain(token);
+  expect(result.stdout.toString() + result.stderr.toString()).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
+});
+
+test("a superseded attempt skips tracing restored sessions", () => {
+  const f = fixture("initial-moved"), now = Date.now();
+  const result = f.run({ REVIEW_TRACE_RELAY_URL: "http://127.0.0.1:1/trace", REVIEW_TRACE_RELAY_TOKEN: "test",
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) });
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(join(f.temp, "review-trace"))).toBe(false);
+});
+
+test.each([false, true])("Actions relay strips inherited project credentials in the fresh run step (relay: %s)", async relay => {
+  const f = fixture(), now = Date.now(), githubEnv = join(f.temp, "github-env");
+  const events: { kind: string; status: string }[] = [];
+  using receiver = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    events.push(...(await request.json()).events);
+    return new Response(null, { status: 202 });
+  } });
+  writeFileSync(githubEnv, "");
+  const jobEnv = { ...f.env, AGENT: "false", BASE: "main", GITHUB_ENV: githubEnv, GITHUB_STEP_SUMMARY: join(f.temp, "summary.md"), TEST_TRACE_ENV: "true",
+    LANGFUSE_PUBLIC_KEY: "PRIVATE_PROJECT_KEY", LANGFUSE_SECRET_KEY: "PRIVATE_PROJECT_SECRET",
+    LANGFUSE_CODEX_PUBLIC_KEY: "PRIVATE_CODEX_PROJECT_KEY", LANGFUSE_CODEX_SECRET_KEY: "PRIVATE_CODEX_PROJECT_SECRET", TRACE_TO_LANGFUSE: "true",
+    REVIEW_TRACE_RELAY_URL: relay ? new URL("/trace", receiver.url).href : "", REVIEW_TRACE_RELAY_TOKEN: relay ? "rrt_" + "a".repeat(64) : "",
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) };
+  const steps = (Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as any).runs.steps;
+  const configure = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", steps.find((step: any) => step.name === "Configure codex").run], { cwd: f.checkout, env: jobEnv, timeout: 15000 });
+  expect(configure.exitCode).toBe(0);
+  // GitHub starts the next step from the job environment plus GITHUB_ENV; a shell
+  // unset in Configure codex does not remove the original job-level credentials.
+  const persisted = Object.fromEntries(readFileSync(githubEnv, "utf8").trim().split("\n").map(line => { const at = line.indexOf("="); return [line.slice(0, at), line.slice(at + 1)]; }));
+  const child = Bun.spawn(["bash", "-eo", "pipefail", "-c", steps.find((step: any) => step.name === "Run codex review").run],
+    { cwd: f.checkout, env: { ...jobEnv, ...persisted }, stdout: "pipe", stderr: "pipe", timeout: 15000 });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exitCode, stderr).toBe(0);
+  expect(JSON.parse(readFileSync(join(f.temp, "trace-env.json"), "utf8"))).toEqual({ stockEnabled: relay ? "false" : "true", projectKeyPresent: !relay, relayTokenPresent: relay });
+  expect(events.map(event => [event.kind, event.status])).toEqual(relay ? [["turn", "success"]] : []);
+  expect(configure.stdout.toString() + configure.stderr.toString() + stdout + stderr).not.toMatch(/PRIVATE_PROJECT|PRIVATE_CODEX|rrt_/);
+});
+
+test("relay removes recognized content exporters without deleting unrelated hooks with Langfuse or Codex in their path", () => {
+  const f = fixture(), now = Date.now(), action = join(f.temp, "langfuse-codex-action");
+  symlinkSync(root, action, "dir");
+  const retained = ["bash /tmp/langfuse-codex-checks/check.sh", "python checks.py --topic langfuse-codex", "echo /tmp/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs"];
+  const removed = ["bun /tmp/langfuse/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs", 'node "/tmp/plugin cache/node_modules/@langfuse/codex-observability-plugin/dist/index.mjs"', "bun './node_modules/@langfuse/codex-observability-plugin/dist/index.mjs'"];
+  const config = Bun.TOML.stringify({ model: "test-model", hooks: { Stop: [{ hooks: [...retained, ...removed].map(command => ({ type: "command", command })) }] } });
+  const result = f.run({ GITHUB_ACTION_PATH: action, CODEX_CONFIG: config,
+    REVIEW_TRACE_RELAY_URL: "http://127.0.0.1:1/trace", REVIEW_TRACE_RELAY_TOKEN: "rrt_" + "a".repeat(64),
+    REVIEW_TRACE_RUN_STARTED_AT: String(now), REVIEW_TRACE_RELAY_EXPIRES_AT: String(now + 60_000) });
+  expect(result.exitCode).toBe(0);
+  const installed = Bun.TOML.parse(readFileSync(join(f.state, "config.toml"), "utf8")) as any;
+  const commands = Object.values(installed.hooks).flatMap((entries: any) => entries.flatMap((entry: any) => entry.hooks.map((hook: any) => hook.command)));
+  for (const command of retained) expect(commands).toContain(command);
+  for (const command of removed) expect(commands).not.toContain(command);
+  expect(commands.filter((command: string) => command === `bash ${action}/scripts/review-hook.sh`)).toHaveLength(3);
+  expect(commands.filter((command: string) => command.includes("review-trace.mjs"))).toHaveLength(2);
+});
 
 test("shared setup supplies the App identity for commits and merges in linked worktrees", () => {
   const setup = fixture("retry-identity");
