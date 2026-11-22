@@ -21,7 +21,10 @@ esac
 # An unchanged stream carries nothing new; Stop always scans so a skipped or failed delivery still reaches the review.
 size=$(wc -c < "$RUNNER_TEMP/sse.jsonl")
 [ "$event" = Stop ] || [ "$size" != "$(cat "$RUNNER_TEMP/injected.size" 2>/dev/null)" ] || exit 0
-# Receipts are append-only: parallel tool rounds cannot overwrite each other's deliveries, and a rare duplicate is preferable to a lost event.
+# Serialize deduplication through output and receipt recording. A failed output must
+# leave the event replayable; a crash between output and receipt can still duplicate it.
+exec 9>"$RUNNER_TEMP/injected-deliveries.lock"
+flock -x 9 || exit 1
 SEEN_FILE="$RUNNER_TEMP/injected-deliveries.log"
 seen='[]'
 [ ! -f "$SEEN_FILE" ] || seen=$(jq -Rsc 'split("\n") - [""]' "$SEEN_FILE") || exit 1
