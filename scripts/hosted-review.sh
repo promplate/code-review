@@ -100,7 +100,7 @@ else
 fi
 step configure
 . "$GITHUB_ACTION_PATH/scripts/configure-review.sh"
-export MODEL_NAME="$(bun -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
+export MODEL_NAME="$("$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e 'const c=Bun.TOML.parse(await Bun.file(process.argv[1]).text()); console.log(c.model || "default")' "$CODEX_HOME/config.toml")"
 step review
 bash "$GITHUB_ACTION_PATH/scripts/run-review.sh"
 if [ ! -s "$RUNNER_TEMP/superseded" ]; then
