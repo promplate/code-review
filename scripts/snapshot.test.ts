@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -71,6 +71,44 @@ test("save encrypts the session and load restores it", async () => {
   expect(readFileSync(join(target, "sessions/a.jsonl"), "utf8")).toContain("sk-live-123");
   expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
   expect(existsSync(archive)).toBe(false);
+});
+
+test.each(["false", "true"])("save prunes only obsolete reasoning in the archive (encryption=%s)", async encryption => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `sessions/2026/01/01/rollout-2026-01-01T00-00-00-${id}.jsonl`;
+  const row = (type: string, payload: unknown) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", type, payload }) + "\n";
+  const reasoning = (id: string) => ({ type: "reasoning", id, summary: [{ type: "summary_text", text: "历史摘要" }], content: [{ type: "reasoning_text", text: "old thinking" }], encrypted_content: "opaque-reasoning-body" });
+  const prefix = [
+    row("session_meta", { id, history_mode: "paginated" }),
+    row("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Keep the user's instructions." }] }),
+    row("response_item", reasoning("old")),
+    row("event_msg", { type: "item_completed", item: { type: "Reasoning", id: "old", summary_text: ["历史摘要"], raw_content: ["old thinking"] } }),
+  ];
+  const current = [
+    row("compacted", { message: "checkpoint", replacement_history: [], window_number: 1, guardian_history: [reasoning("guardian")] }),
+    row("response_item", reasoning("current")),
+  ];
+  const original = prefix.concat(current).join("");
+  const source = home({ [path]: original, "last-thread-id": id }), target = home({}), temporary = home({});
+  const archive = join(home({}), "snapshot.bin");
+  const env = { ENCRYPT_SNAPSHOTS: encryption, TMPDIR: temporary };
+  expect((await run(["save", archive, source], "23", env)).exitCode).toBe(0);
+  expect(readFileSync(join(source, path), "utf8")).toBe(original);
+  expect(readdirSync(temporary)).toEqual([]);
+  expect((await run(["load", archive, target], "23", env)).exitCode).toBe(0);
+  const restored = readFileSync(join(target, path), "utf8").split(/(?<=\n)/);
+  expect(restored.map(line => Buffer.byteLength(line))).toEqual(prefix.concat(current).map(line => Buffer.byteLength(line)));
+  expect(restored.slice(0, 2)).toEqual(prefix.slice(0, 2));
+  expect(restored.slice(prefix.length)).toEqual(current);
+  expect(JSON.parse(restored[2]).payload).toEqual({ ...reasoning("old"), summary: [], content: null, encrypted_content: null });
+  expect(JSON.parse(restored[3]).payload.item).toEqual({ type: "Reasoning", id: "old", summary_text: [], raw_content: [] });
+  // Even a key failure after cleanup must leave the live session intact.
+  if (encryption === "true") {
+    expect((await run(["save", archive, source], "broken", env)).exitCode).not.toBe(0);
+    expect(existsSync(archive)).toBe(false);
+    expect(readFileSync(join(source, path), "utf8")).toBe(original);
+    expect(readdirSync(temporary)).toEqual([]);
+  }
 });
 
 test("a modified archive or another repository's key restores nothing", async () => {
