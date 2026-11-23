@@ -231,11 +231,15 @@ function pruneLine(raw: Buffer): { bytes: Buffer; removed: number } | undefined 
   const payloadSpan = field(text, root, "payload")!;
   function reasoning(span: Span, item: Record<string, any>, completed = false) {
     for (const [key, value] of members(text, span)) {
-      const replacement = completed
-        ? (key === "summary_text" || key === "raw_content") && Array.isArray(item[key]) && item[key].length ? "[]" : undefined
-        : key === "summary" && Array.isArray(item.summary) && item.summary.length ? "[]"
-          : key === "content" && Array.isArray(item.content) ? "null"
-            : key === "encrypted_content" && typeof item.encrypted_content === "string" && item.encrypted_content.length ? "null" : undefined;
+      let replacement: string | undefined;
+      if (completed) {
+        if ((key === "summary_text" || key === "raw_content") && Array.isArray(item[key]) && item[key].length) replacement = "[]";
+      } else if (key === "summary" && Array.isArray(item.summary) && item.summary.length) replacement = "[]";
+      else if (key === "content" && Array.isArray(item.content)) replacement = "null";
+      else if (key === "encrypted_content" && typeof item.encrypted_content === "string" && item.encrypted_content.length) {
+        // A one- or two-character body can be shorter on disk than the null placeholder.
+        replacement = value.end - value.start > 4 ? "null" : '""';
+      }
       if (replacement && value.end - value.start > replacement.length) edits.push({ ...value, value: replacement });
     }
   }

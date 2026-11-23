@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -90,12 +90,14 @@ test.each(["false", "true"])("save prunes only obsolete reasoning in the archive
   ];
   const original = prefix.concat(current).join("");
   const source = home({ [path]: original, "last-thread-id": id }), target = home({}), temporary = home({});
+  utimesSync(join(source, "sessions/2026"), 1_700_000_000, 1_700_000_000);
   const archive = join(home({}), "snapshot.bin");
   const env = { ENCRYPT_SNAPSHOTS: encryption, TMPDIR: temporary };
   expect((await run(["save", archive, source], "23", env)).exitCode).toBe(0);
   expect(readFileSync(join(source, path), "utf8")).toBe(original);
   expect(readdirSync(temporary)).toEqual([]);
   expect((await run(["load", archive, target], "23", env)).exitCode).toBe(0);
+  expect(statSync(join(target, "sessions/2026")).mtimeMs).toBe(1_700_000_000_000);
   const restored = readFileSync(join(target, path), "utf8").split(/(?<=\n)/);
   expect(restored.map(line => Buffer.byteLength(line))).toEqual(prefix.concat(current).map(line => Buffer.byteLength(line)));
   expect(restored.slice(0, 2)).toEqual(prefix.slice(0, 2));
@@ -108,6 +110,38 @@ test.each(["false", "true"])("save prunes only obsolete reasoning in the archive
     expect(existsSync(archive)).toBe(false);
     expect(readFileSync(join(source, path), "utf8")).toBe(original);
     expect(readdirSync(temporary)).toEqual([]);
+  }
+});
+
+test.each(["read-only directory", "hard link"])("saves a session containing a %s intact", async kind => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `sessions/rollout-2026-01-01T00-00-00-${id}.jsonl`;
+  const rollout = [
+    { type: "session_meta", payload: { id, history_mode: "paginated" } },
+    { type: "response_item", payload: { type: "reasoning", summary: [], encrypted_content: "historical reasoning" } },
+    { type: "compacted", payload: { message: "", window_number: 1, replacement_history: [] } },
+  ].map((row, ordinal) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", ordinal, ...row }) + "\n").join("");
+  const source = home({ [path]: rollout, "sessions/nested/receipt": "saved" }), target = home({}), temporary = home({});
+  const archive = join(home({}), "snapshot.bin");
+  const nested = "sessions/nested", receipt = nested + "/receipt", alias = nested + "/copy";
+  if (kind === "hard link") linkSync(join(source, receipt), join(source, alias));
+  else chmodSync(join(source, nested), 0o555);
+  try {
+    expect((await run(["save", archive, source], "23", { TMPDIR: temporary })).exitCode).toBe(0);
+    expect(readdirSync(temporary)).toEqual([]);
+    expect((await run(["load", archive, target])).exitCode).toBe(0);
+    expect(readFileSync(join(target, path), "utf8")).toBe(rollout);
+    expect(readFileSync(join(target, receipt), "utf8")).toBe("saved");
+    if (kind === "hard link") expect(statSync(join(target, alias)).ino).toBe(statSync(join(target, receipt)).ino);
+    else expect(statSync(join(target, nested)).mode & 0o777).toBe(0o555);
+  } finally {
+    // The test runner owns these fixtures and must be able to remove their contents.
+    chmodSync(join(source, nested), 0o700);
+    if (existsSync(join(target, nested))) chmodSync(join(target, nested), 0o700);
+    for (const entry of readdirSync(temporary)) {
+      const staged = join(temporary, entry, nested);
+      if (existsSync(staged)) chmodSync(staged, 0o700);
+    }
   }
 });
 

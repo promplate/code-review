@@ -66,6 +66,14 @@ test("an early fork preserves its parent's earlier checkpoint and suffix, across
   expect(readFileSync(f.file).subarray(Buffer.byteLength(parentRows.slice(0, 2).join("")))).toEqual(f.before.subarray(Buffer.byteLength(parentRows.slice(0, 2).join(""))));
 });
 
+test.each(["x", "xy"])("clears a short obsolete reasoning body %s without moving its checkpoint", async body => {
+  const old = row("response_item", { type: "reasoning", summary: [], encrypted_content: body });
+  const f = fixture(a, [meta(a), old, compact("current")]);
+  expect(await pruneSnapshotReasoning(f.directory)).toMatchObject({ records: 1 });
+  expect(records(f.file)[1].payload.encrypted_content).toBe("");
+  expect(sizes(readFileSync(f.file))).toEqual(sizes(f.before));
+});
+
 test.each(["none", "incomplete", "legacy", "malformed", "partial", "rollback"])("preserves %s history instead of guessing a boundary", async kind => {
   const rows = [meta(a), row("response_item", reasoning("old"))];
   if (kind !== "none") rows.push(compact("earlier"));

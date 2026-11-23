@@ -2,7 +2,7 @@
 // artifacts can download them. The broker derives the key from the repository alone, so changing the App,
 // the provider or the model never strands an older snapshot.
 // Usage: snapshot.ts save <archive> <dir> [path...]  |  snapshot.ts load <archive> <dir>
-import { appendFileSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { pruneSnapshotReasoning } from "./snapshot-reasoning";
@@ -47,13 +47,27 @@ async function pack(paths: string[]) {
       && paths.every(path => !isAbsolute(path) && !path.split(/[\\/]/).includes(".."))) {
       try {
         staging = mkdtempSync(join(tmpdir(), "review-snapshot-"));
+        const directories: { path: string; atime: number; mtime: number }[] = [];
         for (const path of paths) cpSync(join(dir, path), join(staging, path), {
           recursive: true, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+          filter(from, to) {
+            const stat = lstatSync(from);
+            if (stat.isDirectory()) {
+              // cpSync copies the directory mode. A read-only staging directory can strand plaintext during cleanup.
+              if ((stat.mode & 0o700) !== 0o700) throw new Error("Cannot clean up a protected directory copy");
+              directories.push({ path: to, atime: stat.atimeMs / 1000, mtime: stat.mtimeMs / 1000 });
+            } else if (!stat.isFile() || stat.nlink > 1) throw new Error("Archive linked or special files directly");
+            return true;
+          },
         });
         const result = await pruneSnapshotReasoning(join(staging, "sessions"));
-        if (result.records) console.log(`Cleared obsolete reasoning in ${result.records} records across ${result.files} rollouts.`);
+        if (result.records) {
+          // cpSync preserves regular file times, but creating children changes the copied directories' mtimes.
+          for (const { path, atime, mtime } of directories) utimesSync(path, atime, mtime);
+          source = staging;
+          console.log(`Cleared obsolete reasoning in ${result.records} records across ${result.files} rollouts.`);
+        }
         if (result.skippedReason) console.log(`Kept snapshot reasoning: ${result.skippedReason}.`);
-        source = staging;
       } catch {
         // Cleanup is optional; an unknown or unreadable history must still be saved intact.
         console.warn("Could not prune snapshot reasoning; archiving the original session.");
