@@ -63,16 +63,65 @@ function checkpointItem(item: any): boolean {
   }
 }
 
+// Codex skips a `compacted` record it cannot deserialize, which revives the pre-compaction
+// reasoning that pruning already erased. The checks below mirror the codex-rs 0.171.0 wire
+// structs: unknown fields pass (serde ignores them), known fields must carry their wire
+// type, and fields without a serde default must be present. Compound shapes (RetainedSource,
+// TokenUsage bodies, enums) are only checked for their JSON kind.
+const flag = (value: any) => typeof value === "boolean";
+const signed = (value: any) => Number.isSafeInteger(value);
+const nullable = (valid: (value: any) => boolean) => (value: any) => value == null || valid(value);
+const wire = (value: any, schema: Record<string, (field: any) => boolean>, required: string[] = []) =>
+  object(value) && required.every(key => key in value)
+  && Object.entries(value).every(([key, field]) => !(key in schema) || schema[key](field));
+
+function harnessMetadata(value: any): boolean {
+  return wire(value, {
+    history_sequence: nullable(integer), sampled_through_sequence: nullable(integer), user_input_order: nullable(integer),
+    fallback_token_limit_override: nullable(integer), delivered_assistant_message: nullable(string), compaction_model_hash: nullable(string),
+    realtime_handoff: object, realtime_session_input: object, guardian_retained_omissions: object, sender_user_messages: object,
+    image_replay_sources: Array.isArray, guardian_sources: Array.isArray, guardian_review_ids: Array.isArray,
+    realtime_session_end_input: flag, guardian_source_order_guidance: flag, additional_context_tool_output: flag, client_authored: flag,
+    retain_across_windows: nullable(flag), retain_in_children: nullable(flag), tool_audio_budget_applied: flag,
+    delivered_assistant_message_incomplete: flag, harness_authored_configuration: flag, compaction_without_file_error_sources: flag,
+    compaction_output: flag, inherited_user_message: flag,
+  });
+}
+
+function resumeMetadata(value: any): boolean {
+  return wire(value, {
+    next_item_ordinal: nullable(integer), observation_clock_floor_ms: nullable(signed), last_started_turn_id: nullable(string),
+    rejected_audio_file_ids: (field: any) => Array.isArray(field) && field.every(string),
+    dynamic_tools: object, turn_attribution: object,
+    previous_turn_settings: (field: any) => wire(field, { model: string, comp_hash: nullable(string), realtime_active: nullable(flag) }, ["model"]),
+  });
+}
+
+function retainedContext(value: any): boolean {
+  return wire(value, {
+    accepted_file_audio: object, verified_answers: Array.isArray, user_messages: Array.isArray, assistant_messages: Array.isArray,
+    sender_deliveries: Array.isArray, message_retention: object, incomplete: flag, user_messages_incomplete: flag,
+    assistant_messages_incomplete: flag, next_order: integer,
+  }, ["verified_answers", "incomplete"]);
+}
+
+function tokenUsageRecord(value: any): boolean {
+  return wire(value, {
+    thread_id: string, turn_id: string, session_id: string, root_turn_id: string, response_id: string,
+    usage: object, turn_token_usage: object, thread_token_usage: object,
+  }, ["thread_id", "turn_id", "session_id", "root_turn_id", "response_id", "usage", "turn_token_usage", "thread_token_usage"]);
+}
+
 function completeCheckpoint(payload: Record<string, any>): boolean {
   const history = payload.replacement_history, metadata = payload.replacement_history_metadata;
   return string(payload.message) && integer(payload.window_number)
     && Array.isArray(history) && history.every(checkpointItem)
-    && optional(metadata, value => Array.isArray(value) && value.length === history.length && value.every(object))
+    && optional(metadata, value => Array.isArray(value) && value.length === history.length && value.every(harnessMetadata))
     && optional(payload.guardian_history, value => Array.isArray(value) && value.every(checkpointItem))
     && [payload.first_window_id, payload.previous_window_id, payload.compaction_response_id].every(value => optional(value, string))
     && optional(payload.window_id, value => string(value) || integer(value))
-    && [payload.retained_context, payload.resume_metadata, payload.latest_token_usage_record]
-      .every(value => optional(value, object));
+    && optional(payload.retained_context, retainedContext) && optional(payload.resume_metadata, resumeMetadata)
+    && optional(payload.latest_token_usage_record, tokenUsageRecord);
 }
 
 async function* lines(path: string): AsyncGenerator<Buffer> {

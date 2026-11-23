@@ -98,7 +98,7 @@ test("an incomplete child checkpoint requires full replay of its ancestors", asy
   expect(readFileSync(child)).toEqual(beforeChild);
 });
 
-test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
+test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item", "history-sequence", "next-item-ordinal", "token-usage", "retained-context"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
   const checkpoint = JSON.parse(compact("latest"));
   if (kind === "timestamp") delete checkpoint.timestamp;
   if (kind === "message") checkpoint.payload.message = 42;
@@ -113,9 +113,24 @@ test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item",
   if (kind === "tool-call") checkpoint.payload.guardian_history = [{ type: "function_call", name: "exec", call_id: "call" }];
   if (kind === "tool-output") checkpoint.payload.guardian_history = [{ type: "custom_tool_call_output", call_id: "call", output: {} }];
   if (kind === "unknown-item") checkpoint.payload.replacement_history = [{ type: "future_state" }];
+  if (kind === "history-sequence") checkpoint.payload.replacement_history_metadata = [{ history_sequence: "5" }];
+  if (kind === "next-item-ordinal") checkpoint.payload.resume_metadata = { next_item_ordinal: "broken" };
+  if (kind === "token-usage") checkpoint.payload.latest_token_usage_record = {};
+  if (kind === "retained-context") checkpoint.payload.retained_context = { verified_answers: [] };
   const f = fixture(a, [meta(a), row("response_item", reasoning("still-needed")), JSON.stringify(checkpoint) + "\n"]);
   expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
   expect(readFileSync(f.file)).toEqual(f.before);
+});
+
+test("prunes behind a checkpoint whose metadata carries its wire types", async () => {
+  const checkpoint = JSON.parse(compact("latest"));
+  checkpoint.payload.replacement_history_metadata = [{ history_sequence: 9, sampled_through_sequence: 7, fallback_token_limit_override: 100 }];
+  checkpoint.payload.resume_metadata = { next_item_ordinal: 24, rejected_audio_file_ids: ["file"], previous_turn_settings: { model: "gpt-6", realtime_active: false } };
+  checkpoint.payload.latest_token_usage_record = { thread_id: a, turn_id: "turn", session_id: "session", root_turn_id: "root", response_id: "response", usage: {}, turn_token_usage: {}, thread_token_usage: {} };
+  checkpoint.payload.retained_context = { verified_answers: [], incomplete: false, next_order: 2 };
+  const f = fixture(a, [meta(a), row("response_item", reasoning("old")), JSON.stringify(checkpoint) + "\n"]);
+  expect(await pruneSnapshotReasoning(f.directory)).toMatchObject({ files: 1, records: 1 });
+  expect(readFileSync(f.file)).not.toContain("summary old");
 });
 
 test("preserves multimodal checkpoint content while pruning its obsolete prefix", async () => {
