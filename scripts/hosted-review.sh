@@ -23,10 +23,11 @@ rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.
 SSE_PID= review_started=false published=false check_published=false check_started=false
 # Optional progress index for callers that redirect stdout and stderr to a file. The
 # newline makes each boundary safe for line-oriented readers and credential masking.
+# Keep the timestamp with the boundary so hosts do not infer transitions from polling.
 step() {
-  local offset
+  local offset at
   if [ -n "${REVIEW_STEP_INDEX:-}" ] && [ -n "${REVIEW_OUTPUT_LOG:-}" ]; then
-    { printf '\n' && offset=$(wc -c < "$REVIEW_OUTPUT_LOG") && printf '%s %s\n' "$1" "$((offset))" >> "$REVIEW_STEP_INDEX"; } || true
+    { printf '\n' && offset=$(wc -c < "$REVIEW_OUTPUT_LOG") && at=$(jq -n 'now * 1000 | floor') && printf '%s %s %s\n' "$1" "$((offset))" "$at" >> "$REVIEW_STEP_INDEX"; } || true
   fi
 }
 retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "$@"; }
