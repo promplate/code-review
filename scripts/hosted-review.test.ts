@@ -433,6 +433,9 @@ test("the optional hosted step index points into the combined process log", () =
   const offsets = rows.map(([, value]) => Number(value));
   expect(offsets).toEqual([...new Set(offsets)].sort((a, b) => a - b));
   expect(offsets.every(offset => log[offset - 1] === 10)).toBe(true);
+  const times = rows.map(([, , value]) => Number(value));
+  expect(times.every(value => Number.isSafeInteger(value) && value > 0)).toBe(true);
+  expect(times).toEqual([...times].sort((a, b) => a - b));
   const review = rows.findIndex(([step]) => step === "review");
   expect(log.subarray(offsets[review], offsets[review + 1]).length).toBeGreaterThan(1);
 });
