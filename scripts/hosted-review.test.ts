@@ -248,7 +248,7 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
 `);
   }
   if (entry === "hosted") {
-    const review = setup.run(env);
+    const { result: review } = runIndexed(setup, env);
     expect({ exitCode: review.exitCode, preload: existsSync(marker) }).toEqual({ exitCode: 0, preload: false });
   } else {
     const action = Bun.YAML.parse(readFileSync(join(root, "action.yml"), "utf8")) as {
@@ -420,12 +420,9 @@ test("initial lookup failures leave supplied published checks untouched", () => 
 });
 
 test("the optional hosted step index points into the combined process log", () => {
-  const setup = fixture(), output = join(setup.temp, "output.log"), index = join(setup.temp, "steps");
-  const fd = openSync(output, "w");
-  const result = Bun.spawnSync(["bash", join(root, "scripts/hosted-review.sh")], {
-    cwd: setup.checkout, env: { ...setup.env, REVIEW_OUTPUT_LOG: output, REVIEW_STEP_INDEX: index }, stdout: fd, stderr: fd, timeout: 15000,
-  });
-  closeSync(fd);
+  const setup = fixture(), started = Date.now();
+  const { result, output, index } = runIndexed(setup);
+  const finished = Date.now();
   expect(result.exitCode).toBe(0);
   const rows = readFileSync(index, "utf8").trim().split("\n").map(line => line.split(" "));
   const log = readFileSync(output);
@@ -434,8 +431,21 @@ test("the optional hosted step index points into the combined process log", () =
   expect(offsets).toEqual([...new Set(offsets)].sort((a, b) => a - b));
   expect(offsets.every(offset => log[offset - 1] === 10)).toBe(true);
   const times = rows.map(([, , value]) => Number(value));
-  expect(times.every(value => Number.isSafeInteger(value) && value > 0)).toBe(true);
+  expect(times.every(value => Number.isSafeInteger(value) && value >= started && value <= finished)).toBe(true);
   expect(times).toEqual([...times].sort((a, b) => a - b));
   const review = rows.findIndex(([step]) => step === "review");
   expect(log.subarray(offsets[review], offsets[review + 1]).length).toBeGreaterThan(1);
 });
+
+function runIndexed(setup: ReturnType<typeof fixture>, env = setup.env) {
+  const output = join(setup.temp, "output.log"), index = join(setup.temp, "steps");
+  const fd = openSync(output, "w");
+  try {
+    const result = Bun.spawnSync(["bash", join(root, "scripts/hosted-review.sh")], {
+      cwd: setup.checkout, env: { ...env, REVIEW_OUTPUT_LOG: output, REVIEW_STEP_INDEX: index }, stdout: fd, stderr: fd, timeout: 15000,
+    });
+    return { result, output, index };
+  } finally {
+    closeSync(fd);
+  }
+}

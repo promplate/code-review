@@ -27,7 +27,7 @@ SSE_PID= review_started=false published=false check_published=false check_starte
 step() {
   local offset at
   if [ -n "${REVIEW_STEP_INDEX:-}" ] && [ -n "${REVIEW_OUTPUT_LOG:-}" ]; then
-    { printf '\n' && offset=$(wc -c < "$REVIEW_OUTPUT_LOG") && at=$(bun -e 'console.log(Date.now())') && printf '%s %s %s\n' "$1" "$((offset))" "$at" >> "$REVIEW_STEP_INDEX"; } || true
+    { printf '\n' && offset=$(wc -c < "$REVIEW_OUTPUT_LOG") && at=$(jq -n 'now * 1000 | floor') && printf '%s %s %s\n' "$1" "$((offset))" "$at" >> "$REVIEW_STEP_INDEX"; } || true
   fi
 }
 retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "$@"; }
