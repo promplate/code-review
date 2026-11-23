@@ -126,7 +126,8 @@ test("prunes behind a checkpoint whose metadata carries its wire types", async (
   const checkpoint = JSON.parse(compact("latest"));
   checkpoint.payload.replacement_history_metadata = [{ history_sequence: 9, sampled_through_sequence: 7, fallback_token_limit_override: 100 }];
   checkpoint.payload.resume_metadata = { next_item_ordinal: 24, rejected_audio_file_ids: ["file"], previous_turn_settings: { model: "gpt-6", realtime_active: false } };
-  checkpoint.payload.latest_token_usage_record = { thread_id: a, turn_id: "turn", session_id: "session", root_turn_id: "root", response_id: "response", usage: {}, turn_token_usage: {}, thread_token_usage: {} };
+  const usage = { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 3 };
+  checkpoint.payload.latest_token_usage_record = { thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage, turn_token_usage: usage, thread_token_usage: usage };
   checkpoint.payload.retained_context = { verified_answers: [], incomplete: false, next_order: 2 };
   const f = fixture(a, [meta(a), row("response_item", reasoning("old")), JSON.stringify(checkpoint) + "\n"]);
   expect(await pruneSnapshotReasoning(f.directory)).toMatchObject({ files: 1, records: 1 });
