@@ -24,6 +24,13 @@ def jsontext: gsub(
   else "\u001b[33m\(.num)\u001b[0m" end);
 # A result that is JSON gets the same colouring; anything else stays grey.
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
+# Keep each operation recognizable when the viewer strips ANSI colours.
+def edit_mark: ({add: "\u001b[32m+\u001b[0m", update: "\u001b[33m~\u001b[0m", delete: "\u001b[31m-\u001b[0m"}[. // ""] // . // "?");
+def edit_path: "\(.kind | edit_mark) \(.path)";
+def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
+# A reset also keeps the final whitespace cleanup from trimming diff context.
+def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "" end)\(.)\u001b[0m";
+def edit_body: edit_path + (if .patch then " \(.patch | edit_stats)" + (.patch.lines | map("\n" + edit_line) | join("")) else "" end);
 # Item titles are data too; break command markers there and suppress commands while printing their bodies.
 def fold($title; $body):
   ($body | gsub("\r"; "")) as $out
@@ -66,11 +73,13 @@ fromjson? // {type: "error", message: .}
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
       + "\n::endgroup::")
-  # A file edit folds its paths; the event carries the patch status, not the diff.
+  # The transcript supplies patch contents for successful edits when they can be paired with the exec stream.
   elif .type == "item.completed" and .item.type == "file_change" then
-    (.item.changes // [] | map("\(.kind) \(.path)")) as $changes
-    | fold("\(if .item.status == "failed" then "\u001b[31m" else "" end)edit \(if ($changes | length) > 4 then "\($changes | length) files" else ($changes | join(", ")) end)\(if .item.status == "failed" then "\u001b[0m" else "" end)";
-      if ($changes | length) == 0 then "" else ($changes | join("\n") | dim) end)
+    (.item.changes // []) as $changes
+    | ($changes | length) as $count
+    | (if $count == 0 or $count > 4 then "\($count) files" else ($changes | map(edit_path) | join(", ")) end) as $preview
+    | (if $count > 0 and all($changes[]; .patch != null) then ($changes | {added: (map(.patch.added) | add), removed: (map(.patch.removed) | add)} | " (\(edit_stats))") else "" end) as $stats
+    | fold("\u001b[36medit\u001b[0m \(if .item.status == "failed" then "\u001b[31m[failed]\u001b[0m " else "" end)\($preview)\($stats)"; $changes | map(edit_body) | join("\n"))
   # A search folds its query and results; the other actions name their target instead.
   elif .type == "item.completed" and .item.type == "web_search" then
     .item as $search

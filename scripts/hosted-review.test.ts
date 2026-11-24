@@ -281,9 +281,13 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   const calls = readFileSync(log, "utf8").trimEnd().split("\n").map(line => line.split("\t"))
     .filter(([cwd, arg]) => cwd === setup.checkout && arg !== "--version");
   const launch = launcher === "npm" ? [codex] : [];
-  expect(calls).toEqual([
+  const args = (entrypoint: string) => [setup.checkout, `--config=${join(actionPath, "scripts", "review-bun.toml")}`, entrypoint];
+  const patches = join(actionPath, "scripts", "codex-patches.mjs");
+  // The two sides of the review pipeline can start in either order.
+  expect(calls.filter(call => call[2] === patches)).toEqual([args(patches)]);
+  expect(calls.filter(call => call[2] !== patches)).toEqual([
     ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
-  ].map(arg => [setup.checkout, `--config=${join(actionPath, "scripts", "review-bun.toml")}`, arg]));
+  ].map(args));
 });
 
 test("a head that moves during hosted review is superseded without publishing a review", () => {

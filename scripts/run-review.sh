@@ -82,7 +82,8 @@ fresh() {
   ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} ${SCHEMA[@]+"${SCHEMA[@]}"} \
     "$OPEN"
 }
-log() { jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
+codex_patches() { "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/codex-patches.mjs" "$@"; }
+log() { codex_patches "${1:-}" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
@@ -134,7 +135,11 @@ else
 fi
 }
 ran=0
-review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
+baseline=
+if [ -z "$FORK_KEY" ] && [ -s "$CODEX_HOME/last-thread-id" ]; then
+  baseline=$(codex_patches --baseline "$(cat "$CODEX_HOME/last-thread-id")")
+fi
+review < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log "$baseline" && ran=1
 # A thread recorded under another model or provider cannot be replayed or resumed; its work is lost, the review is not.
 # Only a failed resume itself counts: the same words inside agent output are not a reason to start over.
 if grep -Eq '^(Error: .*|.*"type":"(error|turn\.failed)".*)(unsupported_persisted_item_context|modelProviderMismatch)' "$RUNNER_TEMP/codex.jsonl"; then
@@ -170,12 +175,13 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
     # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
     if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
     echo "::warning::Codex ended without a verdict; asking for the review object once."
+    baseline=$(codex_patches --baseline "$(cat "$CODEX_HOME/last-thread-id")")
     ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
       --output-schema "$GITHUB_ACTION_PATH/review-schema.json" \
       --output-last-message "$RUNNER_TEMP/review.json" \
       "$(cat "$CODEX_HOME/last-thread-id")" \
       "Reply with the full review JSON for $SUBJECT now, running no further commands, with every field named as in $GITHUB_ACTION_PATH/review-schema.json. Include a commits entry for $HEAD_SHA — the commit this run publishes for. Put whatever remains unknown into the summary and judge on what you verified." \
-      < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" || {
+      < /dev/null 2>&1 | tee -a "$RUNNER_TEMP/codex.jsonl" | log "$baseline" || {
         retry_status=$?
         supersede_stale_hosted_check
         [ -s "$RUNNER_TEMP/superseded" ] || exit "$retry_status"

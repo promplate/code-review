@@ -189,7 +189,7 @@ test("a timed-out CI lookup cannot drop the final event or hold the worker open"
 test.each(["job-token", ""])("the review isolates its optional Actions credential (%j)", token => {
   const { dir, env } = fixture({ 100: { body: run() } }, { REVIEW_ACTIONS_TOKEN: token });
   writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "opened", sender: { login: "alice" }, issue: { number: 7 } }));
-  writeFileSync(join(dir, "bun"), '#!/usr/bin/env bash\nprintf "%s\\n" "${REVIEW_ACTIONS_TOKEN-unset}" >> "$RUNNER_TEMP/price-tokens"\n');
+  writeFileSync(join(dir, "bun"), `#!/usr/bin/env bash\nif [[ $1 == --config=* ]]; then exec '${process.execPath}' "$@"; fi\nprintf "%s\\n" "\${REVIEW_ACTIONS_TOKEN-unset}" >> "$RUNNER_TEMP/price-tokens"\n`);
   writeFileSync(join(dir, "codex"), `#!${process.execPath}
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const dir = process.env.RUNNER_TEMP;
