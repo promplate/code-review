@@ -99,7 +99,7 @@ runs:
         [ -z "$DISPATCHED_PR" ] || [ -z "$DISPATCHED_ISSUE" ] || { echo "::error::Name either pr or issue, not both."; exit 1; }
         # The group uses the input verbatim; leading zeros would put the API's canonical number in another group.
         for target in "$DISPATCHED_PR" "$DISPATCHED_ISSUE"; do
-          [ -z "$target" ] || [[ "$target" =~ ^0*[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
+          [ -z "$target" ] || [[ "$target" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
         done
         number=${DISPATCHED_PR:-${DISPATCHED_ISSUE:-$number}}
         # An event on a plain issue is not a review: the agent works on the default branch and decides what, if anything, to do about it.
@@ -657,7 +657,7 @@ runs:
       run: |
         [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
         # upload-artifact truncates fractions, so a sub-day value would select the repository default.
-        if [[ -n "$DEBUG_RETENTION_DAYS" && ! "$DEBUG_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+        if [[ -n "$DEBUG_RETENTION_DAYS" && ! "$DEBUG_RETENTION_DAYS" =~ ^0*[1-9][0-9]*$ ]]; then
           echo "::warning::Skipping debug events: debug-retention-days must be a positive whole number."
           exit 0
         fi
