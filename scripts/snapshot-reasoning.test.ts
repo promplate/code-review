@@ -98,7 +98,7 @@ test("an incomplete child checkpoint requires full replay of its ancestors", asy
   expect(readFileSync(child)).toEqual(beforeChild);
 });
 
-test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item", "history-sequence", "next-item-ordinal", "token-usage", "retained-context"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
+test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item", "history-sequence", "next-item-ordinal", "token-usage", "retained-context", "guardian-sources", "dynamic-tools", "verified-answers", "usage-counters"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
   const checkpoint = JSON.parse(compact("latest"));
   if (kind === "timestamp") delete checkpoint.timestamp;
   if (kind === "message") checkpoint.payload.message = 42;
@@ -117,6 +117,12 @@ test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item",
   if (kind === "next-item-ordinal") checkpoint.payload.resume_metadata = { next_item_ordinal: "broken" };
   if (kind === "token-usage") checkpoint.payload.latest_token_usage_record = {};
   if (kind === "retained-context") checkpoint.payload.retained_context = { verified_answers: [] };
+  if (kind === "guardian-sources") checkpoint.payload.replacement_history_metadata = [{ guardian_sources: [null] }];
+  if (kind === "dynamic-tools") checkpoint.payload.resume_metadata = { dynamic_tools: {} };
+  if (kind === "verified-answers") checkpoint.payload.retained_context = { verified_answers: [{}], incomplete: false };
+  if (kind === "usage-counters") checkpoint.payload.latest_token_usage_record = {
+    thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage: {}, turn_token_usage: {}, thread_token_usage: {},
+  };
   const f = fixture(a, [meta(a), row("response_item", reasoning("still-needed")), JSON.stringify(checkpoint) + "\n"]);
   expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
   expect(readFileSync(f.file)).toEqual(f.before);

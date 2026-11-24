@@ -64,64 +64,93 @@ function checkpointItem(item: any): boolean {
 }
 
 // Codex skips a `compacted` record it cannot deserialize, which revives the pre-compaction
-// reasoning that pruning already erased. The checks below mirror the codex-rs 0.171.0 wire
-// structs: unknown fields pass (serde ignores them), known fields must carry their wire
-// type, and fields without a serde default must be present. Compound shapes (RetainedSource,
-// TokenUsage bodies, enums) are only checked for their JSON kind.
-const flag = (value: any) => typeof value === "boolean";
-const signed = (value: any) => Number.isSafeInteger(value);
-const nullable = (valid: (value: any) => boolean) => (value: any) => value == null || valid(value);
-const wire = (value: any, schema: Record<string, (field: any) => boolean>, required: string[] = []) =>
-  object(value) && required.every(key => key in value)
-  && Object.entries(value).every(([key, field]) => !(key in schema) || schema[key](field));
+// reasoning that pruning already erased. These checks mirror the codex-rs 0.171.0 wire
+// structs: serde ignores fields a struct does not declare, so unknown keys pass, but every
+// declared key must carry its wire type, and only `Option` and `#[serde(default)]` fields
+// may be absent. Anything not validated here must keep the history, never guess.
+type Check = (value: any) => boolean;
+const str: Check = value => typeof value === "string";
+const bool: Check = value => typeof value === "boolean";
+const uint: Check = value => Number.isSafeInteger(value) && value >= 0;
+const signed: Check = value => Number.isSafeInteger(value);
+const maybe = (check: Check): Check => value => value == null || check(value);
+const list = (check: Check): Check => value => Array.isArray(value) && value.every(check);
+const oneOf = (...values: string[]): Check => value => values.includes(value);
+const anyValue: Check = () => true;
+const windowId: Check = value => typeof value === "string" || uint(value) || object(value);
+const struct = (fields: Record<string, Check>, required: string[] = []): Check => value =>
+  object(value) && required.every(key => key in value) && Object.entries(value).every(([key, field]) => !(key in fields) || fields[key](field));
+// `Ordered<T>` flattens its value beside the order bookkeeping.
+const ordered = (item: Check): Check => value => item(value) && struct({ revision: maybe(str), inherited: bool, order: uint })(value);
 
-function harnessMetadata(value: any): boolean {
-  return wire(value, {
-    history_sequence: nullable(integer), sampled_through_sequence: nullable(integer), user_input_order: nullable(integer),
-    fallback_token_limit_override: nullable(integer), delivered_assistant_message: nullable(string), compaction_model_hash: nullable(string),
-    realtime_handoff: object, realtime_session_input: object, guardian_retained_omissions: object, sender_user_messages: object,
-    image_replay_sources: Array.isArray, guardian_sources: Array.isArray, guardian_review_ids: Array.isArray,
-    realtime_session_end_input: flag, guardian_source_order_guidance: flag, additional_context_tool_output: flag, client_authored: flag,
-    retain_across_windows: nullable(flag), retain_in_children: nullable(flag), tool_audio_budget_applied: flag,
-    delivered_assistant_message_incomplete: flag, harness_authored_configuration: flag, compaction_without_file_error_sources: flag,
-    compaction_output: flag, inherited_user_message: flag,
-  });
-}
+const retainedSource = struct({
+  id: struct({ message_id: str, turn_id: str, role: oneOf("user", "assistant") }, ["message_id", "turn_id", "role"]),
+  revision: str, complete: bool,
+}, ["id", "revision", "complete"]);
+const senderMessages = struct({ receiver_turn_id: str, receiver_message_id: str, text: str }, ["receiver_turn_id", "receiver_message_id", "text"]);
+const imageReplaySource = struct({ prepared_url_digest: list(uint), detail: maybe(str), original_data_url: str }, ["prepared_url_digest", "original_data_url"]);
+const userMessage = struct({
+  turn_id: str, message_id: maybe(str), text: str, complete: bool, origin: maybe(oneOf("user", "heartbeat")), phase: maybe(str),
+}, ["turn_id", "text", "complete"]);
+const verifiedAnswer = struct({
+  turn_id: str, call_id: str, questions: list(struct({ question: str, answer: str }, ["question", "answer"])),
+}, ["turn_id", "call_id", "questions"]);
+const dynamicTool: Check = value => !object(value) ? false
+  : value.type === "function" ? struct({ name: str, description: str, inputSchema: anyValue }, ["name", "description", "inputSchema"])(value)
+  : value.type === "namespace" ? struct({ name: str, description: str, tools: list(dynamicTool) }, ["name", "description", "tools"])(value)
+  : false;
+const tokenUsage = struct({
+  input_tokens: signed, cached_input_tokens: signed, cache_write_input_tokens: signed,
+  output_tokens: signed, reasoning_output_tokens: signed, total_tokens: signed,
+}, ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"]);
 
-function resumeMetadata(value: any): boolean {
-  return wire(value, {
-    next_item_ordinal: nullable(integer), observation_clock_floor_ms: nullable(signed), last_started_turn_id: nullable(string),
-    rejected_audio_file_ids: (field: any) => Array.isArray(field) && field.every(string),
-    dynamic_tools: object, turn_attribution: object,
-    previous_turn_settings: (field: any) => wire(field, { model: string, comp_hash: nullable(string), realtime_active: nullable(flag) }, ["model"]),
-  });
-}
-
-function retainedContext(value: any): boolean {
-  return wire(value, {
-    accepted_file_audio: object, verified_answers: Array.isArray, user_messages: Array.isArray, assistant_messages: Array.isArray,
-    sender_deliveries: Array.isArray, message_retention: object, incomplete: flag, user_messages_incomplete: flag,
-    assistant_messages_incomplete: flag, next_order: integer,
-  }, ["verified_answers", "incomplete"]);
-}
-
-function tokenUsageRecord(value: any): boolean {
-  return wire(value, {
-    thread_id: string, turn_id: string, session_id: string, root_turn_id: string, response_id: string,
-    usage: object, turn_token_usage: object, thread_token_usage: object,
-  }, ["thread_id", "turn_id", "session_id", "root_turn_id", "response_id", "usage", "turn_token_usage", "thread_token_usage"]);
-}
+const harnessMetadata = struct({
+  history_sequence: maybe(uint), sampled_through_sequence: maybe(uint), user_input_order: maybe(uint),
+  fallback_token_limit_override: maybe(uint), delivered_assistant_message: maybe(str), compaction_model_hash: maybe(str),
+  image_replay_sources: list(imageReplaySource), guardian_sources: list(retainedSource), guardian_review_ids: list(str),
+  guardian_retained_omissions: struct({ user_instructions: bool, assistant_context: bool }, ["user_instructions", "assistant_context"]),
+  retained_source: retainedSource, sender_user_messages: senderMessages, model_search_state: maybe(oneOf("unused", "search_mcp", "standalone")),
+  retain_across_windows: maybe(bool), retain_in_children: maybe(bool), guardian_source_order_guidance: bool, additional_context_tool_output: bool,
+  client_authored: bool, tool_audio_budget_applied: bool, harness_authored_configuration: bool, compaction_without_file_error_sources: bool,
+  compaction_output: bool, inherited_user_message: bool, native_search_fallback_used: bool, delivered_assistant_message_incomplete: bool,
+});
+const resumeMetadata = struct({
+  next_item_ordinal: maybe(uint), observation_clock_floor_ms: maybe(signed), last_started_turn_id: maybe(str),
+  rejected_audio_file_ids: list(str), multi_agent_version: maybe(oneOf("disabled", "v1", "v2")),
+  dynamic_tools: struct({ thread_id: str, tools: list(dynamicTool) }, ["thread_id", "tools"]),
+  turn_attribution: struct({
+    turn_id: str, turn_trigger: maybe(str), parent_turn_id: maybe(str), initiating_agent_path: maybe(str), root_turn_id: maybe(str),
+  }, ["turn_id"]),
+  previous_turn_settings: struct({ model: str, cyber_access_program: maybe(str), comp_hash: maybe(str), realtime_active: maybe(bool) }, ["model"]),
+});
+const retainedContext = struct({
+  verified_answers: list(ordered(verifiedAnswer)), incomplete: bool, next_order: uint,
+  user_messages: list(ordered(userMessage)), assistant_messages: list(ordered(userMessage)), sender_deliveries: list(ordered(senderMessages)),
+  user_messages_incomplete: bool, assistant_messages_incomplete: bool,
+  accepted_file_audio: struct({ turn_id: str, model: str, provider: str, file_ids: list(str) }, ["turn_id", "model", "provider", "file_ids"]),
+}, ["verified_answers", "incomplete"]);
+const tokenUsageRecord = struct({
+  thread_id: str, turn_id: str, session_id: str, root_turn_id: str, response_id: str,
+  usage: tokenUsage, turn_token_usage: tokenUsage, thread_token_usage: tokenUsage,
+}, ["thread_id", "turn_id", "session_id", "root_turn_id", "response_id", "usage", "turn_token_usage", "thread_token_usage"]);
+const mcpResourceOrigins = struct({
+  origins: list(struct({ call_id: str, turn_id: maybe(str), tool: str, connector_id: str, link_id: maybe(str), uri: str, ambiguous_account: bool },
+    ["call_id", "tool", "connector_id", "uri"])),
+  turns: list(str), current_turn_id: maybe(str),
+}, ["origins", "turns"]);
 
 function completeCheckpoint(payload: Record<string, any>): boolean {
   const history = payload.replacement_history, metadata = payload.replacement_history_metadata;
-  return string(payload.message) && integer(payload.window_number)
+  // A checkpoint that cannot replace history must stop pruning outright, not count as absent.
+  return str(payload.message) && uint(payload.window_number)
     && Array.isArray(history) && history.every(checkpointItem)
-    && optional(metadata, value => Array.isArray(value) && value.length === history.length && value.every(harnessMetadata))
-    && optional(payload.guardian_history, value => Array.isArray(value) && value.every(checkpointItem))
-    && [payload.first_window_id, payload.previous_window_id, payload.compaction_response_id].every(value => optional(value, string))
-    && optional(payload.window_id, value => string(value) || integer(value))
-    && optional(payload.retained_context, retainedContext) && optional(payload.resume_metadata, resumeMetadata)
-    && optional(payload.latest_token_usage_record, tokenUsageRecord);
+    // Metadata without a history cannot pair, and pairs must match one to one.
+    && (metadata == null || Array.isArray(history) && Array.isArray(metadata) && metadata.length === history.length && metadata.every(harnessMetadata))
+    && optional(payload.guardian_history, list(checkpointItem))
+    && [payload.first_window_id, payload.previous_window_id, payload.compaction_response_id].every(value => optional(value, str))
+    && optional(payload.window_id, windowId) && optional(payload.retained_context, retainedContext)
+    && optional(payload.resume_metadata, resumeMetadata) && optional(payload.latest_token_usage_record, tokenUsageRecord)
+    && optional(payload.mcp_resource_origins, mcpResourceOrigins);
 }
 
 async function* lines(path: string): AsyncGenerator<Buffer> {
