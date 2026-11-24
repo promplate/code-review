@@ -6,6 +6,11 @@ def clip($n): if . == null then null else length as $len
 def repo_url: ("https://github.com/" + env.GITHUB_REPOSITORY) as $base
   | if . != null and (. == $base or startswith($base + "/")) then .[($base | length):] else . end;
 def prune: walk(if type == "object" then with_entries(select(.value != null)) else . end);
+# Instructions tell a side issue or pull request to name the subject it answers, so that mention is what makes it relevant.
+# A repository-wide stream would bury the review; a bug number inside `#71` must not count as a mention of `#7`.
+def names_subject: (if $pr != "" then $pr else (env.ISSUE_NUMBER // "") end) as $number
+  | $number != "" and ((. // "") | test("#" + $number + "(?![0-9])"));
+def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject != "" and (($number | tostring) == $subject);
 # The subscription reports its own end as a frame, so a failure needs no second channel here.
 ([split("\n")[] | select(startswith("data: ")) | .[6:] | fromjson? // empty]) as $frames
 # Every webhook starts a sibling run of this workflow, and its job check runs describe the review system rather than the CI of the pull request.
@@ -33,10 +38,20 @@ def prune: walk(if type == "object" then with_entries(select(.value != null)) el
         and ($own_path == "" or $body.workflow_run.path != $own_path))
       or ($frame.event == "status" and $body.sha == env.HEAD_SHA and ($body.state | IN("success", "failure", "error")))
       or ($frame.event == "push" and $body.ref == ("refs/heads/" + env.HEAD_BRANCH) and $body.after != env.HEAD_SHA)
-      or (if $pr == "" then $frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA
+      # A preview deployment is a CI result too, and the review cannot build what it is about to inspect.
+      or ($frame.event == "deployment_status" and ($body.deployment.sha // "") == env.HEAD_SHA
+        and ($body.deployment_status.state | IN("success", "failure", "error")))
+      or (if $pr == "" then
+          ($frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA)
+          # An issue run answers activity on its own issue; new issues and pull requests arrive through their mention below.
+          or (($frame.event | IN("issue_comment", "issues")) and is_subject_issue($body.issue.number))
         else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
           and (($frame.event != "pull_request") or ($body.action | IN("opened", "reopened") | not))
-          and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber)) end))
+          and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber))
+        end)
+      # A side issue or pull request this run opened, or one covering it, names the subject instead of the number.
+      or (($frame.event | IN("pull_request", "issues")) and $body.action == "opened"
+        and ((if $frame.event == "pull_request" then ($body.pull_request.title, $body.pull_request.body) else ($body.issue.title, $body.issue.body) end) | names_subject)))
   | select($body.sender.login != env.BOT_LOGIN)
   # Other apps review these pull requests too, so their review activity is context even without write access; their
   # issue comments still are not, which keeps ordinary bot chatter out of the review.
@@ -57,15 +72,24 @@ def prune: walk(if type == "object" then with_entries(select(.value != null)) el
       + (if $frame.event == "status" then {state: $body.state, context: $body.context, sha: $body.sha, target_url: ($body.target_url | repo_url)} else {} end)
       + (if $frame.event == "push" then {ref: $body.ref, after: $body.after} else {} end)
       + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha},
-          # An edited title or description is the change itself; other pull request events do not need the PR text again.
-          title: (if $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),
-          body: (if $body.action == "edited" then ($body.pull_request.body // "" | clip(2000)) else null end),
+          # An edited title or description is the change itself; an opened one is new to the review. Other events do not repeat the PR text.
+          title: (if ($body.action | IN("edited", "opened")) then ($body.pull_request.title | clip(200)) else null end),
+          body: (if ($body.action | IN("edited", "opened")) then ($body.pull_request.body // "" | clip(2000)) else null end),
           merged: (if $body.action == "closed" then $body.pull_request.merged else null end)}} else {} end)
+      # A label or assignee change carries no text of its own, so name what changed or the review learns only that something did.
+      + (if $frame.event == "pull_request" and ($body.action | IN("labeled", "unlabeled")) then {label: {name: $body.label.name}} else {} end)
+      + (if $frame.event == "pull_request" and ($body.action | IN("assigned", "unassigned")) then {assignee: {login: $body.assignee.login}} else {} end)
       + (if $frame.event == "issue_comment" then {issue: {number: $body.issue.number}, comment: {id: $body.comment.id, body: $body.comment.body, html_url: ($body.comment.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, review: {state: $body.review.state, body: $body.review.body, html_url: ($body.review.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review_comment" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, comment: {id: $body.comment.id, commit_id: $body.comment.commit_id, body: $body.comment.body, path: $body.comment.path, line: $body.comment.line, html_url: ($body.comment.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review_thread" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, thread: {node_id: $body.thread.node_id, comments: [$body.thread.comments[]? | {body, path, line, html_url: (.html_url | repo_url)}]}} else {} end)
       + (if $frame.event == "commit_comment" then {comment: {id: $body.comment.id, commit_id: $body.comment.commit_id, body: $body.comment.body, path: $body.comment.path, line: $body.comment.line, html_url: ($body.comment.html_url | repo_url)}} else {} end)
+      + (if $frame.event == "issues" then {issue: {number: $body.issue.number, state: $body.issue.state, title: ($body.issue.title | clip(200)), body: (($body.issue.body // "") | clip(2000)), html_url: ($body.issue.html_url | repo_url)},
+          label: (if ($body.action | IN("labeled", "unlabeled")) then {name: $body.label.name} else null end),
+          assignee: (if ($body.action | IN("assigned", "unassigned")) then {login: $body.assignee.login} else null end)} else {} end)
+      + (if $frame.event == "deployment_status" then {deployment: {sha: $body.deployment.sha, ref: $body.deployment.ref, environment: $body.deployment.environment},
+          deployment_status: {state: $body.deployment_status.state, description: $body.deployment_status.description,
+            environment_url: ($body.deployment_status.environment_url // $body.deployment_status.target_url)}} else {} end)
       | prune),
       # Correlated workflow names enrich the display only; they are not parameters of this webhook.
       workflow: (if $frame.event == "check_run" and $body.check_run.app.slug == "github-actions"

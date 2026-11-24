@@ -1619,6 +1619,52 @@ test.each([
   expect(worker.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "")).toBe(text);
 });
 
+test("an issue run hears its own issue and new issues that name it", () => {
+  const comment = { id: 9, body: "Also check the retry path", html_url: "https://github.com/owner/repo/issues/77#issuecomment-9" };
+  const asked = frame("issue_comment", { action: "created", issue: { number: 77 }, comment }, "asked");
+  const elsewhere = frame("issue_comment", { action: "created", issue: { number: 78 }, comment: { ...comment, id: 10 } }, "elsewhere");
+  const named = frame("issues", { action: "opened", issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.",
+    html_url: "https://github.com/owner/repo/issues/79" } }, "named");
+  const unrelated = frame("issues", { action: "opened", issue: { number: 80, state: "open", title: "Unrelated", body: "" } }, "unrelated");
+  const { contexts, text } = runLoggedHook(asked + elsewhere + named + unrelated, { PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  expect(contexts).toEqual([
+    { event: "issue_comment", action: "created", sender: human, issue: { number: 77 }, comment: { ...comment, html_url: "/issues/77#issuecomment-9" } },
+    { event: "issues", action: "opened", sender: human,
+      issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.", html_url: "/issues/79" } },
+  ]);
+  expect(text.trim().split(/\n+/)).toEqual([
+    "issue_comment/created collaborator /issues/77#issuecomment-9",
+    "issues/opened collaborator /issues/79",
+  ]);
+});
+
+test("label, assignee and preview deployment changes reach the review with what changed", () => {
+  const pull_request = { number: 7, head: { sha: "head" } };
+  const labeled = frame("pull_request", { action: "labeled", number: 7, pull_request, label: { name: "skip-review" } }, "labeled");
+  const assigned = frame("pull_request", { action: "assigned", number: 7, pull_request, assignee: { login: "maintainer" } }, "assigned");
+  const deployed = frame("deployment_status", { action: "created", deployment: { sha: "head", ref: "feature", environment: "Preview" },
+    deployment_status: { state: "success", environment_url: "https://preview.example.test", target_url: "" } }, "deployed");
+  const stale = frame("deployment_status", { action: "created", deployment: { sha: "older", ref: "feature", environment: "Preview" },
+    deployment_status: { state: "success", environment_url: "https://old.example.test" } }, "stale");
+  const opened = frame("pull_request", { action: "opened", number: 8, pull_request: { ...pull_request, number: 8, title: "Retry the upload", body: "Covers #7." } }, "opened");
+  const other = frame("pull_request", { action: "opened", number: 9, pull_request: { ...pull_request, number: 9, title: "Unrelated work", body: "Fixes #71." } }, "other");
+  const { contexts, text } = runLoggedHook(labeled + assigned + deployed + stale + opened + other);
+  expect(contexts).toEqual([
+    { event: "pull_request", action: "labeled", sender: human, pull_request: { number: 7, head: { sha: "head" } }, label: { name: "skip-review" } },
+    { event: "pull_request", action: "assigned", sender: human, pull_request: { number: 7, head: { sha: "head" } }, assignee: { login: "maintainer" } },
+    { event: "deployment_status", action: "created", sender: human, deployment: { sha: "head", ref: "feature", environment: "Preview" },
+      deployment_status: { state: "success", environment_url: "https://preview.example.test" } },
+    { event: "pull_request", action: "opened", sender: human,
+      pull_request: { number: 8, head: { sha: "head" }, title: "Retry the upload", body: "Covers #7." } },
+  ]);
+  expect(text.trim().split(/\n+/)).toEqual([
+    "pull_request/labeled collaborator",
+    "pull_request/assigned collaborator",
+    "deployment_status/created Preview:success https://preview.example.test",
+    "pull_request/opened collaborator",
+  ]);
+});
+
 test("branch commit comments retain their commit, file, line and original sender", () => {
   const comment = { id: 42, commit_id: "head", body: "Check this line", path: "src/check.ts", line: 8,
     html_url: "https://github.com/owner/repo/commit/head#commitcomment-42" };
