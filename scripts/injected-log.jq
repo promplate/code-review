@@ -13,21 +13,22 @@ def event_color:
   elif (.event | IN("push", "pull_request")) then 94
   elif (.event | IN("check_run", "workflow_run", "status", "deployment_status")) then ci_color
   else 97 end;
+def nonempty: strings | select(length > 0);
 # The hook has the received head SHA even when GitHub supplied no activity URL.
 def moved: if .event == "push" then .after else .pull_request.head.sha end;
-def target_url: (.comment.html_url // .review.html_url // .thread.comments[0].html_url // .issue.html_url // .check_run.details_url // .workflow_run.html_url // .deployment_status.environment_url // .target_url)
+def target_url: (.comment.html_url // .review.html_url // .thread.comments[0].html_url // .issue.html_url // .check_run.details_url // .workflow_run.html_url
+  // (.deployment_status.environment_url | nonempty) // (.deployment_status.log_url | nonempty) // (.deployment_status.target_url | nonempty) // .target_url)
   // (if (.event == "push" or (.event == "pull_request" and .action == "synchronize"))
       and ((moved // "") | test("^(?!0{40}$)[a-fA-F0-9]{40}$"))
     then (env.PR_NUMBER // "") as $pr | (if $pr == "" then "/commit/" else "/pull/\($pr)/commits/" end) + moved
     else null end);
 # A CI webhook sender is the triggering actor, not the workflow or the app providing its checks.
 # `workflow` is correlated display metadata; the remaining fields retain the webhook's names and nesting.
-def nonempty: strings | select(length > 0);
 def event_subject:
   if .event == "check_run" then [((.workflow | nonempty) // (.check_run.app.name | nonempty) // (.check_run.app.slug | nonempty)), .check_run.name] | map(nonempty) | join(" / ")
   elif .event == "workflow_run" then (.workflow_run.name // "")
   elif .event == "status" then (.context // "")
-  elif .event == "deployment_status" then (.deployment.environment // "")
+  elif .event == "deployment_status" then ((.deployment_status.environment | nonempty) // .deployment.environment // "")
   elif .event == "subscription_recovery" then ""
   else (.sender.login // "") end;
 def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action else "" end)\u001b[0m"

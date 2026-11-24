@@ -1648,12 +1648,14 @@ test("label, assignee and preview deployment changes reach the review with what 
     deployment_status: { state: "success", environment_url: "https://old.example.test" } }, "stale");
   const opened = frame("pull_request", { action: "opened", number: 8, pull_request: { ...pull_request, number: 8, title: "Retry the upload", body: "Covers #7." } }, "opened");
   const other = frame("pull_request", { action: "opened", number: 9, pull_request: { ...pull_request, number: 9, title: "Unrelated work", body: "Fixes #71." } }, "other");
-  const { contexts, text } = runLoggedHook(labeled + assigned + deployed + stale + opened + other);
+  const foreign = frame("issues", { action: "opened", issue: { number: 10, title: "Follow-up", body: "Fixes upstream/repo#7." } }, "foreign");
+  const self = frame("pull_request", { action: "opened", number: 7, pull_request: { ...pull_request, body: "Feedback on #7." } }, "self");
+  const { contexts, text } = runLoggedHook(labeled + assigned + deployed + stale + opened + other + foreign + self);
   expect(contexts).toEqual([
     { event: "pull_request", action: "labeled", sender: human, pull_request: { number: 7, head: { sha: "head" } }, label: { name: "skip-review" } },
     { event: "pull_request", action: "assigned", sender: human, pull_request: { number: 7, head: { sha: "head" } }, assignee: { login: "maintainer" } },
     { event: "deployment_status", action: "created", sender: human, deployment: { sha: "head", ref: "feature", environment: "Preview" },
-      deployment_status: { state: "success", environment_url: "https://preview.example.test" } },
+      deployment_status: { state: "success", environment_url: "https://preview.example.test", target_url: "" } },
     { event: "pull_request", action: "opened", sender: human,
       pull_request: { number: 8, head: { sha: "head" }, title: "Retry the upload", body: "Covers #7." } },
   ]);
@@ -1663,6 +1665,21 @@ test("label, assignee and preview deployment changes reach the review with what 
     "deployment_status/created Preview:success https://preview.example.test",
     "pull_request/opened collaborator",
   ]);
+});
+
+test("deployment statuses preserve the reported environment and log URL", () => {
+  const deployment = { sha: "head", environment: "Staging" };
+  const url = "https://ci.example.test/deployment/1";
+  const status = { state: "failure", environment: "Preview", environment_url: "", log_url: url, target_url: url };
+  const { contexts, text } = runLoggedHook(frame("deployment_status", { action: "created", deployment, deployment_status: status }));
+  expect(contexts[0].deployment_status).toEqual(status);
+  expect(text.trim()).toBe(`deployment_status/created Preview:failure ${url}`);
+});
+
+test("a truncated side issue directs the reviewer to the issue", () => {
+  const issue = { number: 8, title: "Regarding Owner/Repo#7", body: "x".repeat(2001) };
+  const { contexts } = runLoggedHook(frame("issues", { action: "opened", issue }));
+  expect(contexts[0].issue.body).toEndWith("read the full text from issue #8]");
 });
 
 test("branch commit comments retain their commit, file, line and original sender", () => {
