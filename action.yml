@@ -25,6 +25,8 @@ inputs:
   encrypt-snapshots:
     description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
     default: "false"
+  debug-retention-days:
+    description: Days to keep `agent-debug-events`. An empty value uses the repository retention period.
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
@@ -663,6 +665,7 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: agent-debug-events
+        retention-days: ${{ inputs.debug-retention-days }}
         path: ${{ runner.temp }}/codex.jsonl.bin
         if-no-files-found: ignore
 
