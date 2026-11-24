@@ -26,7 +26,7 @@ inputs:
     description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
     default: "false"
   debug-retention-days:
-    description: Days to keep `agent-debug-events`. An empty value uses the repository retention period.
+    description: Positive whole days to keep `agent-debug-events`. An empty value uses the repository retention period.
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
@@ -99,7 +99,7 @@ runs:
         [ -z "$DISPATCHED_PR" ] || [ -z "$DISPATCHED_ISSUE" ] || { echo "::error::Name either pr or issue, not both."; exit 1; }
         # The group uses the input verbatim; leading zeros would put the API's canonical number in another group.
         for target in "$DISPATCHED_PR" "$DISPATCHED_ISSUE"; do
-          [ -z "$target" ] || [[ "$target" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
+          [ -z "$target" ] || [[ "$target" =~ ^0*[1-9][0-9]*$ ]] || { echo "::error::Use a positive pr or issue number without leading zeros."; exit 1; }
         done
         number=${DISPATCHED_PR:-${DISPATCHED_ISSUE:-$number}}
         # An event on a plain issue is not a review: the agent works on the default branch and decides what, if anything, to do about it.
@@ -653,8 +653,14 @@ runs:
       env:
         BROKER: ${{ inputs.broker }}
         ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
+        DEBUG_RETENTION_DAYS: ${{ inputs.debug-retention-days }}
       run: |
         [ -f "$RUNNER_TEMP/codex.jsonl" ] || exit 0
+        # upload-artifact truncates fractions, so a sub-day value would select the repository default.
+        if [[ -n "$DEBUG_RETENTION_DAYS" && ! "$DEBUG_RETENTION_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::warning::Skipping debug events: debug-retention-days must be a positive whole number."
+          exit 0
+        fi
         bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/codex.jsonl.bin" "$RUNNER_TEMP" codex.jsonl
         echo "saved=true" >> "$GITHUB_OUTPUT"
 
