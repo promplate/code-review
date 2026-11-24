@@ -14,6 +14,14 @@ type Span = { start: number; end: number };
 class UnsupportedHistory extends Error {}
 const decode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const hyphenatedUuid = new RegExp(`^${uuid}$`, "i");
+function uuidString(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (/^[0-9a-f]{32}$/i.test(value)) return true;
+  if (value.startsWith("urn:uuid:")) return hyphenatedUuid.test(value.slice(9));
+  if (value.startsWith("{") && value.endsWith("}")) return hyphenatedUuid.test(value.slice(1, -1));
+  return hyphenatedUuid.test(value);
+}
 const rolloutName = new RegExp(`^rollout-.+-(${uuid})\\.jsonl$`, "i");
 const object = (value: any): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
 const integer = (value: any) => Number.isSafeInteger(value) && value >= 0;
@@ -26,7 +34,7 @@ function contentItem(item: any): boolean {
     case "input_text": return string(item.text);
     case "output_text": return string(item.text) && optional(item.annotations, Array.isArray) && optional(item.logprobs, Array.isArray);
     case "input_image": return (string(item.image_url) || string(item.file_id))
-      && optional(item.detail, value => ["auto", "low", "high", "original"].includes(value));
+      && optional(item.detail, imageDetail);
     case "input_audio": return string(item.audio_url) || string(item.file_id);
     default: return false;
   }
@@ -40,9 +48,10 @@ function toolOutput(value: any): boolean {
 function checkpointItem(item: any): boolean {
   if (!object(item) || !string(item.type)) return false;
   if (!optional(item.id, string) || !optional(item.encrypted_content, string)) return false;
+  if (!optional(item.id_allocation, itemAllocation) || !optional(item.internal_chat_message_metadata_passthrough, passthrough)) return false;
   switch (item.type) {
     case "message": return string(item.role) && Array.isArray(item.content) && item.content.every(contentItem)
-      && optional(item.status, string) && optional(item.phase, value => ["commentary", "partial_answer", "final_answer"].includes(value));
+      && optional(item.status, string) && optional(item.phase, messagePhase);
     case "reasoning": return Array.isArray(item.summary)
       && item.summary.every((part: any) => object(part) && part.type === "summary_text" && string(part.text))
       && optional(item.content, value => Array.isArray(value) && value.every(part => object(part) && ["reasoning_text", "text"].includes(part.type) && string(part.text)));
@@ -76,10 +85,16 @@ const signed: Check = value => Number.isSafeInteger(value);
 const maybe = (check: Check): Check => value => value == null || check(value);
 const list = (check: Check): Check => value => Array.isArray(value) && value.every(check);
 const oneOf = (...values: string[]): Check => value => values.includes(value);
+const imageDetail = oneOf("auto", "low", "high", "original");
+const messagePhase = oneOf("commentary", "partial_answer", "final_answer");
+const agentPath: Check = value => str(value) && (value === "/morpheus"
+  || /^\/root(?:\/(?!root(?:\/|$))[a-z0-9_]+)*$/.test(value));
 const anyValue: Check = () => true;
 const struct = (fields: Record<string, Check>, required: string[] = []): Check => value =>
   object(value) && required.every(key => key in value) && Object.entries(value).every(([key, field]) => !(key in fields) || fields[key](field));
 const windowAllocation = struct({ salt: str, ordinal: uint, value: uint }, ["salt", "ordinal", "value"]);
+const itemAllocation: Check = value => windowAllocation(value) && optional(value.prefix, str) && optional(value.suffix, str);
+const passthrough = struct({ turn_id: maybe(str), create_time: maybe(value => typeof value === "number") });
 const windowId: Check = value => str(value) || uint(value) || windowAllocation(value);
 // `Ordered<T>` flattens its value beside the order bookkeeping.
 const ordered = (item: Check): Check => value => item(value) && struct({ revision: maybe(str), inherited: bool, order: uint })(value);
@@ -89,9 +104,9 @@ const retainedSource = struct({
   revision: str, complete: bool,
 }, ["id", "revision", "complete"]);
 const senderMessages = struct({ receiver_turn_id: str, receiver_message_id: str, text: str }, ["receiver_turn_id", "receiver_message_id", "text"]);
-const imageReplaySource = struct({ prepared_url_digest: list(uint), detail: maybe(str), original_data_url: str }, ["prepared_url_digest", "original_data_url"]);
+const imageReplaySource = struct({ prepared_url_digest: list(value => uint(value) && value <= 255), detail: maybe(imageDetail), original_data_url: str }, ["prepared_url_digest", "original_data_url"]);
 const userMessage = struct({
-  turn_id: str, message_id: maybe(str), text: str, complete: bool, origin: maybe(oneOf("user", "heartbeat")), phase: maybe(str),
+  turn_id: str, message_id: maybe(str), text: str, complete: bool, origin: maybe(oneOf("user", "heartbeat")), phase: maybe(messagePhase),
 }, ["turn_id", "text", "complete"]);
 const verifiedAnswer = struct({
   turn_id: str, call_id: str, questions: list(struct({ question: str, answer: str }, ["question", "answer"])),
@@ -119,11 +134,11 @@ const harnessMetadata = struct({
 const resumeMetadata = struct({
   next_item_ordinal: maybe(uint), observation_clock_floor_ms: maybe(signed), last_started_turn_id: maybe(str),
   rejected_audio_file_ids: list(str), multi_agent_version: maybe(oneOf("disabled", "v1", "v2")),
-  dynamic_tools: struct({ thread_id: str, tools: list(dynamicTool) }, ["thread_id", "tools"]),
+  dynamic_tools: struct({ thread_id: uuidString, tools: list(dynamicTool) }, ["thread_id", "tools"]),
   turn_attribution: struct({
-    turn_id: str, turn_trigger: maybe(str), parent_turn_id: maybe(str), initiating_agent_path: maybe(str), root_turn_id: maybe(str),
+    turn_id: str, turn_trigger: maybe(str), parent_turn_id: maybe(str), initiating_agent_path: maybe(agentPath), root_turn_id: maybe(str),
   }, ["turn_id"]),
-  previous_turn_settings: struct({ model: str, cyber_access_program: maybe(str), comp_hash: maybe(str), realtime_active: maybe(bool) }, ["model"]),
+  previous_turn_settings: struct({ model: str, cyber_access_program: maybe(oneOf("standard", "daybreak_blue", "daybreak_red")), comp_hash: maybe(str), realtime_active: maybe(bool) }, ["model"]),
 });
 const retainedContext = struct({
   verified_answers: list(ordered(verifiedAnswer)), incomplete: bool, next_order: uint,
@@ -132,7 +147,7 @@ const retainedContext = struct({
   accepted_file_audio: struct({ turn_id: str, model: str, provider: str, file_ids: list(str) }, ["turn_id", "model", "provider", "file_ids"]),
 }, ["verified_answers", "incomplete"]);
 const tokenUsageRecord = struct({
-  thread_id: str, turn_id: str, session_id: str, root_turn_id: str, response_id: str,
+  thread_id: uuidString, turn_id: str, session_id: uuidString, root_turn_id: str, response_id: str,
   usage: tokenUsage, turn_token_usage: tokenUsage, thread_token_usage: tokenUsage,
 }, ["thread_id", "turn_id", "session_id", "root_turn_id", "response_id", "usage", "turn_token_usage", "thread_token_usage"]);
 const mcpResourceOrigins = struct({
@@ -148,7 +163,7 @@ function completeCheckpoint(payload: Record<string, any>): boolean {
     && Array.isArray(history) && history.every(checkpointItem)
     // Metadata without a history cannot pair, and pairs must match one to one.
     && (metadata == null || Array.isArray(history) && Array.isArray(metadata) && metadata.length === history.length && metadata.every(harnessMetadata))
-    && optional(payload.guardian_history, list(checkpointItem))
+    && optional(payload.guardian_history, list(item => checkpointItem(item) && optional(item.guardian_metadata, harnessMetadata)))
     && [payload.first_window_id, payload.previous_window_id, payload.compaction_response_id].every(value => optional(value, str))
     && optional(payload.window_id, windowId) && optional(payload.retained_context, retainedContext)
     && optional(payload.resume_metadata, resumeMetadata) && optional(payload.latest_token_usage_record, tokenUsageRecord)
@@ -186,9 +201,16 @@ function paths(directory: string): string[] {
 
 // Serde integer fields reject 1.0 and 1e0. Mark those tokens as non-integers
 // for validation before JSON.parse loses the distinction. Edits use the original bytes.
-function scanValue(_key: string, value: unknown, context?: { source?: string }) {
+function scanValue(key: string, value: unknown, context?: { source?: string }) {
+  if (!key.isWellFormed() || typeof value === "string" && !value.isWellFormed()) throw new UnsupportedHistory("invalid Unicode in a rollout record");
   if (typeof value === "number" && Number.isSafeInteger(value) && !/^-?\d+$/.test(context?.source ?? "")) return NaN;
   return value;
+}
+
+// The rollout reader parses the entire line as a serde_json::Value before decoding the item.
+function withinRolloutDepth(value: unknown, depth = 0): boolean {
+  if (value === null || typeof value !== "object") return true;
+  return depth < 127 && Object.values(value).every(child => withinRolloutDepth(child, depth + 1));
 }
 
 async function scan(path: string): Promise<Rollout> {
@@ -213,7 +235,7 @@ async function scan(path: string): Promise<Rollout> {
       }
       const end = start + raw.length;
       if (record.type === "compacted") rollout.checkpoints.push({
-        start, end, complete: completeCheckpoint(payload),
+        start, end, complete: withinRolloutDepth(record) && completeCheckpoint(payload),
       });
       // Rollback can make an older checkpoint current. Leave the snapshot alone
       // rather than reproduce Codex's turn-boundary reconstruction here.

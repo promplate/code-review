@@ -135,6 +135,40 @@ test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item",
   expect(readFileSync(f.file)).toEqual(f.before);
 });
 
+const usage = { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 3 };
+const usageRecord = { thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage, turn_token_usage: usage, thread_token_usage: usage };
+const replayImage = { prepared_url_digest: [0, 255], original_data_url: "data:image/png;base64,AA==", detail: "high" };
+
+test.each([
+  ["guardian metadata", { guardian_history: [{ ...reasoning("g"), guardian_metadata: { history_sequence: "bad" } }] }],
+  ["item allocation", { replacement_history: [{ ...message, id_allocation: {} }] }],
+  ["passthrough metadata", { replacement_history: [{ ...message, internal_chat_message_metadata_passthrough: "bad" }] }],
+  ["digest byte", { replacement_history_metadata: [{ image_replay_sources: [{ ...replayImage, prepared_url_digest: [256] }] }] }],
+  ["image detail", { replacement_history_metadata: [{ image_replay_sources: [{ ...replayImage, detail: "future" }] }] }],
+  ["message phase", { retained_context: { incomplete: false, verified_answers: [], user_messages: [{ turn_id: "t", text: "", complete: true, phase: "future" }] } }],
+  ["agent path", { resume_metadata: { turn_attribution: { turn_id: "t", initiating_agent_path: "relative" } } }],
+  ["reserved agent name", { resume_metadata: { turn_attribution: { turn_id: "t", initiating_agent_path: "/root/root" } } }],
+  ["access program", { resume_metadata: { previous_turn_settings: { model: "m", cyber_access_program: "future" } } }],
+  ["token thread ID", { latest_token_usage_record: { ...usageRecord, thread_id: "bad" } }],
+  ["token session ID", { latest_token_usage_record: { ...usageRecord, session_id: "bad" } }],
+  ["dynamic tool owner", { resume_metadata: { dynamic_tools: { thread_id: "bad", tools: [] } } }],
+  ["unpaired surrogate", { message: "\ud800" }],
+] as const)("preserves history when the checkpoint has invalid %s", async (_, fields) => {
+  const f = fixture(a, [meta(a), row("response_item", reasoning("needed")), compact("current", fields)]);
+  expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
+  expect(readFileSync(f.file)).toEqual(f.before);
+});
+
+test.each([120, 121])("respects the rollout decoder's nesting limit with a tool schema %i levels deep", async depth => {
+  let schema: object = { type: "string" };
+  for (let i = 0; i < depth; i++) schema = { type: "array", items: schema };
+  const tools = [{ type: "function", name: "lookup", description: "", inputSchema: schema }];
+  const checkpoint = compact("current", { resume_metadata: { dynamic_tools: { thread_id: a, tools } } });
+  const f = fixture(a, [meta(a), row("response_item", reasoning("old")), checkpoint]);
+  expect((await pruneSnapshotReasoning(f.directory)).records).toBe(depth === 120 ? 1 : 0);
+  if (depth === 121) expect(readFileSync(f.file)).toEqual(f.before);
+});
+
 test.each(["1.0", "1e0"])("preserves reasoning when an integer field is written as %s", async token => {
   // JSON.stringify normalizes both tokens to 1.
   const checkpoint = compact("current").replace('"window_number":1', '"window_number":' + token);
@@ -147,8 +181,12 @@ test("prunes behind a checkpoint whose metadata carries its wire types", async (
   const checkpoint = JSON.parse(compact("latest"));
   checkpoint.payload.replacement_history_metadata = [{ history_sequence: 9, sampled_through_sequence: 7, fallback_token_limit_override: 100 }];
   checkpoint.payload.resume_metadata = { next_item_ordinal: 24, rejected_audio_file_ids: ["file"], previous_turn_settings: { model: "gpt-6", realtime_active: false } };
-  const usage = { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 3 };
-  checkpoint.payload.latest_token_usage_record = { thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage, turn_token_usage: usage, thread_token_usage: usage };
+  checkpoint.payload.latest_token_usage_record = usageRecord;
+  checkpoint.payload.guardian_history[0].guardian_metadata = { image_replay_sources: [replayImage] };
+  checkpoint.payload.replacement_history[0].id_allocation = { prefix: "msg", salt: "item", ordinal: 2, value: 17 };
+  checkpoint.payload.replacement_history[0].internal_chat_message_metadata_passthrough = { turn_id: "t", create_time: 1.25 };
+  checkpoint.payload.resume_metadata.turn_attribution = { turn_id: "t", initiating_agent_path: "/root/agent_2" };
+  checkpoint.payload.resume_metadata.previous_turn_settings.cyber_access_program = "standard";
   checkpoint.payload.retained_context = { verified_answers: [], incomplete: false, next_order: 2 };
   checkpoint.payload.window_id = { salt: "window", ordinal: 1, value: 37 };
   checkpoint.payload.resume_metadata.dynamic_tools = { thread_id: a, tools: [
