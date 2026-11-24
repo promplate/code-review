@@ -139,7 +139,15 @@ const usage = { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1, reaso
 const usageRecord = { thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage, turn_token_usage: usage, thread_token_usage: usage };
 const replayImage = { prepared_url_digest: [0, 255], original_data_url: "data:image/png;base64,AA==", detail: "high" };
 
+const realtimeInput = { event_id: "e", realtime_session_id: "s", observed_at_ms: 42, source_event_ids: ["prior"] };
+const allocation = { salt: "window", ordinal: 2, value: 17 };
+
 test.each([
+  ["realtime input", { replacement_history_metadata: [{ realtime_session_input: {} }] }],
+  ["realtime handoff mode", { replacement_history_metadata: [{ realtime_handoff: { ...realtimeInput, handoff_id: "h", mode: "future" } }] }],
+  ["realtime session end", { guardian_history: [{ ...message, guardian_metadata: { realtime_session_end_input: "true" } }] }],
+  ["retained message origin", { retained_context: { verified_answers: [], incomplete: false, user_messages: [{ turn_id: "t", text: "", complete: true, origin: null }] } }],
+  ["numeric previous window ID", { previous_window_id: 17 }],
   ["guardian metadata", { guardian_history: [{ ...reasoning("g"), guardian_metadata: { history_sequence: "bad" } }] }],
   ["item allocation", { replacement_history: [{ ...message, id_allocation: {} }] }],
   ["passthrough metadata", { replacement_history: [{ ...message, internal_chat_message_metadata_passthrough: "bad" }] }],
@@ -157,6 +165,33 @@ test.each([
   const f = fixture(a, [meta(a), row("response_item", reasoning("needed")), compact("current", fields)]);
   expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
   expect(readFileSync(f.file)).toEqual(f.before);
+});
+
+test.each([
+  ["realtime handoff", { replacement_history_metadata: [{ realtime_handoff: { ...realtimeInput, handoff_id: "h", mode: "start" }, realtime_session_input: realtimeInput }] }],
+  ["window references", { first_window_id: allocation, previous_window_id: allocation }],
+  ["legacy window number", { window_number: null, window_id: 17 }],
+  ["optional metadata", { resume_metadata: { previous_turn_settings: null, dynamic_tools: null, turn_attribution: null },
+    retained_context: { verified_answers: [], incomplete: false, accepted_file_audio: null },
+    replacement_history_metadata: [{ retained_source: null, sender_user_messages: null, guardian_retained_omissions: null }] }],
+  ["unknown metadata key", { resume_metadata: { ["__proto__"]: true } }],
+] as const)("prunes behind a checkpoint with valid %s", async (_, fields) => {
+  const checkpoint = compact("current", fields);
+  const f = fixture(a, [meta(a), row("response_item", reasoning("old")), checkpoint]);
+  expect((await pruneSnapshotReasoning(f.directory)).records).toBe(1);
+  expect(readFileSync(f.file).subarray(-Buffer.byteLength(checkpoint))).toEqual(Buffer.from(checkpoint));
+});
+
+test.each([
+  ["[".repeat(140) + "0" + "]".repeat(140), 0],
+  [JSON.stringify("\ud800"), 0],
+  [JSON.stringify('braces [{ and a quote "'), 1],
+  ['"\\ud83d\\ude00"', 1],
+] as const)("checks raw duplicate values before selecting a checkpoint", async (earlier, records) => {
+  const checkpoint = compact("current").replace('"message":""', '"message":' + earlier + ',"message":""');
+  const f = fixture(a, [meta(a), row("response_item", reasoning("old")), checkpoint]);
+  expect((await pruneSnapshotReasoning(f.directory)).records).toBe(records);
+  if (!records) expect(readFileSync(f.file)).toEqual(f.before);
 });
 
 test.each([120, 121])("respects the rollout decoder's nesting limit with a tool schema %i levels deep", async depth => {

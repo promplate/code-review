@@ -113,6 +113,23 @@ test.each(["false", "true"])("save prunes only obsolete reasoning in the archive
   }
 });
 
+test("a custom archive preserves parent reasoning needed by an archived fork", async () => {
+  const parent = "11111111-1111-4111-8111-111111111111", child = "22222222-2222-4222-8222-222222222222";
+  const parentPath = `sessions/rollout-2026-01-01T00-00-00-${parent}.jsonl`;
+  const childPath = `archived_sessions/rollout-2026-01-01T00-00-01-${child}.jsonl`;
+  const row = (type: string, payload: unknown) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", type, payload }) + "\n";
+  const prefix = row("session_meta", { id: parent, history_mode: "paginated" })
+    + row("response_item", { type: "reasoning", summary: [], encrypted_content: "child still needs this" });
+  const original = prefix + row("compacted", { message: "", window_number: 1, replacement_history: [] });
+  const base = { thread_id: parent, end_byte_offset: Buffer.byteLength(prefix), end_ordinal_exclusive: 2 };
+  const fork = row("session_meta", { id: child, history_mode: "paginated", history_base: base });
+  const source = home({ [parentPath]: original, [childPath]: fork }), archive = join(home({}), "snapshot.bin"), target = home({});
+  expect((await run(["save", archive, source, "sessions", "archived_sessions"])).exitCode).toBe(0);
+  expect((await run(["load", archive, target])).exitCode).toBe(0);
+  expect(readFileSync(join(target, parentPath), "utf8")).toBe(original);
+  expect(readFileSync(join(target, childPath), "utf8")).toBe(fork);
+});
+
 test.each(["read-only directory", "hard link"])("saves a session containing a %s intact", async kind => {
   const id = "11111111-1111-4111-8111-111111111111";
   const path = `sessions/rollout-2026-01-01T00-00-00-${id}.jsonl`;

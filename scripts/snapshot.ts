@@ -4,7 +4,7 @@
 // Usage: snapshot.ts save <archive> <dir> [path...]  |  snapshot.ts load <archive> <dir>
 import { appendFileSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { pruneSnapshotReasoning } from "./snapshot-reasoning";
 
 const [command, archive, dir, ...paths] = process.argv.slice(2);
@@ -42,9 +42,8 @@ async function pack(paths: string[]) {
   let source = dir, staging: string | undefined;
   try {
     // Prune a private copy: a failed save must not change the running session.
-    // Other archive selections (including debug events) keep their existing behavior.
-    if (paths.includes("sessions") && lstatSync(join(dir, "sessions")).isDirectory()
-      && paths.every(path => !isAbsolute(path) && !path.split(/[\\/]/).includes(".."))) {
+    // Custom selections can contain forks outside sessions whose parent prefixes must survive.
+    if (paths.includes("sessions") && paths.every(path => SESSION_PATHS.includes(path)) && lstatSync(join(dir, "sessions")).isDirectory()) {
       try {
         staging = mkdtempSync(join(tmpdir(), "review-snapshot-"));
         const directories: { path: string; atime: number; mtime: number }[] = [];
@@ -53,6 +52,7 @@ async function pack(paths: string[]) {
           filter(from, to) {
             const stat = lstatSync(from);
             if (stat.isDirectory()) {
+              if (path !== "sessions") throw new Error("Archive additional directories directly");
               // cpSync copies the directory mode. A read-only staging directory can strand plaintext during cleanup.
               if ((stat.mode & 0o700) !== 0o700) throw new Error("Cannot clean up a protected directory copy");
               directories.push({ path: to, atime: stat.atimeMs / 1000, mtime: stat.mtimeMs / 1000 });

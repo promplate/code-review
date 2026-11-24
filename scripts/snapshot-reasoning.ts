@@ -73,7 +73,7 @@ function checkpointItem(item: any): boolean {
 }
 
 // Codex skips a `compacted` record it cannot deserialize, which revives the pre-compaction
-// reasoning that pruning already erased. These checks mirror the codex-rs 0.171.0 wire
+// reasoning that pruning already erased. These checks mirror the codex-rs 0.171.0 and 0.172.0 wire
 // structs: serde ignores fields a struct does not declare, so unknown keys pass, but every
 // declared key must carry its wire type, and only `Option` and `#[serde(default)]` fields
 // may be absent. Anything not validated here must keep the history, never guess.
@@ -91,11 +91,11 @@ const agentPath: Check = value => str(value) && (value === "/morpheus"
   || /^\/root(?:\/(?!root(?:\/|$))[a-z0-9_]+)*$/.test(value));
 const anyValue: Check = () => true;
 const struct = (fields: Record<string, Check>, required: string[] = []): Check => value =>
-  object(value) && required.every(key => key in value) && Object.entries(value).every(([key, field]) => !(key in fields) || fields[key](field));
+  object(value) && required.every(key => Object.hasOwn(value, key)) && Object.entries(value).every(([key, field]) => !Object.hasOwn(fields, key) || fields[key](field));
 const windowAllocation = struct({ salt: str, ordinal: uint, value: uint }, ["salt", "ordinal", "value"]);
 const itemAllocation: Check = value => windowAllocation(value) && optional(value.prefix, str) && optional(value.suffix, str);
 const passthrough = struct({ turn_id: maybe(str), create_time: maybe(value => typeof value === "number") });
-const windowId: Check = value => str(value) || uint(value) || windowAllocation(value);
+const contextWindowId: Check = value => str(value) || windowAllocation(value);
 // `Ordered<T>` flattens its value beside the order bookkeeping.
 const ordered = (item: Check): Check => value => item(value) && struct({ revision: maybe(str), inherited: bool, order: uint })(value);
 
@@ -106,7 +106,7 @@ const retainedSource = struct({
 const senderMessages = struct({ receiver_turn_id: str, receiver_message_id: str, text: str }, ["receiver_turn_id", "receiver_message_id", "text"]);
 const imageReplaySource = struct({ prepared_url_digest: list(value => uint(value) && value <= 255), detail: maybe(imageDetail), original_data_url: str }, ["prepared_url_digest", "original_data_url"]);
 const userMessage = struct({
-  turn_id: str, message_id: maybe(str), text: str, complete: bool, origin: maybe(oneOf("user", "heartbeat")), phase: maybe(messagePhase),
+  turn_id: str, message_id: maybe(str), text: str, complete: bool, origin: oneOf("user", "heartbeat"), phase: maybe(messagePhase),
 }, ["turn_id", "text", "complete"]);
 const verifiedAnswer = struct({
   turn_id: str, call_id: str, questions: list(struct({ question: str, answer: str }, ["question", "answer"])),
@@ -121,12 +121,18 @@ const tokenUsage = struct({
   output_tokens: signed, reasoning_output_tokens: signed, total_tokens: signed,
 }, ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"]);
 
+const realtimeInput = struct({
+  event_id: str, realtime_session_id: str, observed_at_ms: signed, source_event_ids: list(str),
+}, ["event_id", "realtime_session_id", "observed_at_ms", "source_event_ids"]);
+const handoffMode = oneOf("start", "steer");
 const harnessMetadata = struct({
+  realtime_session_input: maybe(realtimeInput), realtime_session_end_input: bool,
+  realtime_handoff: maybe(value => realtimeInput(value) && str(value.handoff_id) && handoffMode(value.mode)),
   history_sequence: maybe(uint), sampled_through_sequence: maybe(uint), user_input_order: maybe(uint),
   fallback_token_limit_override: maybe(uint), delivered_assistant_message: maybe(str), compaction_model_hash: maybe(str),
   image_replay_sources: list(imageReplaySource), guardian_sources: list(retainedSource), guardian_review_ids: list(str),
-  guardian_retained_omissions: struct({ user_instructions: bool, assistant_context: bool }, ["user_instructions", "assistant_context"]),
-  retained_source: retainedSource, sender_user_messages: senderMessages, model_search_state: maybe(oneOf("unused", "search_mcp", "standalone")),
+  guardian_retained_omissions: maybe(struct({ user_instructions: bool, assistant_context: bool }, ["user_instructions", "assistant_context"])),
+  retained_source: maybe(retainedSource), sender_user_messages: maybe(senderMessages), model_search_state: maybe(oneOf("unused", "search_mcp", "standalone")),
   retain_across_windows: maybe(bool), retain_in_children: maybe(bool), guardian_source_order_guidance: bool, additional_context_tool_output: bool,
   client_authored: bool, tool_audio_budget_applied: bool, harness_authored_configuration: bool, compaction_without_file_error_sources: bool,
   compaction_output: bool, inherited_user_message: bool, native_search_fallback_used: bool, delivered_assistant_message_incomplete: bool,
@@ -134,17 +140,17 @@ const harnessMetadata = struct({
 const resumeMetadata = struct({
   next_item_ordinal: maybe(uint), observation_clock_floor_ms: maybe(signed), last_started_turn_id: maybe(str),
   rejected_audio_file_ids: list(str), multi_agent_version: maybe(oneOf("disabled", "v1", "v2")),
-  dynamic_tools: struct({ thread_id: uuidString, tools: list(dynamicTool) }, ["thread_id", "tools"]),
-  turn_attribution: struct({
+  dynamic_tools: maybe(struct({ thread_id: uuidString, tools: list(dynamicTool) }, ["thread_id", "tools"])),
+  turn_attribution: maybe(struct({
     turn_id: str, turn_trigger: maybe(str), parent_turn_id: maybe(str), initiating_agent_path: maybe(agentPath), root_turn_id: maybe(str),
-  }, ["turn_id"]),
-  previous_turn_settings: struct({ model: str, cyber_access_program: maybe(oneOf("standard", "daybreak_blue", "daybreak_red")), comp_hash: maybe(str), realtime_active: maybe(bool) }, ["model"]),
+  }, ["turn_id"])),
+  previous_turn_settings: maybe(struct({ model: str, cyber_access_program: maybe(oneOf("standard", "daybreak_blue", "daybreak_red")), comp_hash: maybe(str), realtime_active: maybe(bool) }, ["model"])),
 });
 const retainedContext = struct({
   verified_answers: list(ordered(verifiedAnswer)), incomplete: bool, next_order: uint,
   user_messages: list(ordered(userMessage)), assistant_messages: list(ordered(userMessage)), sender_deliveries: list(ordered(senderMessages)),
   user_messages_incomplete: bool, assistant_messages_incomplete: bool,
-  accepted_file_audio: struct({ turn_id: str, model: str, provider: str, file_ids: list(str) }, ["turn_id", "model", "provider", "file_ids"]),
+  accepted_file_audio: maybe(struct({ turn_id: str, model: str, provider: str, file_ids: list(str) }, ["turn_id", "model", "provider", "file_ids"])),
 }, ["verified_answers", "incomplete"]);
 const tokenUsageRecord = struct({
   thread_id: uuidString, turn_id: str, session_id: uuidString, root_turn_id: str, response_id: str,
@@ -159,13 +165,14 @@ const mcpResourceOrigins = struct({
 function completeCheckpoint(payload: Record<string, any>): boolean {
   const history = payload.replacement_history, metadata = payload.replacement_history_metadata;
   // A checkpoint that cannot replace history must stop pruning outright, not count as absent.
-  return str(payload.message) && uint(payload.window_number)
+  return str(payload.message) && uint(payload.window_number ?? payload.window_id)
     && Array.isArray(history) && history.every(checkpointItem)
     // Metadata without a history cannot pair, and pairs must match one to one.
     && (metadata == null || Array.isArray(history) && Array.isArray(metadata) && metadata.length === history.length && metadata.every(harnessMetadata))
     && optional(payload.guardian_history, list(item => checkpointItem(item) && optional(item.guardian_metadata, harnessMetadata)))
-    && [payload.first_window_id, payload.previous_window_id, payload.compaction_response_id].every(value => optional(value, str))
-    && optional(payload.window_id, windowId) && optional(payload.retained_context, retainedContext)
+    && optional(payload.first_window_id, contextWindowId) && optional(payload.previous_window_id, contextWindowId)
+    && optional(payload.compaction_response_id, str)
+    && optional(payload.window_id, value => uint(value) || contextWindowId(value)) && optional(payload.retained_context, retainedContext)
     && optional(payload.resume_metadata, resumeMetadata) && optional(payload.latest_token_usage_record, tokenUsageRecord)
     && optional(payload.mcp_resource_origins, mcpResourceOrigins);
 }
@@ -207,10 +214,22 @@ function scanValue(key: string, value: unknown, context?: { source?: string }) {
   return value;
 }
 
-// The rollout reader parses the entire line as a serde_json::Value before decoding the item.
-function withinRolloutDepth(value: unknown, depth = 0): boolean {
-  if (value === null || typeof value !== "object") return true;
-  return depth < 127 && Object.values(value).every(child => withinRolloutDepth(child, depth + 1));
+// A later duplicate key hides its earlier value from JSON.parse's reviver, but the
+// rollout reader must decode every string and container before it can replace a key.
+function withinRolloutLimits(text: string): boolean {
+  const escapedSurrogate = /\\u[dD][89a-fA-F]/.test(text);
+  let depth = 0;
+  for (let at = 0; at < text.length; at++) {
+    const char = text[at];
+    if (char === '"') {
+      const end = valueEnd(text, at);
+      if (escapedSurrogate && !JSON.parse(text.slice(at, end)).isWellFormed()) return false;
+      at = end - 1;
+    } else if (char === "{" || char === "[") {
+      if (++depth >= 128) return false;
+    } else if (char === "}" || char === "]") depth--;
+  }
+  return true;
 }
 
 async function scan(path: string): Promise<Rollout> {
@@ -220,7 +239,7 @@ async function scan(path: string): Promise<Rollout> {
   let start = 0;
   try {
     for await (const raw of lines(path)) {
-      const record = JSON.parse(decode.decode(raw), scanValue), payload = record?.payload;
+      const text = decode.decode(raw), record = JSON.parse(text, scanValue), payload = record?.payload;
       if (!object(record) || !string(record.timestamp) || !string(record.type) || !object(payload)
         || !optional(record.ordinal, integer)) throw new UnsupportedHistory("an unsupported rollout record");
       if (start === 0) {
@@ -235,7 +254,7 @@ async function scan(path: string): Promise<Rollout> {
       }
       const end = start + raw.length;
       if (record.type === "compacted") rollout.checkpoints.push({
-        start, end, complete: withinRolloutDepth(record) && completeCheckpoint(payload),
+        start, end, complete: withinRolloutLimits(text) && completeCheckpoint(payload),
       });
       // Rollback can make an older checkpoint current. Leave the snapshot alone
       // rather than reproduce Codex's turn-boundary reconstruction here.
