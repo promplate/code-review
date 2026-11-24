@@ -77,9 +77,10 @@ const maybe = (check: Check): Check => value => value == null || check(value);
 const list = (check: Check): Check => value => Array.isArray(value) && value.every(check);
 const oneOf = (...values: string[]): Check => value => values.includes(value);
 const anyValue: Check = () => true;
-const windowId: Check = value => typeof value === "string" || uint(value) || object(value);
 const struct = (fields: Record<string, Check>, required: string[] = []): Check => value =>
   object(value) && required.every(key => key in value) && Object.entries(value).every(([key, field]) => !(key in fields) || fields[key](field));
+const windowAllocation = struct({ salt: str, ordinal: uint, value: uint }, ["salt", "ordinal", "value"]);
+const windowId: Check = value => str(value) || uint(value) || windowAllocation(value);
 // `Ordered<T>` flattens its value beside the order bookkeeping.
 const ordered = (item: Check): Check => value => item(value) && struct({ revision: maybe(str), inherited: bool, order: uint })(value);
 
@@ -95,10 +96,11 @@ const userMessage = struct({
 const verifiedAnswer = struct({
   turn_id: str, call_id: str, questions: list(struct({ question: str, answer: str }, ["question", "answer"])),
 }, ["turn_id", "call_id", "questions"]);
-const dynamicTool: Check = value => !object(value) ? false
-  : value.type === "function" ? struct({ name: str, description: str, inputSchema: anyValue }, ["name", "description", "inputSchema"])(value)
-  : value.type === "namespace" ? struct({ name: str, description: str, tools: list(dynamicTool) }, ["name", "description", "tools"])(value)
-  : false;
+const dynamicFunction = struct({ type: oneOf("function"), name: str, description: str, inputSchema: anyValue, deferLoading: bool },
+  ["type", "name", "description", "inputSchema"]);
+const dynamicNamespace = struct({ type: oneOf("namespace"), name: str, description: str, tools: list(dynamicFunction) },
+  ["type", "name", "description", "tools"]);
+const dynamicTool: Check = value => dynamicFunction(value) || dynamicNamespace(value);
 const tokenUsage = struct({
   input_tokens: signed, cached_input_tokens: signed, cache_write_input_tokens: signed,
   output_tokens: signed, reasoning_output_tokens: signed, total_tokens: signed,
@@ -182,6 +184,13 @@ function paths(directory: string): string[] {
   return result;
 }
 
+// Serde integer fields reject 1.0 and 1e0. Mark those tokens as non-integers
+// for validation before JSON.parse loses the distinction. Edits use the original bytes.
+function scanValue(_key: string, value: unknown, context?: { source?: string }) {
+  if (typeof value === "number" && Number.isSafeInteger(value) && !/^-?\d+$/.test(context?.source ?? "")) return NaN;
+  return value;
+}
+
 async function scan(path: string): Promise<Rollout> {
   const id = rolloutName.exec(basename(path))![1].toLowerCase();
   const stat = lstatSync(path);
@@ -189,7 +198,7 @@ async function scan(path: string): Promise<Rollout> {
   let start = 0;
   try {
     for await (const raw of lines(path)) {
-      const record = JSON.parse(decode.decode(raw)), payload = record?.payload;
+      const record = JSON.parse(decode.decode(raw), scanValue), payload = record?.payload;
       if (!object(record) || !string(record.timestamp) || !string(record.type) || !object(payload)
         || !optional(record.ordinal, integer)) throw new UnsupportedHistory("an unsupported rollout record");
       if (start === 0) {

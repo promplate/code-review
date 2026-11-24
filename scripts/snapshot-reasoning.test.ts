@@ -98,7 +98,7 @@ test("an incomplete child checkpoint requires full replay of its ancestors", asy
   expect(readFileSync(child)).toEqual(beforeChild);
 });
 
-test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item", "history-sequence", "next-item-ordinal", "token-usage", "retained-context", "guardian-sources", "dynamic-tools", "verified-answers", "usage-counters"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
+test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item", "replacement-item", "message-role", "message-text", "guardian-item", "reasoning-summary", "tool-call", "tool-output", "unknown-item", "history-sequence", "next-item-ordinal", "token-usage", "retained-context", "guardian-sources", "dynamic-tools", "verified-answers", "usage-counters", "window-allocation", "nested-namespace", "defer-loading"])("does not prune behind a JSON-valid checkpoint with invalid %s", async kind => {
   const checkpoint = JSON.parse(compact("latest"));
   if (kind === "timestamp") delete checkpoint.timestamp;
   if (kind === "message") checkpoint.payload.message = 42;
@@ -120,10 +120,25 @@ test.each(["timestamp", "message", "ordinal", "metadata-count", "metadata-item",
   if (kind === "guardian-sources") checkpoint.payload.replacement_history_metadata = [{ guardian_sources: [null] }];
   if (kind === "dynamic-tools") checkpoint.payload.resume_metadata = { dynamic_tools: {} };
   if (kind === "verified-answers") checkpoint.payload.retained_context = { verified_answers: [{}], incomplete: false };
+  if (kind === "window-allocation") checkpoint.payload.window_id = {};
+  if (kind === "nested-namespace" || kind === "defer-loading") {
+    const tool = kind === "nested-namespace"
+      ? { type: "namespace", name: "inner", description: "", tools: [] }
+      : { type: "function", name: "lookup", description: "", inputSchema: {}, deferLoading: "false" };
+    checkpoint.payload.resume_metadata = { dynamic_tools: { thread_id: a, tools: [{ type: "namespace", name: "ns", description: "", tools: [tool] }] } };
+  }
   if (kind === "usage-counters") checkpoint.payload.latest_token_usage_record = {
     thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage: {}, turn_token_usage: {}, thread_token_usage: {},
   };
   const f = fixture(a, [meta(a), row("response_item", reasoning("still-needed")), JSON.stringify(checkpoint) + "\n"]);
+  expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
+  expect(readFileSync(f.file)).toEqual(f.before);
+});
+
+test.each(["1.0", "1e0"])("preserves reasoning when an integer field is written as %s", async token => {
+  // JSON.stringify normalizes both tokens to 1.
+  const checkpoint = compact("current").replace('"window_number":1', '"window_number":' + token);
+  const f = fixture(a, [meta(a), row("response_item", reasoning("needed")), checkpoint]);
   expect((await pruneSnapshotReasoning(f.directory)).skippedReason).toBeString();
   expect(readFileSync(f.file)).toEqual(f.before);
 });
@@ -135,6 +150,10 @@ test("prunes behind a checkpoint whose metadata carries its wire types", async (
   const usage = { input_tokens: 2, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0, total_tokens: 3 };
   checkpoint.payload.latest_token_usage_record = { thread_id: a, turn_id: "turn", session_id: a, root_turn_id: "root", response_id: "response", usage, turn_token_usage: usage, thread_token_usage: usage };
   checkpoint.payload.retained_context = { verified_answers: [], incomplete: false, next_order: 2 };
+  checkpoint.payload.window_id = { salt: "window", ordinal: 1, value: 37 };
+  checkpoint.payload.resume_metadata.dynamic_tools = { thread_id: a, tools: [
+    { type: "namespace", name: "ns", description: "", tools: [{ type: "function", name: "lookup", description: "", inputSchema: {}, deferLoading: true }] },
+  ] };
   const f = fixture(a, [meta(a), row("response_item", reasoning("old")), JSON.stringify(checkpoint) + "\n"]);
   expect(await pruneSnapshotReasoning(f.directory)).toMatchObject({ files: 1, records: 1 });
   expect(readFileSync(f.file)).not.toContain("summary old");
