@@ -23,14 +23,42 @@ give_up() {
   exit 1
 }
 # A request that may already have taken effect cannot be replayed, so its unreadable response ends the run here.
-# gh writes when the method is explicit or `--input` supplies a body, and REST field flags turn a call into a POST too;
-# a GraphQL call is a write only when its document is a mutation.
+# The endpoint decides the protocol, never a field value: `-f external_id='weekly graphql review'` is still REST,
+# and `owner/mutation-testing` still names a GraphQL query. REST writes when the method is explicit, when `--input`
+# supplies a body, or when a field flag switches it to POST; GraphQL writes only when its document mutates.
+endpoint=
+# $1 is gh and $2 the api subcommand, so the endpoint is the first operand after them.
+for ((index = 3; index <= $#; index++)); do
+  [[ ${!index} == -* ]] || { endpoint=${!index}; break; }
+done
 writes=false
-case " $* " in
-  *" --input "* | *" -X "*) writes=true ;;
-  *" graphql "*) if [[ "$*" == *mutation* ]]; then writes=true; fi ;;
-  *" -f "* | *" --field "* | *" -F "* | *" --raw-field "*) writes=true ;;
-esac
+if [[ $1 != gh || $2 != api ]]; then
+  : # Other commands carry no endpoints to read; their transient failures retry on the message alone.
+elif [[ $endpoint == graphql ]]; then
+  document=
+  for ((index = 2; index <= $#; index++)); do
+    case ${!index} in
+      -f | --field | -F | --raw-field)
+        next=$((index + 1)); value=${!next}
+        [[ $value == query=* ]] && document=${value#query=} ;;
+      query=*) value=${!index}; document=${value#query=} ;;
+      --input) writes=true ;;
+    esac
+  done
+  # A document that opens with `mutation` commits; `query`, a bare selection set, and everything else read.
+  [[ $document =~ ^[[:space:]]*mutation ]] && writes=true
+else
+  case " $* " in
+    *" --input "* | *" -f "* | *" --field "* | *" -F "* | *" --raw-field "*) writes=true ;;
+    # `-X GET` keeps a call a read; every other method is a write.
+    *" -X "* | *" --method "*)
+      for ((index = 2; index <= $#; index++)); do
+        case ${!index} in
+          -X | --method) next=$((index + 1)); value=${!next}; [[ ${value^^} == GET ]] || writes=true ;;
+        esac
+      done ;;
+  esac
+fi
 delay=1
 max_delay=30
 for attempt in 1 2 3 4 5 6 7 8; do

@@ -64,12 +64,22 @@ test("a read that returns an empty body retries, since the request changed nothi
   expect(setup.delays()).toEqual([1]);
 });
 
+test("a GraphQL read stays a read when a field value mentions mutation", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "graphql", "-f", 'query=query{repository(owner:"owner",name:"mutation-testing"){id}}']);
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+  expect(setup.delays()).toEqual([1]);
+});
+
 test.each([
   [["api", "repos/owner/repo/pulls/7/reviews", "--input", "-"], "{}"],
   // A REST field flag makes the call a POST even without --input or -X.
   [["api", "repos/owner/repo/check-runs", "-f", "name=code-review"], ""],
   // A GraphQL document that mutates is a write too.
   [["api", "graphql", "-f", "query=mutation { resolveReviewThread(input: {threadId: \"t\"}) { thread { isResolved } } }"], ""],
+  // A REST call stays REST when a field value happens to contain `graphql`, as the hosted check-run call can.
+  [["api", "repos/owner/repo/check-runs", "-f", "external_id=weekly graphql review", "-f", "name=code-review"], ""],
 ])("a write that returns an empty body stops instead of duplicating itself: %j", (args, input) => {
   const setup = fixture(["unexpected end of JSON input"]);
   const result = setup.run(args, input);
