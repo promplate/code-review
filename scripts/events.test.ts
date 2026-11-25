@@ -1667,6 +1667,22 @@ test("label, assignee and preview deployment changes reach the review with what 
   ]);
 });
 
+test("untrusted side references and unchanged issue prose do not reach the reviewer", () => {
+  const issue = { number: 8, title: "Regarding #7", body: "Old description" };
+  const outsider = frame("issues", { action: "opened", issue }, "outsider", false);
+  const outsiderPr = frame("pull_request", { action: "opened", pull_request: { number: 8, title: "Regarding #7", body: "Outsider text" } }, "outsider-pr", false);
+  expect(runLoggedHook(outsider + outsiderPr).contexts).toEqual([]);
+
+  const labeled = frame("issues", { action: "labeled", issue, label: { name: "triage" } }, "labeled");
+  const edited = frame("issues", { action: "edited", issue, changes: { body: { from: "Earlier body" } } }, "edited");
+  const { contexts } = runLoggedHook(labeled + edited, { PR_NUMBER: "", ISSUE_NUMBER: "8" });
+  expect(contexts[0]).toMatchObject({ action: "labeled", issue: { number: 8 }, label: { name: "triage" } });
+  expect(contexts[0].issue).not.toHaveProperty("title");
+  expect(contexts[0].issue).not.toHaveProperty("body");
+  expect(contexts[1]).toMatchObject({ action: "edited", issue: { number: 8, body: issue.body } });
+  expect(contexts[1].issue).not.toHaveProperty("title");
+});
+
 test("deployment statuses preserve the reported environment and log URL", () => {
   const deployment = { sha: "head", environment: "Staging" };
   const url = "https://ci.example.test/deployment/1";

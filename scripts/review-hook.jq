@@ -5,6 +5,7 @@ def clip($n; $source): if . == null then null else length as $len
 # The review already knows its repository, so links inside it lose the prefix and external links stay absolute.
 def repo_url: ("https://github.com/" + env.GITHUB_REPOSITORY) as $base
   | if . != null and (. == $base or startswith($base + "/")) then .[($base | length):] else . end;
+def human_writer($frame; $body): $frame.writer == true and $body.sender.type != "Bot";
 def prune: walk(if type == "object" then with_entries(select(.value != null)) else . end);
 # Instructions tell a side issue or pull request to name the subject it answers, so that mention is what makes it relevant.
 # A repository-wide stream would bury the review; a bug number inside `#71` must not count as a mention of `#7`.
@@ -52,13 +53,14 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
         end)
       # A side issue or pull request this run opened, or one covering it, names the subject instead of the number.
       or (($frame.event | IN("pull_request", "issues")) and $body.action == "opened"
+        and human_writer($frame; $body)
         and ($pr == "" or ($body.pull_request.number | tostring) != $pr)
         and ((if $frame.event == "pull_request" then ($body.pull_request.title, $body.pull_request.body) else ($body.issue.title, $body.issue.body) end) | names_subject)))
   | select($body.sender.login != env.BOT_LOGIN)
   # Other apps review these pull requests too, so their review activity is context even without write access; their
   # issue comments still are not, which keeps ordinary bot chatter out of the review.
   | select(($frame.event | IN("commit_comment", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread") | not)
-      or ($frame.writer == true and $body.sender.type != "Bot")
+      or (human_writer($frame; $body))
       or (($frame.event | IN("pull_request_review", "pull_request_review_comment", "pull_request_review_thread")) and $body.sender.type == "Bot"))
   | select(($frame.event | IN("check_run", "status") | not) or (env.GITHUB_RUN_ID // "") == ""
       or (($body.check_run.details_url // $body.target_url // "") | test("/actions/runs/" + env.GITHUB_RUN_ID + "(/|[?#]|$)") | not))
@@ -75,8 +77,8 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
       + (if $frame.event == "push" then {ref: $body.ref, after: $body.after} else {} end)
       + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha},
           # An edited title or description is the change itself; an opened one is new to the review. Other events do not repeat the PR text.
-          title: (if ($body.action | IN("edited", "opened")) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
-          body: (if ($body.action | IN("edited", "opened")) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
+          title: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.title != null))) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
+          body: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.body != null))) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
           merged: (if $body.action == "closed" then $body.pull_request.merged else null end)}} else {} end)
       # A label or assignee change carries no text of its own, so name what changed or the review learns only that something did.
       + (if $frame.event == "pull_request" and ($body.action | IN("labeled", "unlabeled")) then {label: {name: $body.label.name}} else {} end)
@@ -86,7 +88,8 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
       + (if $frame.event == "pull_request_review_comment" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, comment: {id: $body.comment.id, commit_id: $body.comment.commit_id, body: $body.comment.body, path: $body.comment.path, line: $body.comment.line, html_url: ($body.comment.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review_thread" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, thread: {node_id: $body.thread.node_id, comments: [$body.thread.comments[]? | {body, path, line, html_url: (.html_url | repo_url)}]}} else {} end)
       + (if $frame.event == "commit_comment" then {comment: {id: $body.comment.id, commit_id: $body.comment.commit_id, body: $body.comment.body, path: $body.comment.path, line: $body.comment.line, html_url: ($body.comment.html_url | repo_url)}} else {} end)
-      + (if $frame.event == "issues" then {issue: {number: $body.issue.number, state: $body.issue.state, title: ($body.issue.title | clip(200; "issue #\($body.issue.number)")), body: (($body.issue.body // "") | clip(2000; "issue #\($body.issue.number)")), html_url: ($body.issue.html_url | repo_url)},
+      + (if $frame.event == "issues" then {issue: {number: $body.issue.number, state: $body.issue.state, title: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.title != null))) then ($body.issue.title | clip(200; "issue #\($body.issue.number)")) else null end),
+          body: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.body != null))) then (($body.issue.body // "") | clip(2000; "issue #\($body.issue.number)")) else null end), html_url: ($body.issue.html_url | repo_url)},
           label: (if ($body.action | IN("labeled", "unlabeled")) then {name: $body.label.name} else null end),
           assignee: (if ($body.action | IN("assigned", "unassigned")) then {login: $body.assignee.login} else null end)} else {} end)
       + (if $frame.event == "deployment_status" then {deployment: {sha: $body.deployment.sha, ref: $body.deployment.ref, environment: $body.deployment.environment},
