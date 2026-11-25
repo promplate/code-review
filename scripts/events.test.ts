@@ -1053,6 +1053,24 @@ test("an issue wakes the agent without a verdict schema", () => {
   expect(out).toContain(`--output-last-message\n${join(dir, "last-message.md")}\n`);
 });
 
+test("the issue prompt consumes the triggering comment before the next hook", () => {
+  const { dir, env } = fixture();
+  const trigger = { action: "created", sender: human, issue: { number: 7 }, comment: { id: 9, body: "Review the examples" } };
+  writeFileSync(join(dir, "event.json"), JSON.stringify(trigger));
+  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", trigger, "trigger")
+    + frame("issue_comment", { ...trigger, comment: { id: 10, body: "Include the README" } }, "follow-up"));
+  const issueEnv = { ...env, AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "7", GITHUB_EVENT_NAME: "issue_comment", ACTIVITY_ID: "trigger" };
+  const run = step("Run codex review").run;
+  const setup = run.slice(run.indexOf("# Seed the hook receipts"), run.indexOf("fresh() {"));
+  const prompts = Bun.spawnSync(["bash", "-ec", setup + '\nprintf "%s\\n" "$OPEN" "$CONTINUE"'], { env: issueEnv });
+  expect(prompts.exitCode).toBe(0);
+  expect(prompts.stdout.toString().match(/Review the examples/g)).toHaveLength(2);
+  const hook = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: issueEnv, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+  expect(hook.exitCode).toBe(0);
+  expect(hook.stdout.toString()).toContain("Include the README");
+  expect(hook.stdout.toString()).not.toContain("Review the examples");
+});
+
 test("issue runs propagate Codex failures without requiring a verdict", () => {
   const { dir, env } = fixture();
   mkdirSync(join(dir, "sessions"));
@@ -1630,7 +1648,8 @@ test("an issue run hears its own issue and new issues that name it", () => {
   const named = frame("issues", { action: "opened", issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.",
     html_url: "https://github.com/owner/repo/issues/79" } }, "named");
   const unrelated = frame("issues", { action: "opened", issue: { number: 80, state: "open", title: "Unrelated", body: "" } }, "unrelated");
-  const { contexts, text, output } = runLoggedHook(asked + elsewhere + named + unrelated, { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  const branchComment = frame("commit_comment", { action: "created", comment: { id: 11, body: "About this commit", commit_id: "head" } }, "branch-comment");
+  const { contexts, text, output } = runLoggedHook(asked + elsewhere + named + unrelated + branchComment, { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
   const message = JSON.parse(output).reason;
   expect(message).toStartWith("New GitHub activity on issue #77:");
   expect(message).not.toContain("JSON review");

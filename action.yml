@@ -249,8 +249,13 @@ runs:
               echo "ACTIVITY_WRITER=true" >> "$GITHUB_ENV"
             fi ;;
           issue_comment|issues|pull_request_review|pull_request_review_comment|pull_request_review_thread)
-            # A consumed comment cannot suppress review of a head whose publication never completed.
-            if [ -n "$PR_NUMBER" ] && [ -n "$published" ] && [ "$published" = "$HEAD_SHA" ] && [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."; fi
+            if [ -n "$published" ] && [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then
+              # A PR still needs a verdict on each head. Issue comment creation and deletion happen once per comment.
+              if { [ -n "$PR_NUMBER" ] && [ "$published" = "$HEAD_SHA" ]; } \
+                || { [ "$AGENT" = true ] && [ "$event" = issue_comment ] && jq -e '.action | IN("created", "deleted")' "$GITHUB_EVENT_PATH" > /dev/null; }; then
+                echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."
+              fi
+            fi
             # Plain issues reach the agent without a running review, so their activity is authorized here too.
             sender=$(jq -r .sender.login "$GITHUB_EVENT_PATH")
             if [ "$sender" = "$BOT_LOGIN" ]; then echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Ignoring the App's own activity."

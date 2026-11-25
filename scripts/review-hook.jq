@@ -44,7 +44,7 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
       or ($frame.event == "deployment_status" and ($body.deployment.sha // "") == env.HEAD_SHA
         and ($body.deployment_status.state | IN("success", "failure", "error")))
       or (if $pr == "" then
-          ($frame.event == "commit_comment" and $body.comment.commit_id == env.HEAD_SHA)
+          ($frame.event == "commit_comment" and (env.ISSUE_NUMBER // "") == "" and $body.comment.commit_id == env.HEAD_SHA)
           # An issue run answers activity on its own issue; new issues and pull requests arrive through their mention below.
           or (($frame.event | IN("issue_comment", "issues")) and is_subject_issue($body.issue.number))
         else ($frame.event | IN("pull_request", "issue_comment", "pull_request_review", "pull_request_review_comment", "pull_request_review_thread"))
