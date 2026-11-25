@@ -29,7 +29,7 @@ def edit_mark: ({add: "\u001b[32m+\u001b[0m", update: "\u001b[33m~\u001b[0m", de
 def edit_path: "\(.kind | edit_mark) \(.path)";
 def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
 # A reset also keeps the final whitespace cleanup from trimming diff context.
-def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "" end)\(.)\u001b[0m";
+def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "\u001b[90m" end)\(.)\u001b[0m";
 def edit_body: edit_path + (if .patch then " \(.patch | edit_stats)" + (.patch.lines | map("\n" + edit_line) | join("")) else "" end);
 # Item titles are data too; break command markers there and suppress commands while printing their bodies.
 def fold($title; $body):
