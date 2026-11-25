@@ -51,7 +51,7 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
           and (($frame.event != "pull_request") or ($body.action | IN("opened", "reopened") | not))
           and ([$body.number, $body.issue.number, $body.pull_request.number] | map(select(. != null)) | first == ($pr | tonumber))
         end)
-      # A side issue or pull request this run opened, or one covering it, names the subject instead of the number.
+      # Writers can link a new issue or pull request to this review by mentioning its subject.
       or (($frame.event | IN("pull_request", "issues")) and $body.action == "opened"
         and human_writer($frame; $body)
         and ($pr == "" or ($body.pull_request.number | tostring) != $pr)

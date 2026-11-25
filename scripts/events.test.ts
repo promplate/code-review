@@ -427,20 +427,23 @@ test("activity links drop this repository's prefix and keep external ones", () =
 });
 
 test("an edited pull request title and body reach the review", () => {
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "New title", body: "New description", head: { sha: "head" } } }, "edit"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { title: { from: "Old title" }, body: { from: "Old description" } },
+    pull_request: { number: 7, title: "New title", body: "New description", head: { sha: "head" } } }, "edit"));
   expect(output).toContain('\\"title\\":\\"New title\\"');
   expect(output).toContain('\\"body\\":\\"New description\\"');
 });
 
 test.each([null, ""])("clearing a PR description preserves an explicit empty body (%j)", (body) => {
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { body: { from: "Old description" } },
+    pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
   const activity = JSON.parse(JSON.parse(output).reason.split("\n")[1]);
   expect(activity.pull_request.body).toBe("");
 });
 
 test("a truncated edit says so instead of hiding the change", () => {
   const body = "x".repeat(2000) + "TAIL";
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { title: { from: "Old title" }, body: { from: "Old description" } },
+    pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));
   expect(output).toContain("truncated at 2000 of 2004 characters");
   expect(output).not.toContain("TAIL");
   expect(output).toContain("truncated at 200 of 201 characters");
@@ -1671,7 +1674,7 @@ test("untrusted side references and unchanged issue prose do not reach the revie
   const issue = { number: 8, title: "Regarding #7", body: "Old description" };
   const outsider = frame("issues", { action: "opened", issue }, "outsider", false);
   const outsiderPr = frame("pull_request", { action: "opened", pull_request: { number: 8, title: "Regarding #7", body: "Outsider text" } }, "outsider-pr", false);
-  expect(runLoggedHook(outsider + outsiderPr).contexts).toEqual([]);
+  expect(runHook(outsider + outsiderPr).output).toBe("");
 
   const labeled = frame("issues", { action: "labeled", issue, label: { name: "triage" } }, "labeled");
   const edited = frame("issues", { action: "edited", issue, changes: { body: { from: "Earlier body" } } }, "edited");
@@ -1999,6 +2002,31 @@ function runGate(dir: string, env: Record<string, string>) {
   expect(result.exitCode).toBe(0);
   return readFileSync(join(dir, "github-env"), "utf8");
 }
+
+test.each(["pull_request", "pull_request_target"])("seeded %s edits carry the sender's write permission", event => {
+  const { dir, env } = fixture();
+  const edit = { action: "edited", sender: human, changes: { body: { from: "Earlier body" } },
+    pull_request: { number: 7, title: "Unchanged", body: "New description", head: { sha: "head" } } };
+  writeFileSync(join(dir, "event.json"), JSON.stringify(edit));
+  executable(dir, "gh", `#!/bin/sh
+[ "$*" = "api repos/owner/repo/collaborators/collaborator/permission --jq .permission" ] || exit 1
+echo "$TEST_PERMISSION"
+`);
+  mkdirSync(join(dir, "scripts"));
+  writeFileSync(join(dir, "scripts/subscribe.sh"), "exit 0\n");
+  const subscription = step("Subscribe PR updates via SSE").run;
+  for (const permission of ["read", "write"]) {
+    const gate = runGate(dir, { ...env, GITHUB_EVENT_NAME: event, TEST_PERMISSION: permission });
+    expect(gate).not.toContain("SKIP=true");
+    const seed = Bun.spawnSync(["bash", "-ec", 'set -a\nsource "$GITHUB_ENV"\n' + subscription], {
+      env: { ...env, ACTIVITY_WRITER: "false", GITHUB_ACTION_PATH: dir, GITHUB_EVENT_NAME: event },
+    });
+    expect(seed.exitCode).toBe(0);
+    const { contexts } = runLoggedHook(readFileSync(join(dir, "sse.jsonl"), "utf8"));
+    expect(contexts[0].pull_request.body).toBe(permission === "write" ? edit.pull_request.body : undefined);
+    expect(contexts[0].pull_request).not.toHaveProperty("title");
+  }
+});
 
 test("the action distinguishes commit statuses on the same SHA", async () => {
   const { dir, env } = fixture(), ids: string[] = [];
