@@ -1630,7 +1630,10 @@ test("an issue run hears its own issue and new issues that name it", () => {
   const named = frame("issues", { action: "opened", issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.",
     html_url: "https://github.com/owner/repo/issues/79" } }, "named");
   const unrelated = frame("issues", { action: "opened", issue: { number: 80, state: "open", title: "Unrelated", body: "" } }, "unrelated");
-  const { contexts, text } = runLoggedHook(asked + elsewhere + named + unrelated, { PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  const { contexts, text, output } = runLoggedHook(asked + elsewhere + named + unrelated, { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  const message = JSON.parse(output).reason;
+  expect(message).toStartWith("New GitHub activity on issue #77:");
+  expect(message).not.toContain("JSON review");
   expect(contexts).toEqual([
     { event: "issue_comment", action: "created", sender: human, issue: { number: 77 }, comment: { ...comment, html_url: "/issues/77#issuecomment-9" } },
     { event: "issues", action: "opened", sender: human,
@@ -1640,6 +1643,12 @@ test("an issue run hears its own issue and new issues that name it", () => {
     "issue_comment/created collaborator /issues/77#issuecomment-9",
     "issues/opened collaborator /issues/79",
   ]);
+});
+
+test("an interrupted issue subscription recovers the issue discussion", () => {
+  const { contexts } = runLoggedHook(frame("subscription_recovery", { reason: "connection_failed" }), { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  expect(contexts[0].recovery).toContain("issue #77");
+  expect(contexts[0].recovery).toContain("write access");
 });
 
 test("label, assignee and preview deployment changes reach the review with what changed", () => {
@@ -1675,7 +1684,7 @@ test("untrusted side references and unchanged issue prose do not reach the revie
   const issue = { number: 8, title: "Regarding #7", body: "Old description" };
   const outsider = frame("issues", { action: "opened", issue }, "outsider", false);
   const outsiderPr = frame("pull_request", { action: "opened", pull_request: { number: 8, title: "Regarding #7", body: "Outsider text" } }, "outsider-pr", false);
-  expect(runHook(outsider + outsiderPr).output).toBe("");
+  expect(runLoggedHook(outsider + outsiderPr).contexts).toEqual([]);
 
   const labeled = frame("issues", { action: "labeled", issue, label: { name: "triage" } }, "labeled");
   const edited = frame("issues", { action: "edited", issue, changes: { body: { from: "Earlier body" } } }, "edited");
