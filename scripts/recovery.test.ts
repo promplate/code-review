@@ -600,6 +600,15 @@ esac
   }
 });
 
+test.each([["", true], ["7", true], ["07", true], ["0", false], ["0.5", false], ["7days", false]] as const)("debug retention %j controls whether the log is archived", (days, saved) => {
+  const setup = fixture();
+  writeFileSync(join(setup.dir, "codex.jsonl"), "{}\n");
+  const result = run("Archive Codex events", setup, { DEBUG_RETENTION_DAYS: days, ENCRYPT_SNAPSHOTS: "false" });
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "codex.jsonl.bin"))).toBe(saved);
+  expect(existsSync(setup.env.GITHUB_OUTPUT) && readFileSync(setup.env.GITHUB_OUTPUT, "utf8").includes("saved=true")).toBe(saved);
+});
+
 test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");

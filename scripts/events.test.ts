@@ -1201,15 +1201,63 @@ test("file edits and searches fold into titled blocks", () => {
     expect(result.exitCode).toBe(0);
     return result.stdout.toString();
   };
-  const changes = [{ path: "a.ts", kind: "update" }, { path: "b.ts", kind: "add" }];
-  expect(log({ type: "file_change", changes, status: "completed" })).toBe(`::group::edit update a.ts, add b.ts\n\u001b[90mupdate a.ts\u001b[0m\n\u001b[90madd b.ts\u001b[0m\n::endgroup::\n\n`);
-  expect(log({ type: "file_change", changes, status: "failed" })).toContain(`::group::\u001b[31medit update a.ts, add b.ts\u001b[0m`);
-  expect(log({ type: "file_change", changes: [...changes, ...changes, { path: "c.ts", kind: "delete" }], status: "completed" })).toContain("::group::edit 5 files");
+  const changes = [{ path: "a.ts", kind: "update" }, { path: "b.ts", kind: "add" }, { path: "c.ts", kind: "delete" }];
+  const edit = "\u001b[36medit\u001b[0m";
+  const rows = ["\u001b[33m~\u001b[0m a.ts", "\u001b[32m+\u001b[0m b.ts", "\u001b[31m-\u001b[0m c.ts"];
+  expect(log({ type: "file_change", changes, status: "completed" })).toBe(`::group::${edit} ${rows.join(", ")}\n${rows.join("\n")}\n::endgroup::\n\n`);
+  expect(log({ type: "file_change", changes, status: "failed" })).toContain(`::group::${edit} \u001b[31m[failed]\u001b[0m ${rows.join(", ")}`);
+  expect(log({ type: "file_change", changes: [...changes, { path: "d.ts", kind: "add" }, { path: "e.ts", kind: "update" }], status: "completed" })).toContain(`::group::${edit} 5 files\n${rows.join("\n")}`);
   const search = { type: "web_search", query: "concurrency queue", action: { type: "search" }, results: [{ title: "Docs", url: "https://x" }] };
   expect(log(search)).toContain(`::group::search concurrency queue\n[{\u001b[36m"title"\u001b[0m:\u001b[32m"Docs"\u001b[0m`);
   expect(log({ ...search, query: "", action: { type: "open_page", url: "https://docs" } })).toContain("::group::open https://docs");
   // The start event has nothing to fold and must not print a bare type name.
   expect(log({ type: "web_search", query: "x" }, "item.started")).toBe("");
+});
+
+test("file edits show exact totals and highlighted transcript diffs after resume", () => {
+  const { dir, env } = fixture();
+  const thread = "12345678-1234-1234-1234-123456789abc", sessionDir = join(dir, "sessions", "2026", "11", "25");
+  const rollout = join(sessionDir, `rollout-2026-11-25T00-00-00-${thread}.jsonl`);
+  const raw = (changes: object, status = "completed") => ({ type: "event_msg", payload: { type: "item_completed", item: { type: "FileChange", id: "raw_call", status, changes } } });
+  const update = { path: "review.ts", kind: "update" };
+  const edits = (id: string, changes: object[], status = "completed") => ({ type: "item.completed", item: { type: "file_change", id, changes, status } });
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(rollout, JSON.stringify(raw({ "review.ts": { type: "update", unified_diff: "@@ -1 +1 @@\n-older\n+stale\n" } })) + "\n");
+  const bridge = [process.execPath, join(root, "scripts/codex-patches.mjs")];
+  const baseline = Bun.spawnSync([...bridge, "--baseline", thread], { env });
+  expect(baseline.exitCode).toBe(0);
+  const records = [
+    raw({ "review.ts": { type: "update", unified_diff: "ignored" } }, "failed"),
+    raw({ "review.ts": { type: "update", unified_diff: "--- old\n+++ new\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n" },
+      "add.ts": { type: "add", content: "added\n\n" }, "delete.ts": { type: "delete", content: "gone\nlast line" } }),
+    raw({ "review.ts": { type: "update", unified_diff: "@@ -1 +1,2 @@\n keep\n+second edit\n" } }),
+  ];
+  writeFileSync(rollout, records.map(event => JSON.stringify(event) + "\n").join(""), { flag: "a" });
+  const render = (items: object[], cursor = baseline.stdout.toString().trim()) => {
+    const input = [{ type: "thread.started", thread_id: thread }, ...items].map(event => JSON.stringify(event) + "\n").join("");
+    const enriched = Bun.spawnSync([...bridge, cursor], { env, stdin: Buffer.from(input) });
+    expect(enriched.exitCode).toBe(0);
+    const rendered = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: enriched.stdout });
+    expect(rendered.exitCode).toBe(0);
+    return rendered.stdout.toString();
+  };
+  const result = render([edits("item_0", [update], "failed"), edits("item_1", [update, { path: "add.ts", kind: "add" }, { path: "delete.ts", kind: "delete" }]), edits("item_2", [update])]);
+  const plain = result.replace(/\u001b\[[0-9;]*m/g, "");
+  expect(plain).toContain("::group::edit ~ review.ts, + add.ts, - delete.ts (+3 -3)\n::stop-commands::s\n~ review.ts +1 -1\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n");
+  expect(plain).toContain("+ add.ts +2 -0\n+added\n+\n- delete.ts +0 -2\n-gone\n-last line\n::s::\n::endgroup::");
+  expect(plain).toContain("::group::edit ~ review.ts (+1 -0)\n~ review.ts +1 -0\n@@ -1 +1,2 @@\n keep\n+second edit");
+  expect(plain).not.toContain("stale");
+  expect(result).toContain("\u001b[31m---old\u001b[0m\n\u001b[32m+++ ##[error]new\u001b[0m");
+  expect(render([edits("item_1", [{ path: "other.ts", kind: "update" }]), edits("item_2", [update])])).not.toContain("second edit");
+
+  const parent = "11111111-1111-1111-1111-111111111111";
+  const settings = (id: string) => ({ type: "event_msg", payload: { type: "thread_settings_applied", thread_id: id } });
+  const foreign = { ...records[1], payload: { ...records[1].payload, thread_id: parent } };
+  writeFileSync(rollout, [{ type: "session_meta", payload: { id: thread, forked_from_id: parent } }, settings(parent), records[1], settings(thread), foreign, records[2]]
+    .map(event => JSON.stringify(event) + "\n").join(""));
+  const forked = render([edits("item_3", [update])], "");
+  expect(forked).toContain("\u001b[32m+second edit\u001b[0m");
+  expect(forked).not.toContain("---old");
 });
 
 test("folded item data cannot run workflow commands", () => {
