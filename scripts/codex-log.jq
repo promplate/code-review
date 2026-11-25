@@ -83,9 +83,9 @@ fromjson? // {type: "error", message: .}
   # A search folds its query and results; the other actions name their target instead.
   elif .type == "item.completed" and .item.type == "web_search" then
     .item as $search
-    | (if $search.action.type == "open_page" then "open \($search.action.url // "")"
-       elif $search.action.type == "find_in_page" then "find \($search.action.pattern // "") in \($search.action.url // "")"
-       else "search \($search.query // "")" end) as $title
+    | (if $search.action.type == "open_page" then "\u001b[35mopen\u001b[0m \($search.action.url // "")"
+       elif $search.action.type == "find_in_page" then "\u001b[35mfind\u001b[0m \($search.action.pattern // "") in \($search.action.url // "")"
+       else "\u001b[35msearch\u001b[0m \($search.query // "")" end) as $title
     | fold($title; if (($search.results // []) | length) == 0 then "" else ($search.results | json) end)
   # A to-do list folds as one checklist at the end of the turn.
   elif .type == "item.completed" and .item.type == "todo_list" then

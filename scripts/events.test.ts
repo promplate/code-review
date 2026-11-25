@@ -1208,8 +1208,9 @@ test("file edits and searches fold into titled blocks", () => {
   expect(log({ type: "file_change", changes, status: "failed" })).toContain(`::group::${edit} \u001b[31m[failed]\u001b[0m ${rows.join(", ")}`);
   expect(log({ type: "file_change", changes: [...changes, { path: "d.ts", kind: "add" }, { path: "e.ts", kind: "update" }], status: "completed" })).toContain(`::group::${edit} 5 files\n${rows.join("\n")}`);
   const search = { type: "web_search", query: "concurrency queue", action: { type: "search" }, results: [{ title: "Docs", url: "https://x" }] };
-  expect(log(search)).toContain(`::group::search concurrency queue\n[{\u001b[36m"title"\u001b[0m:\u001b[32m"Docs"\u001b[0m`);
-  expect(log({ ...search, query: "", action: { type: "open_page", url: "https://docs" } })).toContain("::group::open https://docs");
+  expect(log(search)).toContain(`::group::\u001b[35msearch\u001b[0m concurrency queue\n[{\u001b[36m"title"\u001b[0m:\u001b[32m"Docs"\u001b[0m`);
+  expect(log({ ...search, query: "", action: { type: "open_page", url: "https://docs" } })).toContain("::group::\u001b[35mopen\u001b[0m https://docs");
+  expect(log({ ...search, query: "", action: { type: "find_in_page", pattern: "queue", url: "https://docs" } })).toContain("::group::\u001b[35mfind\u001b[0m queue in https://docs");
   // The start event has nothing to fold and must not print a bare type name.
   expect(log({ type: "web_search", query: "x" }, "item.started")).toBe("");
 });
