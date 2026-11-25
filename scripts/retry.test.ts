@@ -49,9 +49,35 @@ test.each([
   const setup = fixture([error]);
   const result = setup.run();
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toBe(error + "\n");
+  expect(result.stderr.toString()).toStartWith(error + "\n");
+  // A decode error names no endpoint, so the failure always says which command produced it.
+  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s): gh api graphql\n");
   expect(setup.calls()).toHaveLength(1);
   expect(setup.delays()).toEqual([]);
+});
+
+test("a read that returns an empty body retries, since the request changed nothing", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "graphql", "-f", "query={viewer{login}}"]);
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+  expect(setup.delays()).toEqual([1]);
+});
+
+test("a write that returns an empty body stops instead of duplicating itself", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "repos/owner/repo/pulls/7/reviews", "--input", "-"], "{}");
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s): gh api repos/owner/repo/pulls/7/reviews --input -\n");
+  expect(setup.calls()).toHaveLength(1);
+  expect(setup.delays()).toEqual([]);
+});
+
+test("a GraphQL server error retries", () => {
+  const setup = fixture(["GraphQL: Something went wrong while executing your query on 2026-11-25T16:14:45Z. Please include `8884:37234` when reporting this issue."]);
+  expect(setup.run().exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+  expect(setup.delays()).toEqual([1]);
 });
 
 test.each([

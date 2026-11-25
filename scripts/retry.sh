@@ -16,6 +16,15 @@ if [[ "$1" = gh && "$2" = api ]]; then
   trap finish EXIT
   gh() { command gh "$@" > "$response"; }
 fi
+# A bare decode error names no endpoint, so every failure says what failed and how often it was tried.
+# GraphQL queries are the bulk of this argument list; the head of it still names the endpoint and its arguments.
+give_up() {
+  printf 'retry.sh: failed after %s attempt(s): %s\n' "${attempt:-1}" "$(printf '%.240s' "$*" | tr '\n' ' ')" >&2
+  exit 1
+}
+# A request that may already have taken effect cannot be replayed, so an unreadable response ends it here.
+writes=false
+case " $* " in *" --input "* | *" -X "*) writes=true ;; esac
 delay=1
 max_delay=30
 for attempt in 1 2 3 4 5 6 7 8; do
@@ -34,20 +43,24 @@ for attempt in 1 2 3 4 5 6 7 8; do
         delay=$((delay < 60 ? 60 : delay))
         max_delay=300
       else
-        exit 1
+        give_up "$@"
       fi
     else
-      [[ "$status" = 5?? ]] || exit 1
+      [[ "$status" = 5?? ]] || give_up "$@"
     fi
+  elif grep -q 'unexpected end of JSON input' "$err"; then
+    # gh says this when a response body is empty or truncated: the request reached GitHub, the reply did not arrive whole.
+    [[ "$writes" = false ]] || give_up "$@"
   else
     # GraphQL validation, local command errors and unknown failures are terminal.
     grep -Eiq \
       -e 'i/o timeout|TLS handshake timeout|Client.Timeout|context deadline exceeded|connection timed out|operation timed out' \
       -e 'connection (reset|refused|aborted)|could not resolve (host|proxy)|could not connect|failed to connect|error connecting to ' \
       -e 'the remote end hung up unexpectedly' \
-      -e 'no such host|temporary failure in name resolution|network is unreachable|(^|[^[:alnum:]])(unexpected )?EOF([^[:alnum:]]|$)' "$err" || exit 1
+      -e 'Something went wrong while executing your query' \
+      -e 'no such host|temporary failure in name resolution|network is unreachable|(^|[^[:alnum:]])(unexpected )?EOF([^[:alnum:]]|$)' "$err" || give_up "$@"
   fi
   [ "$attempt" = 8 ] || sleep "$delay"
   delay=$((delay * 2 > max_delay ? max_delay : delay * 2))
 done
-exit 1
+give_up "$@"
