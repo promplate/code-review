@@ -335,7 +335,8 @@ runs:
         printf 'EYES_REACTION_PATH=%s\nEYES_REACTION_ID=%s\n' "$EYES_REACTION_PATH" "$EYES_REACTION_ID" >> "$GITHUB_ENV"
 
     - name: Subscribe PR updates via SSE
-      if: steps.app-token.outputs.skip != 'true' && (env.AGENT != 'true' && env.SKIP != 'true')
+      # An issue run needs the stream as well: its issue, and issues or pull requests that name it, arrive no other way.
+      if: steps.app-token.outputs.skip != 'true' && env.SKIP != 'true'
       shell: bash
       run: |
         # The webhook that started this run has the shape the broker relays, so the hooks read one stream and dedupe by id.

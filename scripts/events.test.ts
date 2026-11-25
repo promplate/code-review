@@ -53,7 +53,8 @@ function runLoggedHook(log: string, overrides = {}) {
   expect(formatted.exitCode).toBe(0);
   expect(formatted.stderr.toString()).toBe("");
   const activities = injected.split("\n").filter(Boolean).map(line => JSON.parse(line));
-  const contexts = JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line));
+  // A hook that correctly delivers nothing prints nothing.
+  const contexts = hook.output ? JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line)) : [];
   expect(contexts).toEqual(activities.map(({ workflow, ...context }) => context));
   return { ...hook, contexts, activities, text: formatted.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "") };
 }
