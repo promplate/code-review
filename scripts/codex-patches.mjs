@@ -16,14 +16,14 @@ function filePatch(change) {
   const text = change.type === "update" ? change.unified_diff : change.content;
   if (typeof text !== "string") return;
   let lines = text === "" ? [] : text.replace(/\n$/, "").split("\n");
+  if (change.type === "delete") return { lines: [], added: 0, removed: lines.length };
   if (change.type === "update" && lines.length) {
     // The file row supplies the headers. Inside a hunk, even `+++` or `---` can be file content.
     const start = lines.findIndex(line => line.startsWith("@@ "));
     if (start < 0) return;
     lines = lines.slice(start);
-  } else if (change.type === "add" || change.type === "delete") {
-    const prefix = change.type === "add" ? "+" : "-";
-    lines = lines.map(line => prefix + line);
+  } else if (change.type === "add") {
+    lines = lines.map(line => "+" + line);
   }
   return { lines, move_path: change.move_path, added: lines.filter(line => line.startsWith("+")).length, removed: lines.filter(line => line.startsWith("-")).length };
 }
