@@ -93,6 +93,7 @@ jobs:
           broker: ${{ inputs.broker }}
           encrypt-snapshots: ${{ inputs.encrypt-snapshots }}
           debug-retention-days: ${{ vars.REVIEW_DEBUG_RETENTION_DAYS }}
+          session-retention-days: ${{ vars.REVIEW_SESSION_RETENTION_DAYS }}
           setup: ${{ inputs.setup }}
           instructions: ${{ inputs.instructions }}
           model-catalog-file: ${{ inputs.model-catalog-file }}

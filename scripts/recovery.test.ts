@@ -609,6 +609,15 @@ test.each([["", true], ["7", true], ["07", true], ["0", false], ["0.5", false], 
   expect(existsSync(setup.env.GITHUB_OUTPUT) && readFileSync(setup.env.GITHUB_OUTPUT, "utf8").includes("saved=true")).toBe(saved);
 });
 
+test.each([["", "1"], ["7", "7"], ["07", "07"], ["0", "1"], ["0.5", "1"], ["7days", "1"]] as const)("session retention %j sets retention-days to %s", (days, retention) => {
+  const setup = fixture();
+  const result = run("Archive codex session", setup, { SESSION_RETENTION_DAYS: days, ENCRYPT_SNAPSHOTS: "false" });
+  expect(result.exitCode).toBe(0);
+  expect(existsSync(join(setup.dir, "snapshot.bin"))).toBe(true);
+  expect(readFileSync(setup.env.GITHUB_OUTPUT, "utf8")).toBe(`retention-days=${retention}\n`);
+  expect(step("Save codex session").with["retention-days"]).toBe("${{ steps.encrypt-session.outputs.retention-days }}");
+});
+
 test("snapshot upload failure restores the previous checkpoint and replays newer activity", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
