@@ -64,11 +64,17 @@ test("a read that returns an empty body retries, since the request changed nothi
   expect(setup.delays()).toEqual([1]);
 });
 
-test("a write that returns an empty body stops instead of duplicating itself", () => {
+test.each([
+  [["api", "repos/owner/repo/pulls/7/reviews", "--input", "-"], "{}"],
+  // A REST field flag makes the call a POST even without --input or -X.
+  [["api", "repos/owner/repo/check-runs", "-f", "name=code-review"], ""],
+  // A GraphQL document that mutates is a write too.
+  [["api", "graphql", "-f", "query=mutation { resolveReviewThread(input: {threadId: \"t\"}) { thread { isResolved } } }"], ""],
+])("a write that returns an empty body stops instead of duplicating itself: %j", (args, input) => {
   const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "repos/owner/repo/pulls/7/reviews", "--input", "-"], "{}");
+  const result = setup.run(args, input);
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s): gh api repos/owner/repo/pulls/7/reviews --input -\n");
+  expect(result.stderr.toString()).toContain(`retry.sh: failed after 1 attempt(s): gh ${args.join(" ")}\n`);
   expect(setup.calls()).toHaveLength(1);
   expect(setup.delays()).toEqual([]);
 });
