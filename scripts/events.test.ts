@@ -1195,6 +1195,24 @@ test("MCP calls fold input and result into one block", () => {
   expect(started.stdout.toString()).toBe("");
 });
 
+test("collaboration calls colour their tool and fold the task with agent states", () => {
+  const log = (item: object) => {
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  };
+  const spawn = { type: "collab_tool_call", tool: "spawn_agent", sender_thread_id: "t", receiver_thread_ids: ["r1", "r2"], prompt: "Review the diff",
+    agents_states: { r1: { status: "running", message: null } }, status: "completed" };
+  // The namespace is `collaboration` in Codex; its colour matches no other event's.
+  expect(log(spawn)).toBe(`::group::\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[90m→ 2 agents\u001b[0m\n\u001b[90mReview the diff\u001b[0m\n{\u001b[36m"r1"\u001b[0m:{\u001b[36m"status"\u001b[0m:\u001b[32m"running"\u001b[0m,\u001b[36m"message"\u001b[0m:\u001b[90mnull\u001b[0m}}\n::endgroup::\n\n`);
+  // Without a prompt, the states start directly below the title.
+  expect(log({ ...spawn, tool: "wait", receiver_thread_ids: ["r1"], prompt: null })).toContain("1 agent\u001b[0m\n{");
+  // A call with neither a prompt nor states has an empty group.
+  expect(log({ ...spawn, tool: "wait", receiver_thread_ids: [], prompt: null, agents_states: {} })).toBe(`::group::\u001b[95mcollaboration\u001b[0m wait\n::endgroup::\n\n`);
+  expect(log({ ...spawn, status: "failed", receiver_thread_ids: ["r1"] })).toContain(`\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[31m[failed]\u001b[0m \u001b[90m→ 1 agent\u001b[0m`);
+  expect(log({ ...spawn, tool: "close_agent", prompt: null, agents_states: {} })).toContain(`\u001b[95mcollaboration\u001b[0m close_agent`);
+});
+
 test("file edits and searches fold into titled blocks", () => {
   const log = (item: object, event = "item.completed") => {
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: event, item }) + "\n") });
