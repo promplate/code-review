@@ -682,7 +682,7 @@ jq -c . >> "$RUNNER_TEMP/patches"
   expect(patches).toEqual(annotated ? [patches[0]] : [patches[0], patches[0]]);
 });
 
-test.each(["applied", "unapplied", "different-annotation", "unreadable"])("a lost final check response reconciles %s without cleanup overwriting it", mode => {
+test.each(["applied", "large", "unapplied", "different-annotation", "unreadable"])("a lost final check response reconciles %s without cleanup overwriting it", mode => {
   const setup = fixture();
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
@@ -701,16 +701,21 @@ case "$*" in
   *) exit 2 ;;
 esac
 `);
+  // The 50 expanded API annotations can exceed Linux's single-argument limit even when the review fits.
+  const count = mode === "large" ? 50 : 1, message = mode === "large" ? "x".repeat(2530) : "Fix this";
+  const annotations = Array.from({ length: count }, (_, i) => ({ path: "a.py", line: i + 1, level: "failure", message }));
   writeFileSync(join(setup.dir, "review.json"), JSON.stringify({
     summary: "Fix this", commits: [{ sha: "head", conclusion: "failure" }],
-    annotations: [{ path: "a.py", line: 1, level: "failure", message: "Fix this" }],
+    annotations,
   }));
   const result = run("Publish check run", setup, { REVIEW_HOSTED: "true", PR_NUMBER: "", MODE: mode });
-  expect(result.exitCode).toBe(mode === "applied" ? 0 : 1);
+  expect(result.exitCode).toBe(mode === "applied" || mode === "large" ? 0 : 1);
   expect(run("Close check run on failure or cancellation", setup, { MODE: mode }).exitCode).toBe(0);
   const patches = readFileSync(join(setup.dir, "patches"), "utf8").trim().split("\n").map(line => JSON.parse(line));
   expect(patches).toHaveLength(1);
-  expect(patches[0]).toMatchObject({ conclusion: "failure", output: { annotations: [{ message: "Fix this" }] } });
+  expect(patches[0].conclusion).toBe("failure");
+  expect(patches[0].output.annotations).toHaveLength(count);
+  expect(patches[0].output.annotations[0].message).toBe(message);
 });
 
 test("a failed final head refresh preserves the verdict and reports the missing reconciliation", () => {

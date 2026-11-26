@@ -68,18 +68,19 @@ if bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api "$end
 verdict_published() {
   local current annotations
   current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint" </dev/null) || return 1
-  jq -e --argjson expected "$payload" '
+  printf '%s\n' "$current" "$payload" | jq -e 'input as $expected |
     .head_sha == $expected.head_sha and .status == $expected.status and .conclusion == $expected.conclusion
     and .output.title == $expected.output.title and .output.summary == $expected.output.summary
-  ' <<< "$current" >/dev/null || return 1
+  ' >/dev/null || return 1
   jq -e '.output.annotations == []' <<< "$payload" >/dev/null && return 0
   annotations=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint/annotations" --paginate </dev/null) || return 1
   # Existing annotations can belong to earlier attempts; count matching entries, not just the total.
-  jq -es --argjson expected "$payload" '
-    add | map({path, start_line, end_line, annotation_level, message}) as $actual
-    | all($expected.output.annotations | group_by(.)[]; . as $group |
+  printf '%s\n' "$payload" "$annotations" | jq -en '
+    input.output.annotations as $expected
+    | [inputs[] | {path, start_line, end_line, annotation_level, message}] as $actual
+    | all($expected | group_by(.)[]; . as $group |
         ([$actual[] | select(. == $group[0])] | length) >= ($group | length))
-  ' <<< "$annotations" >/dev/null
+  ' >/dev/null
 }
 if verdict_published; then
   echo "::notice::Check run publication confirmed after a failed response."
