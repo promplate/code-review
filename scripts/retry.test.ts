@@ -34,6 +34,20 @@ console.error("success diagnostic");
   };
 }
 
+test("a lost progress update lets the tool run after one attempt", () => {
+  const setup = fixture(["unexpected EOF"]);
+  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], {
+    env: { ...setup.env, CHECK_ID: "10" }, timeout: 3000,
+    stdin: Buffer.from(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } })),
+  });
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(1);
+  const [call] = setup.calls();
+  expect(call.args).toEqual(["api", "repos/owner/repo/check-runs/10", "-X", "PATCH", "--input", "-"]);
+  expect(JSON.parse(call.input).output.summary).toContain("ls");
+  expect(setup.delays()).toEqual([]);
+});
+
 test.each([
   ...[400, 401, 403, 404, 422].map(status => `gh: request failed (HTTP ${status})`),
   'gh: Variable $pr of type Int! was provided invalid value',
