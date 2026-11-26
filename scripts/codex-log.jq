@@ -90,8 +90,17 @@ fromjson? // {type: "error", message: .}
   # A to-do list folds as one checklist at the end of the turn.
   elif .type == "item.completed" and .item.type == "todo_list" then
     fold("todo"; if ((.item.items // []) | length) == 0 then "" else (.item.items | map("- [\(if .completed then "x" else " " end)] \(.text)") | join("\n") | dim) end)
+  # Collaboration has its own colour, like edits and searches: the tool, how many agents it reached, the task it carried, and their states as JSON.
   elif .type == "item.completed" and .item.type == "collab_tool_call" then
-    fold("collab \(.item.tool)"; if .item.prompt == null then "" else (.item.prompt | gsub("\r"; "") | dim) end)
+    .item as $call
+    | (($call.receiver_thread_ids // []) | length) as $agents
+    | (($call.agents_states // {}) | length) as $states
+    | fold(
+        "\u001b[95mcollaboration\u001b[0m \($call.tool)"
+          + (if $call.status == "failed" then " \u001b[31m[failed]\u001b[0m" else "" end)
+          + (if $agents == 0 then "" else " \u001b[90m→ \($agents) agent\(if $agents == 1 then "" else "s" end)\u001b[0m" end);
+        (if $call.prompt == null then "" else ($call.prompt | gsub("\r"; "") | dim) end)
+          + (if $states == 0 then "" else "\n" + ($call.agents_states | json) end))
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
