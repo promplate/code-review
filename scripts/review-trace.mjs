@@ -65,9 +65,8 @@ function toolOutcome(value) {
   return "unknown";
 }
 
-// These are rollout TurnItem types, not the differently shaped exec --json
-// stream. In Codex 0.171 paginated rollouts only item_completed is durable; its
-// started_at_ms supplies timing even when Code Mode has no model function_call.
+// Paginated rollouts can persist only the item_completed TurnItem for a call.
+// Its started_at_ms supplies timing even when Code Mode has no model function_call.
 function itemToolName(item) {
   switch (item?.type) {
     case "CommandExecution": return "exec_command";
@@ -78,6 +77,9 @@ function itemToolName(item) {
     case "WebSearch": return "web_search";
     case "ImageView": return "view_image";
     case "ImageGeneration": return "image_generation";
+    case "Extension":
+      // Only export kinds defined by the Codex extension item schema.
+      return ["web.search", "image_gen.generation", "clock.sleep"].includes(item.kind) ? item.kind : undefined;
     default: return undefined;
   }
 }
