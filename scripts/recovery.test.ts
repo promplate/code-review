@@ -134,7 +134,9 @@ echo 'gh: Not Found (HTTP 404)' >&2
 exit 1
 `);
   const branch = checkout({});
-  expect(run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-model.json" }, branch).exitCode).toBe(1);
+  const result = run("Fetch config files", setup, { CATALOG_FILE: ".github/codex-model.json" }, branch);
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("Failed to fetch repos/owner/repo/contents/.github/codex-model.json");
   expect(readFileSync(join(setup.dir, "requests"), "utf8").trim().split("\n").length).toBe(1);
   expect(existsSync(join(setup.dir, "models.json"))).toBe(false);
 });

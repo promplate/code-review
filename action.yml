@@ -468,12 +468,16 @@ runs:
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
         # A 404 is permanent: a file only this branch has becomes a warning, while one nobody has stays a wrong input.
         fetch() {
+          local endpoint="repos/${{ github.repository }}/contents/$1"
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
             if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
             cat "$3" >&2; rm -f "$2"
             if [ -n "$4" ] && grep -q "HTTP 404" "$3" && git cat-file -e "HEAD:$5" 2> /dev/null; then echo "::warning::$4"; exit 0; fi
             exit 1
-          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$3" "$1" </dev/null
+          ' _ "$endpoint" "$2" "$error" "$3" "$1" </dev/null || {
+            echo "Failed to fetch $endpoint" >&2
+            return 1
+          }
         }
         [ -n "$CODEX_AUTH" ] || [ -z "$AUTH_FILE" ] || fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json"
         if [ -z "$CATALOG" ] && [ -n "$CATALOG_FILE" ]; then
