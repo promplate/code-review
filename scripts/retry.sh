@@ -28,7 +28,12 @@ give_up() {
 # supplies a body, or when a field flag switches it to POST; GraphQL writes only when its document mutates.
 endpoint=
 # $1 is gh and $2 the api subcommand, so the endpoint is the first operand after them.
+# Options may precede it and some take a separate value (`-H "header"`), which is not the endpoint.
+value_flags=" -X --method -H --header -f --field -F --raw-field --input -q --jq -t --template --hostname --cache "
+skip_value=false
 for ((index = 3; index <= $#; index++)); do
+  if [[ $skip_value == true ]]; then skip_value=false; continue; fi
+  case " $value_flags " in *" ${!index} "*) skip_value=true; continue ;; esac
   [[ ${!index} == -* ]] || { endpoint=${!index}; break; }
 done
 writes=false
@@ -45,8 +50,12 @@ elif [[ $endpoint == graphql ]]; then
       --input) writes=true ;;
     esac
   done
-  # A document that opens with `mutation` commits; `query`, a bare selection set, and everything else read.
-  [[ $document =~ ^[[:space:]]*mutation ]] && writes=true
+  # Only a document whose first significant token is `query` or a selection set reads; a comment,
+  # a fragment definition or anything unrecognised keeps the write guard. No document at all is a read.
+  if [[ -n $document ]]; then
+    operation=$(printf '%s' "$document" | awk '{ sub(/^[ \t]+/, "") } /^#/ || !length { next } { print; exit }')
+    [[ $operation =~ ^(\{|query([[:space:]{]|$)) ]] || writes=true
+  fi
 else
   # An explicit method decides first: `--method GET` keeps field flags as query parameters,
   # while REST's field flags otherwise switch the call to POST by themselves.
@@ -90,13 +99,15 @@ for attempt in 1 2 3 4 5 6 7 8; do
   elif grep -Eiq 'unexpected end of JSON input|Something went wrong while executing your query' "$err"; then
     # A reply that never arrived whole, or a failed GraphQL execution, says nothing about whether a write committed.
     [[ "$writes" = false ]] || give_up "$@"
+  elif grep -Eiq 'the remote end hung up unexpectedly|(^|[^[:alnum:]])(unexpected )?EOF([^[:alnum:]]|$)' "$err"; then
+    # A dropped connection can follow a request the server already applied, so a write never replays it.
+    [[ "$writes" = false ]] || give_up "$@"
   else
     # GraphQL validation, local command errors and unknown failures are terminal.
     grep -Eiq \
       -e 'i/o timeout|TLS handshake timeout|Client.Timeout|context deadline exceeded|connection timed out|operation timed out' \
       -e 'connection (reset|refused|aborted)|could not resolve (host|proxy)|could not connect|failed to connect|error connecting to ' \
-      -e 'the remote end hung up unexpectedly' \
-      -e 'no such host|temporary failure in name resolution|network is unreachable|(^|[^[:alnum:]])(unexpected )?EOF([^[:alnum:]]|$)' "$err" || give_up "$@"
+      -e 'no such host|temporary failure in name resolution|network is unreachable' "$err" || give_up "$@"
   fi
   [ "$attempt" = 8 ] || sleep "$delay"
   delay=$((delay * 2 > max_delay ? max_delay : delay * 2))

@@ -56,6 +56,34 @@ test.each([
   expect(setup.delays()).toEqual([]);
 });
 
+test("a read that loses its reply retries, a write does not", () => {
+  const read = fixture(['Post "https://api.github.com/graphql": unexpected EOF']);
+  expect(read.run(["api", "repos/owner/repo/pulls/7/reviews"]).exitCode).toBe(0);
+  expect(read.calls()).toHaveLength(2);
+  expect(read.delays()).toEqual([1]);
+  const write = fixture(['fatal: the remote end hung up unexpectedly']);
+  const result = write.run(["api", "graphql", "--input", "-"], '{"query":"mutation { example }"}');
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s)");
+  expect(write.calls()).toHaveLength(1);
+});
+
+test("an option value before the endpoint is not the endpoint", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "-H", "Accept: application/vnd.github+json", "repos/owner/repo/pulls/7/reviews"]);
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+});
+
+test("a GraphQL document keeps the write guard unless it opens with query", () => {
+  const commented = fixture(["unexpected end of JSON input"]);
+  expect(commented.run(["api", "graphql", "-f", "query=# note\nquery { viewer { login } }"]).exitCode).toBe(0);
+  const fragment = fixture(["unexpected end of JSON input"]);
+  const result = fragment.run(["api", "graphql", "-f", "query=fragment F on User { login } mutation { example }"]);
+  expect(result.exitCode).toBe(1);
+  expect(fragment.calls()).toHaveLength(1);
+});
+
 test("a read that returns an empty body retries, since the request changed nothing", () => {
   const setup = fixture(["unexpected end of JSON input"]);
   const result = setup.run(["api", "graphql", "-f", "query={viewer{login}}"]);
@@ -115,9 +143,7 @@ test.each([
   'read tcp: connection reset by peer',
   'dial tcp: connect: connection refused',
   'error connecting to api.github.com',
-  'Post "https://api.github.com/graphql": unexpected EOF',
   'fatal: unable to access remote: Could not resolve host: github.com',
-  'fatal: the remote end hung up unexpectedly',
 ])("transient failure retries and replays stdin: %s", error => {
   const setup = fixture([error]);
   const args = ["api", "graphql", "--input", "-"];
