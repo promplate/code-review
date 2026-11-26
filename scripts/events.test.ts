@@ -1575,7 +1575,7 @@ test("an injected event folds the record the model received", () => {
   expect(result.exitCode).toBe(0);
   const output = result.stdout.toString();
   // The header is what the live view reads; the record folds under it so the payload can be checked in place.
-  expect(output.startsWith("::group::\u001b[96missue_comment/created\u001b[0m alice /pull/7#issuecomment-4\n{\n")).toBe(true);
+  expect(output.startsWith("\n::group::\u001b[96missue_comment/created\u001b[0m alice /pull/7#issuecomment-4\n{\n")).toBe(true);
   expect(output).toContain('  \u001b[36m"comment"\u001b[0m: {\n    \u001b[36m"id"\u001b[0m: \u001b[33m4\u001b[0m,');
   expect(output).toContain('\u001b[32m"hi #\u200b#[error]x"\u001b[0m');
   // `workflow` is display-only correlation the model never received.

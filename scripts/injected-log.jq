@@ -61,7 +61,8 @@ def group_title: event_line | escape_commands | gsub("\n"; " ") | if env.REVIEW_
 # Only the record is escaped: the group markers are ours and the runner has to read them.
 | (if $event == null then . | escape_commands else
     # A group title is one line: a payload newline inside a name would end the fold at the runner.
-    "::group::" + ($event | group_title)
+    # A newline first: the tool log writer shares stdout and can be mid-line, and a header it swallows would leave our close marker to end its group.
+    "\n::group::" + ($event | group_title)
     + "\n" + ($event | del(.workflow) | pretty(0) | escape_commands)
     + "\n::endgroup::"
   end)
