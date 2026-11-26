@@ -1,9 +1,11 @@
-// Session snapshots carry the full conversation and tool output, and anyone who can read the repository's
+// Session snapshots carry the conversation and tool output, and anyone who can read the repository's
 // artifacts can download them. The broker derives the key from the repository alone, so changing the App,
 // the provider or the model never strands an older snapshot.
 // Usage: snapshot.ts save <archive> <dir> [path...]  |  snapshot.ts load <archive> <dir>
-import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pruneSnapshotReasoning } from "./snapshot-reasoning";
 
 const [command, archive, dir, ...paths] = process.argv.slice(2);
 const SESSION_PATHS = ["sessions", "last-thread-id", "check-runs.jsonl"];
@@ -36,6 +38,50 @@ async function unpack(tar: Uint8Array) {
   if (await Bun.spawn(["tar", "-C", dir, "-xzf", "-"], { stdin: tar, stderr: "inherit" }).exited) throw new Error("Could not unpack the session archive");
 }
 
+async function pack(paths: string[]) {
+  let source = dir, staging: string | undefined;
+  try {
+    // Prune a private copy: a failed save must not change the running session.
+    // Custom selections can contain forks outside sessions whose parent prefixes must survive.
+    if (paths.includes("sessions") && paths.every(path => SESSION_PATHS.includes(path)) && lstatSync(join(dir, "sessions")).isDirectory()) {
+      try {
+        staging = mkdtempSync(join(tmpdir(), "review-snapshot-"));
+        const directories: { path: string; atime: number; mtime: number }[] = [];
+        for (const path of paths) cpSync(join(dir, path), join(staging, path), {
+          recursive: true, preserveTimestamps: true, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+          filter(from, to) {
+            const stat = lstatSync(from);
+            if (stat.isDirectory()) {
+              if (path !== "sessions") throw new Error("Archive additional directories directly");
+              // cpSync copies the directory mode. A read-only staging directory can strand plaintext during cleanup.
+              if ((stat.mode & 0o700) !== 0o700) throw new Error("Cannot clean up a protected directory copy");
+              directories.push({ path: to, atime: stat.atimeMs / 1000, mtime: stat.mtimeMs / 1000 });
+            } else if (!stat.isFile() || stat.nlink > 1) throw new Error("Archive linked or special files directly");
+            return true;
+          },
+        });
+        const result = await pruneSnapshotReasoning(join(staging, "sessions"));
+        if (result.records) {
+          // cpSync preserves regular file times, but creating children changes the copied directories' mtimes.
+          for (const { path, atime, mtime } of directories) utimesSync(path, atime, mtime);
+          source = staging;
+          console.log(`Cleared obsolete reasoning in ${result.records} records across ${result.files} rollouts.`);
+        }
+        if (result.skippedReason) console.log(`Kept snapshot reasoning: ${result.skippedReason}.`);
+      } catch {
+        // Cleanup is optional; an unknown or unreadable history must still be saved intact.
+        console.warn("Could not prune snapshot reasoning; archiving the original session.");
+      }
+    }
+    const tar = Bun.spawn(["tar", "-C", source, "-czf", "-", ...paths], { stdout: "pipe", stderr: "inherit" });
+    const plain = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
+    if (await tar.exited) throw new Error("Could not read the session into an archive");
+    return plain;
+  } finally {
+    if (staging) rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 if (command === "save") {
   // Composite action inputs are strings. A misspelling must not publish an unencrypted conversation.
   const encryption = (process.env.ENCRYPT_SNAPSHOTS ?? "false").trim().toLowerCase();
@@ -44,9 +90,7 @@ if (command === "save") {
   // The upload used to fail when nothing was written; keep that failure instead of saving an empty archive.
   if (!present.length) throw new Error(`No session files to save in ${dir}`);
   // Ciphertext cannot be compressed by the upload, so the archive is compressed first.
-  const tar = Bun.spawn(["tar", "-C", dir, "-czf", "-", ...present], { stdout: "pipe", stderr: "inherit" });
-  const plain = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
-  if (await tar.exited) throw new Error("Could not read the session into an archive");
+  const plain = await pack(present);
   const key = encryption === "true" ? await fetchKey() : null;
   if (!key) {
     await Bun.write(archive, Buffer.concat([plainMark, plain]));

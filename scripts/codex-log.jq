@@ -22,6 +22,23 @@ def jsontext: gsub(
   elif .bool then "\u001b[35m\(.bool)\u001b[0m"
   elif .null then "\u001b[90m\(.null)\u001b[0m"
   else "\u001b[33m\(.num)\u001b[0m" end);
+# A folded body is a record rather than a value in a line, so print it one field per line with the same colours.
+def hkey: tojson | "\u001b[36m\(.)\u001b[0m";
+def scalar: if type == "string" then tojson | "\u001b[32m\(.)\u001b[0m"
+  elif type == "number" then "\u001b[33m\(tostring)\u001b[0m"
+  elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
+  else "\u001b[90mnull\u001b[0m" end;
+def pretty($depth):
+  (reduce range(0; $depth) as $i (""; . + "  ")) as $pad
+  | if type == "object" then
+      if length == 0 then "{}" else
+        "{\n" + (to_entries | map($pad + "  " + (.key | hkey) + ": " + (.value | pretty($depth + 1))) | join(",\n")) + "\n" + $pad + "}"
+      end
+    elif type == "array" then
+      if length == 0 then "[]" else
+        "[\n" + (map($pad + "  " + pretty($depth + 1)) | join(",\n")) + "\n" + $pad + "]"
+      end
+    else scalar end;
 # A result that is JSON gets the same colouring; anything else stays grey.
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
 # Keep each operation recognizable when the viewer strips ANSI colours.
@@ -29,7 +46,7 @@ def edit_mark: ({add: "\u001b[32m+\u001b[0m", update: "\u001b[33m~\u001b[0m", de
 def edit_path: "\(.kind | edit_mark) \(.path)";
 def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
 # A reset also keeps the final whitespace cleanup from trimming diff context.
-def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "" end)\(.)\u001b[0m";
+def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "\u001b[90m" end)\(.)\u001b[0m";
 def edit_body: edit_path + (if .patch then " \(.patch | edit_stats)" + (.patch.lines | map("\n" + edit_line) | join("")) else "" end);
 # Item titles are data too; break command markers there and suppress commands while printing their bodies.
 def fold($title; $body):
@@ -83,15 +100,24 @@ fromjson? // {type: "error", message: .}
   # A search folds its query and results; the other actions name their target instead.
   elif .type == "item.completed" and .item.type == "web_search" then
     .item as $search
-    | (if $search.action.type == "open_page" then "open \($search.action.url // "")"
-       elif $search.action.type == "find_in_page" then "find \($search.action.pattern // "") in \($search.action.url // "")"
-       else "search \($search.query // "")" end) as $title
+    | (if $search.action.type == "open_page" then "\u001b[35mopen\u001b[0m \($search.action.url // "")"
+       elif $search.action.type == "find_in_page" then "\u001b[35mfind\u001b[0m \($search.action.pattern // "") in \($search.action.url // "")"
+       else "\u001b[35msearch\u001b[0m \($search.query // "")" end) as $title
     | fold($title; if (($search.results // []) | length) == 0 then "" else ($search.results | json) end)
   # A to-do list folds as one checklist at the end of the turn.
   elif .type == "item.completed" and .item.type == "todo_list" then
     fold("todo"; if ((.item.items // []) | length) == 0 then "" else (.item.items | map("- [\(if .completed then "x" else " " end)] \(.text)") | join("\n") | dim) end)
+  # Collaboration has its own colour, like edits and searches: the tool, how many agents it reached, the task it carried, and their states as JSON.
   elif .type == "item.completed" and .item.type == "collab_tool_call" then
-    fold("collab \(.item.tool)"; if .item.prompt == null then "" else (.item.prompt | gsub("\r"; "") | dim) end)
+    .item as $call
+    | (($call.receiver_thread_ids // []) | length) as $agents
+    | fold(
+        "\u001b[95mcollaboration\u001b[0m \($call.tool)"
+          + (if $call.status == "failed" then " \u001b[31m[failed]\u001b[0m" else "" end)
+          + (if $agents == 0 then "" else " \u001b[90m→ \($agents) agent\(if $agents == 1 then "" else "s" end)\u001b[0m" end);
+        # Exec flattens the item ID into the call. Keep the parameters and agent states in the body.
+        ($call | del(.id, .type, .tool, .sender_thread_id, .status) | with_entries(select(.value != null and .value != [] and .value != {}))
+          | if . == {} then "{}" else pretty(0) end))
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.

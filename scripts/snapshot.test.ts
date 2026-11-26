@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -71,6 +71,95 @@ test("save encrypts the session and load restores it", async () => {
   expect(readFileSync(join(target, "sessions/a.jsonl"), "utf8")).toContain("sk-live-123");
   expect(readFileSync(join(target, "last-thread-id"), "utf8")).toBe("thread-1\n");
   expect(existsSync(archive)).toBe(false);
+});
+
+test.each(["false", "true"])("save prunes only obsolete reasoning in the archive (encryption=%s)", async encryption => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `sessions/2026/01/01/rollout-2026-01-01T00-00-00-${id}.jsonl`;
+  const row = (type: string, payload: unknown) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", type, payload }) + "\n";
+  const reasoning = (id: string) => ({ type: "reasoning", id, summary: [{ type: "summary_text", text: "历史摘要" }], content: [{ type: "reasoning_text", text: "old thinking" }], encrypted_content: "opaque-reasoning-body" });
+  const prefix = [
+    row("session_meta", { id, history_mode: "paginated" }),
+    row("response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Keep the user's instructions." }] }),
+    row("response_item", reasoning("old")),
+    row("event_msg", { type: "item_completed", item: { type: "Reasoning", id: "old", summary_text: ["历史摘要"], raw_content: ["old thinking"] } }),
+  ];
+  const current = [
+    row("compacted", { message: "checkpoint", replacement_history: [], window_number: 1, guardian_history: [reasoning("guardian")] }),
+    row("response_item", reasoning("current")),
+  ];
+  const original = prefix.concat(current).join("");
+  const source = home({ [path]: original, "last-thread-id": id }), target = home({}), temporary = home({});
+  utimesSync(join(source, "sessions/2026"), 1_700_000_000, 1_700_000_000);
+  const archive = join(home({}), "snapshot.bin");
+  const env = { ENCRYPT_SNAPSHOTS: encryption, TMPDIR: temporary };
+  expect((await run(["save", archive, source], "23", env)).exitCode).toBe(0);
+  expect(readFileSync(join(source, path), "utf8")).toBe(original);
+  expect(readdirSync(temporary)).toEqual([]);
+  expect((await run(["load", archive, target], "23", env)).exitCode).toBe(0);
+  expect(statSync(join(target, "sessions/2026")).mtimeMs).toBe(1_700_000_000_000);
+  const restored = readFileSync(join(target, path), "utf8").split(/(?<=\n)/);
+  expect(restored.map(line => Buffer.byteLength(line))).toEqual(prefix.concat(current).map(line => Buffer.byteLength(line)));
+  expect(restored.slice(0, 2)).toEqual(prefix.slice(0, 2));
+  expect(restored.slice(prefix.length)).toEqual(current);
+  expect(JSON.parse(restored[2]).payload).toEqual({ ...reasoning("old"), summary: [], content: null, encrypted_content: null });
+  expect(JSON.parse(restored[3]).payload.item).toEqual({ type: "Reasoning", id: "old", summary_text: [], raw_content: [] });
+  // Even a key failure after cleanup must leave the live session intact.
+  if (encryption === "true") {
+    expect((await run(["save", archive, source], "broken", env)).exitCode).not.toBe(0);
+    expect(existsSync(archive)).toBe(false);
+    expect(readFileSync(join(source, path), "utf8")).toBe(original);
+    expect(readdirSync(temporary)).toEqual([]);
+  }
+});
+
+test("a custom archive preserves parent reasoning needed by an archived fork", async () => {
+  const parent = "11111111-1111-4111-8111-111111111111", child = "22222222-2222-4222-8222-222222222222";
+  const parentPath = `sessions/rollout-2026-01-01T00-00-00-${parent}.jsonl`;
+  const childPath = `archived_sessions/rollout-2026-01-01T00-00-01-${child}.jsonl`;
+  const row = (type: string, payload: unknown) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", type, payload }) + "\n";
+  const prefix = row("session_meta", { id: parent, history_mode: "paginated" })
+    + row("response_item", { type: "reasoning", summary: [], encrypted_content: "child still needs this" });
+  const original = prefix + row("compacted", { message: "", window_number: 1, replacement_history: [] });
+  const base = { thread_id: parent, end_byte_offset: Buffer.byteLength(prefix), end_ordinal_exclusive: 2 };
+  const fork = row("session_meta", { id: child, history_mode: "paginated", history_base: base });
+  const source = home({ [parentPath]: original, [childPath]: fork }), archive = join(home({}), "snapshot.bin"), target = home({});
+  expect((await run(["save", archive, source, "sessions", "archived_sessions"])).exitCode).toBe(0);
+  expect((await run(["load", archive, target])).exitCode).toBe(0);
+  expect(readFileSync(join(target, parentPath), "utf8")).toBe(original);
+  expect(readFileSync(join(target, childPath), "utf8")).toBe(fork);
+});
+
+test.each(["read-only directory", "hard link"])("saves a session containing a %s intact", async kind => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const path = `sessions/rollout-2026-01-01T00-00-00-${id}.jsonl`;
+  const rollout = [
+    { type: "session_meta", payload: { id, history_mode: "paginated" } },
+    { type: "response_item", payload: { type: "reasoning", summary: [], encrypted_content: "historical reasoning" } },
+    { type: "compacted", payload: { message: "", window_number: 1, replacement_history: [] } },
+  ].map((row, ordinal) => JSON.stringify({ timestamp: "2026-01-01T00:00:00Z", ordinal, ...row }) + "\n").join("");
+  const source = home({ [path]: rollout, "sessions/nested/receipt": "saved" }), target = home({}), temporary = home({});
+  const archive = join(home({}), "snapshot.bin");
+  const nested = "sessions/nested", receipt = nested + "/receipt", alias = nested + "/copy";
+  if (kind === "hard link") linkSync(join(source, receipt), join(source, alias));
+  else chmodSync(join(source, nested), 0o555);
+  try {
+    expect((await run(["save", archive, source], "23", { TMPDIR: temporary })).exitCode).toBe(0);
+    expect(readdirSync(temporary)).toEqual([]);
+    expect((await run(["load", archive, target])).exitCode).toBe(0);
+    expect(readFileSync(join(target, path), "utf8")).toBe(rollout);
+    expect(readFileSync(join(target, receipt), "utf8")).toBe("saved");
+    if (kind === "hard link") expect(statSync(join(target, alias)).ino).toBe(statSync(join(target, receipt)).ino);
+    else expect(statSync(join(target, nested)).mode & 0o777).toBe(0o555);
+  } finally {
+    // The test runner owns these fixtures and must be able to remove their contents.
+    chmodSync(join(source, nested), 0o700);
+    if (existsSync(join(target, nested))) chmodSync(join(target, nested), 0o700);
+    for (const entry of readdirSync(temporary)) {
+      const staged = join(temporary, entry, nested);
+      if (existsSync(staged)) chmodSync(staged, 0o700);
+    }
+  }
 });
 
 test("a modified archive or another repository's key restores nothing", async () => {

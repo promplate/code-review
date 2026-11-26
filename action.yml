@@ -27,6 +27,9 @@ inputs:
     default: "false"
   debug-retention-days:
     description: Positive whole days to keep `agent-debug-events`. An empty value uses the repository retention period.
+  session-retention-days:
+    description: Positive whole days to keep a session snapshot. An empty or invalid value uses 1 day.
+    default: "1"
   session-key:
     description: Codex session this review continues; one per PR, or per branch for pushes, by default.
   service-tier:
@@ -592,7 +595,16 @@ runs:
       env:
         BROKER: ${{ inputs.broker }}
         ENCRYPT_SNAPSHOTS: ${{ inputs.encrypt-snapshots }}
-      run: bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME"
+        SESSION_RETENTION_DAYS: ${{ inputs.session-retention-days }}
+      run: |
+        retention_days=${SESSION_RETENTION_DAYS:-1}
+        # upload-artifact treats zero as the repository default and truncates fractions.
+        if [[ ! "$retention_days" =~ ^0*[1-9][0-9]*$ ]]; then
+          echo "::warning::Invalid session-retention-days; using 1 day."
+          retention_days=1
+        fi
+        bash "$GITHUB_ACTION_PATH/scripts/snapshot.sh" save "$RUNNER_TEMP/snapshot.bin" "$CODEX_HOME"
+        printf 'retention-days=%s\n' "$retention_days" >> "$GITHUB_OUTPUT"
 
     - name: Save codex session
       id: save-session
@@ -606,6 +618,7 @@ runs:
         # A rerun can replace an obsolete slot in this run; lookup keeps the newest snapshot in the other slot.
         overwrite: true
         path: ${{ runner.temp }}/snapshot.bin
+        retention-days: ${{ steps.encrypt-session.outputs.retention-days }}
 
     - name: Drop older session snapshots
       if: steps.app-token.outputs.skip != 'true' && (steps.save-session.outputs.artifact-id)
