@@ -68,9 +68,13 @@ test("a read that loses its reply retries, a write does not", () => {
   expect(write.calls()).toHaveLength(1);
 });
 
-test("an option value before the endpoint is not the endpoint", () => {
+test.each([
+  ["-H", "Accept: application/vnd.github+json"],
+  ["--preview", "mercy"],
+  ["-ip", "mercy"],
+])("a GraphQL read retries with %s before the endpoint", (flag, value) => {
   const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "-H", "Accept: application/vnd.github+json", "repos/owner/repo/pulls/7/reviews"]);
+  const result = setup.run(["api", flag, value, "graphql", "-f", "query={viewer{login}}"]);
   expect(result.exitCode).toBe(0);
   expect(setup.calls()).toHaveLength(2);
 });

@@ -29,12 +29,15 @@ give_up() {
 endpoint=
 # $1 is gh and $2 the api subcommand, so the endpoint is the first operand after them.
 # Options may precede it and some take a separate value (`-H "header"`), which is not the endpoint.
-value_flags=" -X --method -H --header -f --field -F --raw-field --input -q --jq -t --template --hostname --cache "
-skip_value=false
 for ((index = 3; index <= $#; index++)); do
-  if [[ $skip_value == true ]]; then skip_value=false; continue; fi
-  case " $value_flags " in *" ${!index} "*) skip_value=true; continue ;; esac
-  [[ ${!index} == -* ]] || { endpoint=${!index}; break; }
+  arg=${!index}
+  # gh allows -i to precede a value-taking short flag in the same argument, as in -iH.
+  if [[ $arg =~ ^-i*[XHfFqtp]$ ]]; then ((index++)); continue; fi
+  case $arg in
+    --method | --header | --field | --raw-field | --input | --jq | --template | --hostname | --cache | --preview) ((index++)) ;;
+    -*) ;;
+    *) endpoint=$arg; break ;;
+  esac
 done
 writes=false
 if [[ $1 != gh || $2 != api ]]; then
