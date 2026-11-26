@@ -45,13 +45,13 @@ fi
 if [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
   echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
 fi
-jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" '
 include "summary";
-($review.commits[] | select(.sha == $sha)) as $commit | {
+input as $review | ($review.commits[] | select(.sha == $sha)) as $commit | {
 name: "code-review", head_sha: $sha, status: "completed",
 conclusion: $commit.conclusion,
 output: {
   title: (if $commit.conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end),
   summary: ($review | summary_line($commit.conclusion)),
   annotations: [$review.annotations[:50][] | {path, start_line: .line, end_line: .line, annotation_level: .level, message}]
-}}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
+}}' "$RUNNER_TEMP/review.json" | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -

@@ -20,9 +20,9 @@ HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSI
 # GraphQL bot logins omit the [bot] suffix used by REST.
 THREADS=$(bash "$GITHUB_ACTION_PATH/scripts/review-threads.sh" list </dev/null \
   | jq -c --arg bot "$BOT_LOGIN" '[.[] | select(.isResolved == false and .firstComment.author == ($bot | rtrimstr("[bot]"))) | {path, line, body: .firstComment.body}]')
-jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUNKS" --argjson threads "$THREADS" \
-  --arg blob "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$(git rev-parse HEAD)" \
-  --argjson verdict "$VERDICT" --arg author "$PR_AUTHOR" --arg last "$LAST" --arg lastComment "$LAST_COMMENT" '
+jq -n --arg blob "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$(git rev-parse HEAD)" \
+  --arg author "$PR_AUTHOR" --arg last "$LAST" --rawfile lastComment <(printf %s "$LAST_COMMENT") '
+  input as $review | input as $hunks | input as $threads | input as $verdict |
   def in_diff: .line as $line | any($hunks[.path][]?; .[0] <= $line and $line < .[1]);
   # The same wording on the same path is the same finding; a thread GitHub marked outdated keeps only its path and body to compare.
   def reported: . as $issue | any($threads[]; .path == $issue.path and .body == $issue.message and (.line == null or .line == $issue.line));
@@ -46,7 +46,7 @@ jq -n --argjson review "$(cat "$RUNNER_TEMP/review.json")" --argjson hunks "$HUN
   elif $author == env.BOT_LOGIN then
     if ($review.summary | test("\\S") | not) or $lastComment == $review.summary then empty else {event: "COMMENT", body: $review.summary} end
   elif $last == "APPROVED" then empty
-  else {event: "APPROVE"} + (if $review.summary | test("\\S") then {body: $review.summary} else {} end) end' > "$RUNNER_TEMP/pr-review.json"
+  else {event: "APPROVE"} + (if $review.summary | test("\\S") then {body: $review.summary} else {} end) end' "$RUNNER_TEMP/review.json" <(printf '%s\n' "$HUNKS" "$THREADS" "$VERDICT") > "$RUNNER_TEMP/pr-review.json"
 if [ "$REVIEW_HOSTED" = true ] && [ -s "$RUNNER_TEMP/pr-review.json" ]; then
   jq --arg sha "$HEAD_SHA" '. + {commit_id: $sha}' "$RUNNER_TEMP/pr-review.json" > "$RUNNER_TEMP/pr-review-pinned.json"
   mv "$RUNNER_TEMP/pr-review-pinned.json" "$RUNNER_TEMP/pr-review.json"
