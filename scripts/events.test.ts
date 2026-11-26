@@ -1591,7 +1591,7 @@ test("the Actions runner decodes the group title without changing percent-encode
       stdin: Buffer.from(input), env: { ...process.env, REVIEW_HOSTED: hosted },
     });
     expect(result.exitCode).toBe(0);
-    const [header] = result.stdout.toString().split("\n");
+    const [, header] = result.stdout.toString().split("\n");
     const title = hosted ? header : header.replaceAll("%0D", "\r").replaceAll("%0A", "\n").replaceAll("%25", "%");
     expect(title).toEndWith("build%0Apreview report " + url);
   }
@@ -1842,7 +1842,7 @@ test("injected command markers stay escaped when concurrent output splits a line
   const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `${"x".repeat(4096)}::error::forged\n:::error title=forged:::payload` }) }));
   const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
   expect(result.exitCode).toBe(0);
-  const payload = result.stdout.toString().replace(/^::group::/, "").replace(/\n::endgroup::\n\n$/, "");
+  const payload = result.stdout.toString().replace(/^\n::group::/, "").replace(/\n::endgroup::\n\n$/, "");
   expect(payload).not.toContain("::");
 });
 
