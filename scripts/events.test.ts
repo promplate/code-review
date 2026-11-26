@@ -1639,6 +1639,21 @@ test.each([
   expect(worker.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "")).toBe(text);
 });
 
+test("an edited pull request says what changed, including a new base", () => {
+  const pull_request = { number: 7, head: { sha: "head" }, base: { ref: "main" }, draft: false, title: "New title", body: "New body" };
+  const edited = frame("pull_request", { action: "edited", number: 7, pull_request,
+    changes: { base: { ref: { from: "old-base" } }, title: { from: "Old title" }, body: { from: "Old body" } } });
+  const { contexts } = runLoggedHook(edited);
+  // Without `changes` the review only sees an edit happened, not that the diff now compares against another base.
+  expect(contexts).toEqual([{ event: "pull_request", action: "edited", sender: human,
+    pull_request,
+    changes: { title: { from: "Old title" }, body: { from: "Old body" }, base: { ref: { from: "old-base" } } } }]);
+  // A synchronize carries no text and no changes; it names the new head instead.
+  const synchronized = runLoggedHook(frame("pull_request", { action: "synchronize", number: 7, pull_request: { ...pull_request, head: { sha: "b".repeat(40) } } }));
+  expect(synchronized.contexts).toEqual([{ event: "pull_request", action: "synchronize", sender: human,
+    pull_request: { number: 7, head: { sha: "b".repeat(40) }, base: { ref: "main" }, draft: false } }]);
+});
+
 test("branch commit comments retain their commit, file, line and original sender", () => {
   const comment = { id: 42, commit_id: "head", body: "Check this line", path: "src/check.ts", line: 8,
     html_url: "https://github.com/owner/repo/commit/head#commitcomment-42" };
