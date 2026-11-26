@@ -96,6 +96,13 @@ test("a read that returns an empty body retries, since the request changed nothi
   expect(setup.delays()).toEqual([1]);
 });
 
+test("an anonymous GraphQL query with variables retries", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "graphql", "-f", "query=query($login: String!) { user(login: $login) { id } }", "-f", "login=example"]);
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+});
+
 test("a GraphQL read stays a read when a field value mentions mutation", () => {
   const setup = fixture(["unexpected end of JSON input"]);
   const result = setup.run(["api", "graphql", "-f", 'query=query{repository(owner:"owner",name:"mutation-testing"){id}}']);

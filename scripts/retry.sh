@@ -57,7 +57,7 @@ elif [[ $endpoint == graphql ]]; then
   # a fragment definition or anything unrecognised keeps the write guard. No document at all is a read.
   if [[ -n $document ]]; then
     operation=$(printf '%s' "$document" | awk '{ sub(/^[ \t]+/, "") } /^#/ || !length { next } { print; exit }')
-    [[ $operation =~ ^(\{|query([[:space:]{]|$)) ]] || writes=true
+    [[ $operation =~ ^(\{|query([[:space:]{\(]|$)) ]] || writes=true
   fi
 else
   # An explicit method decides first: `--method GET` keeps field flags as query parameters,
