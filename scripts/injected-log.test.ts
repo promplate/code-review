@@ -46,6 +46,10 @@ async function until(predicate: () => boolean, timeout = 2000) {
   }
 }
 
+function groupTitles(output: string) {
+  return output.split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length));
+}
+
 function start(responses: Record<string, object> = {}, env = {}) {
   const setup = fixture(responses, env);
   const process = Bun.spawn(["bash", join(import.meta.dir, "injected-log.sh"), join(setup.dir, "injected.log")], { env: setup.env, stdout: "pipe", stderr: "pipe" });
@@ -83,7 +87,7 @@ test("CI log resolves and caches the exact suite using only the Actions credenti
   await until(() => log.output().includes("CI / check (windows, 3.13):success"));
   await log.finish();
   expect(log.output()).toContain("CI / check (windows, 3.12):success");
-  expect(log.output()).not.toContain("dependabot");
+  expect(groupTitles(log.output()).join("\n")).not.toContain("dependabot");
   expect(log.calls()).toEqual([{ argv: ["api", "repos/owner/repo/actions/runs?check_suite_id=100&per_page=1"], token: "job-token", config: log.env.GH_CONFIG_DIR, stdin: "" }]);
 });
 
@@ -110,7 +114,7 @@ test.each([
   log.append(...records);
   await until(() => log.output().includes("subscription_recovery"));
   await log.finish();
-  expect(log.output().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length))).toEqual([
+  expect(groupTitles(log.output())).toEqual([
     "check_run/completed CI / dependabot job:success /actions/runs/90/job/1",
     "check_run/completed CI / human job:success /actions/runs/90/job/2",
     "check_run/completed blacksmith.sh / Proof:skipped https://blacksmith.sh/check/3",

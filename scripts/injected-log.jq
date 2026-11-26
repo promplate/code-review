@@ -54,14 +54,17 @@ def pretty($depth):
 # Break every marker, including overlapping colons: concurrent tool output can insert a newline inside a long event record.
 # A zero-width space keeps the log readable without sharing the tool logger's suppression token.
 def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​");
+# The Actions runner decodes percent escapes in a group title. The hosted log reads it directly.
+def group_title: event_line | escape_commands | gsub("\n"; " ") | if env.REVIEW_HOSTED == "true" then . else gsub("%"; "%25") end;
 (fromjson? // null) as $event
 # The line stays the summary the live view reads; the record itself folds under it so a reviewer can check what the model was told.
 # Only the record is escaped: the group markers are ours and the runner has to read them.
 | (if $event == null then . | escape_commands else
     # A group title is one line: a payload newline inside a name would end the fold at the runner.
-    "::group::" + ($event | event_line | escape_commands | gsub("\n"; " "))
+    "::group::" + ($event | group_title)
     + "\n" + ($event | del(.workflow) | pretty(0) | escape_commands)
     + "\n::endgroup::"
   end)
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
-| gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"
+# Start only at the first space in a run so a long stretch inside a comment takes one pass.
+| gsub("(?m)(?<![ \t])[ \t]+$"; "") | rtrimstr("\n") + "\n"

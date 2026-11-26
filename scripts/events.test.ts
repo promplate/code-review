@@ -57,7 +57,7 @@ function runLoggedHook(log: string, overrides = {}) {
   expect(contexts).toEqual(activities.map(({ workflow, ...context }) => context));
   // Each activity is a group whose body is the delivered record; assertions read the headers.
   const text = formatted.stdout.toString().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length)).join("\n").replace(/\u001b\[[0-9;]*m/g, "");
-  return { ...hook, contexts, activities, text };
+  return { ...hook, contexts, activities, text, formatted: formatted.stdout };
 }
 
 type CIResponse = { pages?: object[]; error?: string };
@@ -1583,6 +1583,20 @@ test("an injected event folds the record the model received", () => {
   expect(output.endsWith("\n::endgroup::\n\n")).toBe(true);
 });
 
+test("the Actions runner decodes the group title without changing percent-encoded text", () => {
+  const name = "build%0Apreview\nreport", url = "https://example.test/?discount=5%25";
+  const input = JSON.stringify({ event: "status", context: name, target_url: url });
+  for (const hosted of ["", "true"]) {
+    const result = Bun.spawnSync(["jq", "-Rr", "-f", join(scripts, "injected-log.jq")], {
+      stdin: Buffer.from(input), env: { ...process.env, REVIEW_HOSTED: hosted },
+    });
+    expect(result.exitCode).toBe(0);
+    const [header] = result.stdout.toString().split("\n");
+    const title = hosted ? header : header.replaceAll("%0D", "\r").replaceAll("%0A", "\n").replaceAll("%25", "%");
+    expect(title).toEndWith("build%0Apreview report " + url);
+  }
+});
+
 test("hook deliveries are published for the live log", () => {
   const { dir, output } = runHook(frame("issue_comment", { sender: human, issue: { number: 7, pull_request: {} }, comment: { id: 1, body: "hi", html_url: "https://example.test/c/1" } }, "writer", true));
   expect(JSON.parse(output).decision).toBe("block");
@@ -1624,7 +1638,7 @@ test.each([
     { event: "subscription_recovery", body: { reason: "connection_failed", status: "0" }, expected: { reason: "connection_failed", status: "0" } },
   ];
   const events = cases.map(({ event, body }) => frame(event, body));
-  const { dir, run, contexts, text, env: hookEnv } = runLoggedHook(events.join("") + events.join(""), env);
+  const { dir, run, contexts, text, formatted, env: hookEnv } = runLoggedHook(events.join("") + events.join(""), env);
   expect(contexts).toHaveLength(cases.length);
   for (const [index, { event, body, expected }] of cases.entries()) {
     const context = contexts[index];
@@ -1656,7 +1670,7 @@ test.each([
   const worker = Bun.spawnSync(["bash", join(scripts, "injected-log.sh"), path], { env: { ...hookEnv, ...env }, timeout: 3000 });
   expect(worker.exitCode).toBe(0);
   expect(worker.stderr.toString()).toBe("");
-  expect(worker.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "")).toBe(text);
+  expect(worker.stdout).toEqual(formatted);
 });
 
 test("branch commit comments retain their commit, file, line and original sender", () => {
@@ -1828,9 +1842,8 @@ test("injected command markers stay escaped when concurrent output splits a line
   const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `${"x".repeat(4096)}::error::forged\n:::error title=forged:::payload` }) }));
   const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
   expect(result.exitCode).toBe(0);
-  for (const line of result.stdout.toString().split("\n").filter(line => line.startsWith("::"))) {
-    expect(line === "::endgroup::" || line.startsWith("::group::")).toBe(true);
-  }
+  const payload = result.stdout.toString().replace(/^::group::/, "").replace(/\n::endgroup::\n\n$/, "");
+  expect(payload).not.toContain("::");
 });
 
 test("injected command escaping covers the runner's leading whitespace", () => {
