@@ -22,6 +22,23 @@ def jsontext: gsub(
   elif .bool then "\u001b[35m\(.bool)\u001b[0m"
   elif .null then "\u001b[90m\(.null)\u001b[0m"
   else "\u001b[33m\(.num)\u001b[0m" end);
+# A folded body is a record rather than a value in a line, so print it one field per line with the same colours.
+def hkey: tojson | "\u001b[36m\(.)\u001b[0m";
+def scalar: if type == "string" then tojson | "\u001b[32m\(.)\u001b[0m"
+  elif type == "number" then "\u001b[33m\(tostring)\u001b[0m"
+  elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
+  else "\u001b[90mnull\u001b[0m" end;
+def pretty($depth):
+  (reduce range(0; $depth) as $i (""; . + "  ")) as $pad
+  | if type == "object" then
+      if length == 0 then "{}" else
+        "{\n" + (to_entries | map($pad + "  " + (.key | hkey) + ": " + (.value | pretty($depth + 1))) | join(",\n")) + "\n" + $pad + "}"
+      end
+    elif type == "array" then
+      if length == 0 then "[]" else
+        "[\n" + (map($pad + "  " + pretty($depth + 1)) | join(",\n")) + "\n" + $pad + "]"
+      end
+    else scalar end;
 # A result that is JSON gets the same colouring; anything else stays grey.
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
 # Keep each operation recognizable when the viewer strips ANSI colours.
@@ -98,8 +115,9 @@ fromjson? // {type: "error", message: .}
         "\u001b[95mcollaboration\u001b[0m \($call.tool)"
           + (if $call.status == "failed" then " \u001b[31m[failed]\u001b[0m" else "" end)
           + (if $agents == 0 then "" else " \u001b[90m→ \($agents) agent\(if $agents == 1 then "" else "s" end)\u001b[0m" end);
-        [($call.prompt // "" | gsub("\r"; "") | select(length > 0) | dim),
-         ($call.agents_states | select(length > 0) | json)] | join("\n"))
+        # Exec flattens the item ID into the call. Keep the parameters and agent states in the body.
+        ($call | del(.id, .type, .tool, .sender_thread_id, .status) | with_entries(select(.value != null and .value != [] and .value != {}))
+          | if . == {} then "{}" else pretty(0) end))
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
