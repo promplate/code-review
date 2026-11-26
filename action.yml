@@ -295,6 +295,7 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ env.PR_NUMBER }}&attempt=${{ github.run_attempt }}
       run: |
+        rm -f "$RUNNER_TEMP/check-publication-attempted"
         # Reuse an unfinished check run on this head: scripts/open-pr.sh leaves a queued one whose external_id is the session key of the review that opened this PR, and abandoned jobs leave in_progress ones.
         unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=code-review" \
           --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "") \((.details_url // "") | capture("/actions/runs/(?<run>[0-9]+)").run // "") \((.details_url // "") | capture("[?&]attempt=(?<attempt>[0-9]+)").attempt // "")"' </dev/null)
@@ -698,13 +699,14 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # A failure after the verdict is published, such as in the PR review, keeps that verdict.
-        [ "${{ steps.publish.outcome }}" = success ] || if [ "${{ job.status }}" = cancelled ]; then
-          jq -n '{status: "completed", conclusion: "cancelled", output: {title: "Review cancelled", summary: "The run was cancelled before Codex posted a verdict."}}'
-        else
-          jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
-        fi \
-          | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
+        # Publication may have applied its verdict even if the response failed or the job was cancelled.
+        if [ "${{ steps.publish.outcome }}" != success ] && [ ! -e "$RUNNER_TEMP/check-publication-attempted" ]; then
+          if [ "${{ job.status }}" = cancelled ]; then
+            jq -n '{status: "completed", conclusion: "cancelled", output: {title: "Review cancelled", summary: "The run was cancelled before Codex posted a verdict."}}'
+          else
+            jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
+          fi | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
+        fi
         [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent-delete gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
 
     - name: Stop the SSE subscription

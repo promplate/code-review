@@ -45,6 +45,15 @@ else if(path?.includes('/reactions?')) console.log('[]');
 else if(path?.endsWith('/reactions')) console.log('9');
 else if(path?.endsWith('/check-runs') && args.includes('--jq')) console.log('10');
 else if(path?.endsWith('/check-runs/42') && !args.includes('-X')) console.log(process.env.TEST_CHECK_STATUS||'completed');
+else if(path?.endsWith('/check-runs/10') && !args.includes('-X')) {
+ const check=JSON.parse(readFileSync(temp+'/check.json','utf8'));
+ delete check.output.annotations;
+ console.log(JSON.stringify(check));
+}
+else if(path?.endsWith('/check-runs/10/annotations')) {
+ const check=JSON.parse(readFileSync(temp+'/check.json','utf8'));
+ console.log(JSON.stringify(mode==='check-reply-lost'?check.output.annotations:[]));
+}
 else if(path==='users/reviewer[bot]') {
  if(mode==='retry-identity' && !existsSync(temp+'/identity-retried')) {
   await Bun.write(temp+'/identity-retried','');
@@ -55,7 +64,10 @@ else if(path==='users/reviewer[bot]') {
 }
 else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
  const body=await Bun.stdin.text();
- if(path?.includes('/check-runs/')) await Bun.write(temp+'/check.json',body);
+ if(path?.includes('/check-runs/')) {
+  await Bun.write(temp+'/check.json',body);
+  if(mode.startsWith('check-reply-')) { console.error('gh: Bad Gateway (HTTP 502)'); process.exit(1); }
+ }
 }
 `);
   executable("codex", `#!${process.execPath}
@@ -73,10 +85,11 @@ if(process.env.TEST_TRACE_ENV==='true' && process.env.REVIEW_TRACE_RELAY_URL) {
 if(retry) await Bun.write(process.env.RUNNER_TEMP+'/retried','');
 if(mode==='codex-fails'||(retry&&mode==='moved-on-retry-error')) process.exit(1);
 const invalid=mode==='stale-verdict'||mode==='invalid-verdict'||mode.startsWith('moved-on-retry');
+const blocking=mode.startsWith('check-reply-');
 const commits=invalid
  ? [{sha:process.env.HEAD_SHA,conclusion:'failure'},{sha:'new-head',conclusion:'success'}]
- : [{sha:process.env.HEAD_SHA,conclusion:'success'}];
-const verdict={conclusion:'success',summary:'',reactions:['+1'],commits,merge:mode.startsWith('merge')?{method:'squash',subject:'Fixture',body:''}:null,annotations:[]};
+ : [{sha:process.env.HEAD_SHA,conclusion:blocking?'failure':'success'}];
+const verdict={conclusion:blocking?'failure':'success',summary:blocking?'Fix this':'',reactions:['+1'],commits,merge:mode.startsWith('merge')?{method:'squash',subject:'Fixture',body:''}:null,annotations:blocking?[{path:'a.py',line:1,level:'failure',message:'Fix this'}]:[]};
 await Bun.write(process.argv[process.argv.indexOf('--output-last-message')+1],JSON.stringify(verdict));
 await Bun.write(process.env.CODEX_HOME+'/auth.json',JSON.stringify({tokens:{refresh_token:'refreshed'}}));
 console.log(JSON.stringify({type:'thread.started',thread_id:'test-thread'}));
@@ -328,6 +341,21 @@ test.each(["codex-fails", "publish-fails"])("hosted %s leaves the publication ch
   if (mode === "codex-fails") expect(readFileSync(join(setup.state,"last-thread-id"),"utf8")).toBe("");
   expect(JSON.parse(readFileSync(join(setup.temp,"result.json"),"utf8"))).toMatchObject({status:"failed",published:false});
   expect(Bun.file(join(setup.state,"sessions/.github-published-head")).size).toBe(0);
+});
+
+test.each([true, false])("hosted check publication with a lost response (confirmed: %s)", confirmed => {
+  const setup = fixture(confirmed ? "check-reply-lost" : "check-reply-unverified"), result = setup.run();
+  expect(result.exitCode).toBe(confirmed ? 0 : 1);
+  expect(JSON.parse(readFileSync(join(setup.temp, "result.json"), "utf8"))).toMatchObject({
+    status: confirmed ? "completed" : "failed", published: confirmed,
+  });
+  const calls = readFileSync(join(setup.temp, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+  const patches = calls.filter(args => args[1] === "repos/owner/repo/check-runs/10" && args.includes("PATCH"));
+  expect(patches.filter(args => args.includes("--input"))).toHaveLength(1);
+  expect(patches.some(args => args.includes("conclusion=neutral"))).toBe(false);
+  expect(calls.filter(args => args[1] === "repos/owner/repo/check-runs/10/annotations")).toHaveLength(1);
+  if (confirmed) expect(JSON.parse(readFileSync(join(setup.temp, "reviews"), "utf8"))).toMatchObject({ event: "REQUEST_CHANGES", commit_id: setup.head });
+  else expect(existsSync(join(setup.temp, "reviews"))).toBe(false);
 });
 
 test("hosted draft release waits for a persisted session and preserves failed releases", () => {

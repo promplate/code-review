@@ -58,4 +58,32 @@ output: {
 retry_policy=()
 # GitHub appends annotations on every PATCH. A verdict with none can be sent again.
 if jq -e '.output.annotations == []' <<< "$payload" > /dev/null; then retry_policy=(--idempotent); fi
-bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input - <<< "$payload"
+endpoint="repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID"
+# A failed (or cancelled) publication may already have committed. Cleanup must
+# not race it with a neutral verdict, even if a subsequent read is inconclusive.
+touch "$RUNNER_TEMP/check-publication-attempted"
+if bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api "$endpoint" -X PATCH --input - <<< "$payload"; then exit 0; fi
+
+# Reconcile the desired state instead of replaying a potentially applied PATCH.
+verdict_published() {
+  local current annotations
+  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint" </dev/null) || return 1
+  jq -e --argjson expected "$payload" '
+    .head_sha == $expected.head_sha and .status == $expected.status and .conclusion == $expected.conclusion
+    and .output.title == $expected.output.title and .output.summary == $expected.output.summary
+  ' <<< "$current" >/dev/null || return 1
+  jq -e '.output.annotations == []' <<< "$payload" >/dev/null && return 0
+  annotations=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint/annotations" --paginate </dev/null) || return 1
+  # Existing annotations can belong to earlier attempts; count matching entries, not just the total.
+  jq -es --argjson expected "$payload" '
+    add | map({path, start_line, end_line, annotation_level, message}) as $actual
+    | all($expected.output.annotations | group_by(.)[]; . as $group |
+        ([$actual[] | select(. == $group[0])] | length) >= ($group | length))
+  ' <<< "$annotations" >/dev/null
+}
+if verdict_published; then
+  echo "::notice::Check run publication confirmed after a failed response."
+else
+  echo "::error::Check run publication could not be confirmed; leaving the check unchanged." >&2
+  exit 1
+fi

@@ -682,6 +682,37 @@ jq -c . >> "$RUNNER_TEMP/patches"
   expect(patches).toEqual(annotated ? [patches[0]] : [patches[0], patches[0]]);
 });
 
+test.each(["applied", "unapplied", "different-annotation", "unreadable"])("a lost final check response reconciles %s without cleanup overwriting it", mode => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  'api repos/owner/repo/check-runs/10 -X PATCH --input -')
+    jq -c . >> "$RUNNER_TEMP/patches"
+    echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1 ;;
+  'api repos/owner/repo/check-runs/10')
+    case "$MODE" in
+      unreadable) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+      unapplied) echo '{"status":"in_progress"}' ;;
+      *) jq 'del(.output.annotations)' "$RUNNER_TEMP/patches" ;;
+    esac ;;
+  'api repos/owner/repo/check-runs/10/annotations --paginate')
+    jq --arg mode "$MODE" '.output.annotations | if $mode == "different-annotation" then map(.message = "Other") else . end' "$RUNNER_TEMP/patches" ;;
+  *) exit 2 ;;
+esac
+`);
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({
+    summary: "Fix this", commits: [{ sha: "head", conclusion: "failure" }],
+    annotations: [{ path: "a.py", line: 1, level: "failure", message: "Fix this" }],
+  }));
+  const result = run("Publish check run", setup, { REVIEW_HOSTED: "true", PR_NUMBER: "", MODE: mode });
+  expect(result.exitCode).toBe(mode === "applied" ? 0 : 1);
+  expect(run("Close check run on failure or cancellation", setup, { MODE: mode }).exitCode).toBe(0);
+  const patches = readFileSync(join(setup.dir, "patches"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(patches).toHaveLength(1);
+  expect(patches[0]).toMatchObject({ conclusion: "failure", output: { annotations: [{ message: "Fix this" }] } });
+});
+
 test("a failed final head refresh preserves the verdict and reports the missing reconciliation", () => {
   const setup = fixture();
   executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");

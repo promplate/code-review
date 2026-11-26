@@ -19,7 +19,7 @@ export GITHUB_STEP_SUMMARY="$RUNNER_TEMP/summary.md"
 export UV_CACHE_DIR="$RUNNER_TEMP/uv/cache" UV_TOOL_DIR="$RUNNER_TEMP/uv/tools" UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uv/python"
 mkdir -p "$CODEX_HOME/sessions" "$RUNNER_TEMP"
 umask 077
-rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json"
+rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/check-publication-attempted"
 SSE_PID= review_started=false published=false check_published=false check_started=false
 # Optional progress index for callers that redirect stdout and stderr to a file. The
 # newline makes each boundary safe for line-oriented readers and credential masking.
@@ -58,7 +58,8 @@ cleanup() {
   if [ "$code" != 0 ]; then
     result failed
     # A supplied check may hold an earlier verdict until this attempt successfully starts it.
-    if [ "$check_started" = true ] && [ "$check_published" != true ]; then
+    # A failed publication may have applied its verdict; leave uncertain checks for reconciliation.
+    if [ "$check_started" = true ] && [ "$check_published" != true ] && [ ! -e "$RUNNER_TEMP/check-publication-attempted" ]; then
       retry --idempotent gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
         -f 'output[title]=Review failed' -f 'output[summary]=The hosted review failed before completing publication. See the hosted run for details.' </dev/null >/dev/null || true
     fi
