@@ -1165,6 +1165,30 @@ test("a session saved under another provider starts a fresh thread", () => {
   expect(readFileSync(join(dir, "last-thread-id"), "utf8")).toBe("thread");
 });
 
+test("tool group titles preserve literal percent escapes in both log views", () => {
+  const value = "report%0Aname%25";
+  for (const hosted of ["", "true"]) {
+    const items = [
+      { type: "web_search", query: value },
+      { type: "command_execution", command: value + "\nsecond " + value, aggregated_output: value },
+      { type: "mcp_tool_call", server: "github", tool: "search", arguments: { q: value }, result: {} },
+    ];
+    const input = items.map(item => JSON.stringify({ type: "item.completed", item })).join("\n");
+    const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], {
+      stdin: Buffer.from(input), env: { ...process.env, REVIEW_HOSTED: hosted },
+    });
+    expect(result.exitCode).toBe(0);
+    const lines = result.stdout.toString().split("\n");
+    const headers = lines.filter(line => line.startsWith("::group::"));
+    expect(headers).toHaveLength(items.length);
+    for (const header of headers) {
+      const title = hosted ? header : header.replaceAll("%0D", "\r").replaceAll("%0A", "\n").replaceAll("%25", "%");
+      expect(title).toContain(value);
+    }
+    expect(lines).toContain("second " + value);
+  }
+});
+
 test("MCP calls fold input and result into one block", () => {
   const log = (item: object) => {
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
