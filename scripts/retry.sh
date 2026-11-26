@@ -48,16 +48,21 @@ elif [[ $endpoint == graphql ]]; then
   # A document that opens with `mutation` commits; `query`, a bare selection set, and everything else read.
   [[ $document =~ ^[[:space:]]*mutation ]] && writes=true
 else
-  case " $* " in
-    *" --input "* | *" -f "* | *" --field "* | *" -F "* | *" --raw-field "*) writes=true ;;
-    # `-X GET` keeps a call a read; every other method is a write.
-    *" -X "* | *" --method "*)
-      for ((index = 2; index <= $#; index++)); do
-        case ${!index} in
-          -X | --method) next=$((index + 1)); value=${!next}; [[ ${value^^} == GET ]] || writes=true ;;
-        esac
-      done ;;
-  esac
+  # An explicit method decides first: `--method GET` keeps field flags as query parameters,
+  # while REST's field flags otherwise switch the call to POST by themselves.
+  method=
+  for ((index = 2; index <= $#; index++)); do
+    case ${!index} in
+      -X | --method) next=$((index + 1)); method=${!next} ;;
+    esac
+  done
+  if [[ -n $method && ${method^^} != GET ]]; then
+    writes=true
+  elif [[ -z $method ]]; then
+    case " $* " in
+      *" --input "* | *" -f "* | *" --field "* | *" -F "* | *" --raw-field "*) writes=true ;;
+    esac
+  fi
 fi
 delay=1
 max_delay=30

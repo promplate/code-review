@@ -89,6 +89,14 @@ test.each([
   expect(setup.delays()).toEqual([]);
 });
 
+test("an explicit GET keeps field flags a read", () => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  const result = setup.run(["api", "repos/owner/repo/pulls/7/reviews", "--method", "GET", "-f", "per_page=100"]);
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(2);
+  expect(setup.delays()).toEqual([1]);
+});
+
 test("a GraphQL server error retries", () => {
   const setup = fixture(["GraphQL: Something went wrong while executing your query on 2026-11-25T16:14:45Z. Please include `8884:37234` when reporting this issue."]);
   expect(setup.run().exitCode).toBe(0);
