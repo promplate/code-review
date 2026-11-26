@@ -115,8 +115,8 @@ fromjson? // {type: "error", message: .}
         "\u001b[95mcollaboration\u001b[0m \($call.tool)"
           + (if $call.status == "failed" then " \u001b[31m[failed]\u001b[0m" else "" end)
           + (if $agents == 0 then "" else " \u001b[90m→ \($agents) agent\(if $agents == 1 then "" else "s" end)\u001b[0m" end);
-        # Every field the call carries except the tool and outcome named in the title; the exec schema is not assumed.
-        ($call | del(.type, .tool, .sender_thread_id, .status) | with_entries(select(.value != null and .value != [] and .value != {}))
+        # Exec flattens the item ID into the call. Keep the parameters and agent states in the body.
+        ($call | del(.id, .type, .tool, .sender_thread_id, .status) | with_entries(select(.value != null and .value != [] and .value != {}))
           | if . == {} then "{}" else pretty(0) end))
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end

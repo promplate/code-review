@@ -1201,9 +1201,9 @@ test("collaboration calls fold their params, or an empty object", () => {
     expect(result.exitCode).toBe(0);
     return result.stdout.toString();
   };
-  const spawn = { type: "collab_tool_call", tool: "spawn_agent", sender_thread_id: "t", receiver_thread_ids: ["r1", "r2"], prompt: "Review the diff",
+  const spawn = { id: "item_0", type: "collab_tool_call", tool: "spawn_agent", sender_thread_id: "t", receiver_thread_ids: ["r1", "r2"], prompt: "Review the diff",
     agents_states: { r1: { status: "running", message: null } }, status: "completed" };
-  // The namespace is `collaboration` in Codex, and the body is every field the call carried that the title does not name.
+  // The body keeps the call parameters and agent states. Exec assigns the item ID.
   expect(log(spawn)).toBe(`::group::\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[90m→ 2 agents\u001b[0m\n{\n  \u001b[36m"receiver_thread_ids"\u001b[0m: [\n    \u001b[32m"r1"\u001b[0m,\n    \u001b[32m"r2"\u001b[0m\n  ],\n  \u001b[36m"prompt"\u001b[0m: \u001b[32m"Review the diff"\u001b[0m,\n  \u001b[36m"agents_states"\u001b[0m: {\n    \u001b[36m"r1"\u001b[0m: {\n      \u001b[36m"status"\u001b[0m: \u001b[32m"running"\u001b[0m,\n      \u001b[36m"message"\u001b[0m: \u001b[90mnull\u001b[0m\n    }\n  }\n}\n::endgroup::\n\n`);
   // A wait carries nothing to show, so the folded body is an empty object rather than no block at all.
   expect(log({ ...spawn, tool: "wait", receiver_thread_ids: [], prompt: null, agents_states: {} })).toBe(`::group::\u001b[95mcollaboration\u001b[0m wait\n{}\n::endgroup::\n\n`);
