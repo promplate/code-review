@@ -27,32 +27,37 @@ give_up() {
 # and `owner/mutation-testing` still names a GraphQL query. REST writes when the method is explicit, when `--input`
 # supplies a body, or when a field flag switches it to POST; GraphQL writes only when its document mutates.
 endpoint=
-# $1 is gh and $2 the api subcommand, so the endpoint is the first operand after them.
-# Options may precede it and some take a separate value (`-H "header"`), which is not the endpoint.
-for ((index = 3; index <= $#; index++)); do
-  arg=${!index}
-  # gh allows -i to precede a value-taking short flag in the same argument, as in -iH.
-  if [[ $arg =~ ^-i*[XHfFqtp]$ ]]; then ((index++)); continue; fi
-  case $arg in
-    --method | --header | --field | --raw-field | --input | --jq | --template | --hostname | --cache | --preview) ((index++)) ;;
-    -*) ;;
-    *) endpoint=$arg; break ;;
-  esac
-done
+method=
+document=
+fields=false
 writes=false
-if [[ $1 != gh || $2 != api ]]; then
-  : # Other commands carry no endpoints to read; their transient failures retry on the message alone.
-elif [[ $endpoint == graphql ]]; then
-  document=
-  for ((index = 2; index <= $#; index++)); do
-    case ${!index} in
-      -f | --field | -F | --raw-field)
-        next=$((index + 1)); value=${!next}
+if [[ $1 == gh && $2 == api ]]; then
+  # Consume each option together with its value, whether joined or separate. Only operands name endpoints.
+  for ((index = 3; index <= $#; index++)); do
+    arg=${!index}
+    case $arg in
+      --) ((index++)); endpoint=${endpoint:-${!index}}; break ;;
+      --*) flag=${arg%%=*}; attached=${arg#"$flag"} ;;
+      -*) # -i can precede a value-taking short flag, as in -iH.
+        [[ $arg =~ ^-i*([XHfFqtp])(.*)$ ]] || continue
+        flag=-${BASH_REMATCH[1]}; attached=${BASH_REMATCH[2]} ;;
+      *) endpoint=$arg; continue ;;
+    esac
+    case $flag in
+      -X | -H | -f | -F | -q | -t | -p | --method | --header | --field | --raw-field | --input | --jq | --template | --hostname | --cache | --preview) ;;
+      *) continue ;;
+    esac
+    if [[ -n $attached ]]; then value=${attached#=}; else ((index++)); value=${!index}; fi
+    case $flag in
+      -X | --method) method=$value ;;
+      --input) writes=true ;;
+      -f | -F | --field | --raw-field)
+        fields=true
         [[ $value == query=* ]] && document=${value#query=} ;;
-      query=*) value=${!index}; document=${value#query=} ;;
-      --input | --input=*) writes=true ;;
     esac
   done
+fi
+if [[ $endpoint == graphql ]]; then
   # Only a document whose first significant token is `query` or a selection set reads; a comment,
   # a fragment definition or anything unrecognised keeps the write guard. No document at all is a read.
   if [[ -n $document ]]; then
@@ -61,23 +66,11 @@ elif [[ $endpoint == graphql ]]; then
     # `operationName` can select a later mutation while the first definition is a query.
     if printf '%s' "$document" | grep -Eq '(^|[^[:alnum:]_])mutation([[:space:]({]|$)'; then writes=true; fi
   fi
-else
-  # An explicit method decides first: `--method GET` keeps field flags as query parameters,
-  # while REST's field flags otherwise switch the call to POST by themselves.
-  method=
-  for ((index = 2; index <= $#; index++)); do
-    case ${!index} in
-      -X | --method) next=$((index + 1)); method=${!next} ;;
-      -X=* | --method=*) method=${!index#*=} ;;
-    esac
-  done
-  if [[ -n $method && ${method^^} != GET ]]; then
-    writes=true
-  elif [[ -z $method ]]; then
-    case " $* " in
-      *" --input "* | *" --input="* | *" -f "* | *" --field "* | *" --field="* | *" -F "* | *" --raw-field "* | *" --raw-field="*) writes=true ;;
-    esac
-  fi
+elif [[ -n $method ]]; then
+  # gh sends field flags as query parameters when GET is explicit.
+  if [[ ${method^^} == GET ]]; then writes=false; else writes=true; fi
+elif [[ $fields == true ]]; then
+  writes=true
 fi
 delay=1
 max_delay=30

@@ -147,6 +147,25 @@ test("equals forms classify like their separate arguments", () => {
   expect(post.run(["api", "repos/owner/repo/check-runs", "--field=name=code-review"]).exitCode).toBe(1);
 });
 
+test.each(["--field=", "--raw-field=", "-F", "-f=", "-if"])("classify a GraphQL field attached to %s", flag => {
+  for (const [document, calls] of [["{viewer{login}}", 2], ["mutation { example }", 1]] as const) {
+    const setup = fixture(["unexpected end of JSON input"]);
+    const result = setup.run(["api", "graphql", flag + "query=" + document]);
+    expect(setup.calls()).toHaveLength(calls);
+    expect(result.exitCode).toBe(calls === 1 ? 1 : 0);
+  }
+});
+
+test.each([
+  ["--method=GET", "-XPOST", "-f", "body=Reviewed"],
+  ["-ifbody=Reviewed"],
+  ["-XPOST", "--template", "-XGET"],
+])("an attached REST write option keeps the write guard: %j", (...args) => {
+  const setup = fixture(["unexpected end of JSON input"]);
+  expect(setup.run(["api", "repos/owner/repo/pulls/7/reviews", ...args]).exitCode).toBe(1);
+  expect(setup.calls()).toHaveLength(1);
+});
+
 test("a later mutation keeps the write guard even when a query opens the document", () => {
   const document = "query Read { viewer { login } } mutation Add { addComment { id } }";
   const selected = fixture(["unexpected end of JSON input"]);
