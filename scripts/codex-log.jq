@@ -94,13 +94,12 @@ fromjson? // {type: "error", message: .}
   elif .type == "item.completed" and .item.type == "collab_tool_call" then
     .item as $call
     | (($call.receiver_thread_ids // []) | length) as $agents
-    | (($call.agents_states // {}) | length) as $states
     | fold(
         "\u001b[95mcollaboration\u001b[0m \($call.tool)"
           + (if $call.status == "failed" then " \u001b[31m[failed]\u001b[0m" else "" end)
           + (if $agents == 0 then "" else " \u001b[90m→ \($agents) agent\(if $agents == 1 then "" else "s" end)\u001b[0m" end);
-        (if $call.prompt == null then "" else ($call.prompt | gsub("\r"; "") | dim) end)
-          + (if $states == 0 then "" else "\n" + ($call.agents_states | json) end))
+        [($call.prompt // "" | gsub("\r"; "") | select(length > 0) | dim),
+         ($call.agents_states | select(length > 0) | json)] | join("\n"))
   elif .type == "item.started" and (.item.type | IN("agent_message", "reasoning", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list", "collab_tool_call") | not) then .item.tool // .item.type
   else empty end
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
