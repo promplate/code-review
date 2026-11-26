@@ -56,11 +56,18 @@ def prune: walk(if type == "object" then with_entries(select(.value != null)) el
           conclusion: $body.workflow_run.conclusion, head_sha: $body.workflow_run.head_sha, html_url: ($body.workflow_run.html_url | repo_url)}} else {} end)
       + (if $frame.event == "status" then {state: $body.state, context: $body.context, sha: $body.sha, target_url: ($body.target_url | repo_url)} else {} end)
       + (if $frame.event == "push" then {ref: $body.ref, after: $body.after} else {} end)
-      + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha},
+      + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}, base: {ref: $body.pull_request.base.ref},
           # An edited title or description is the change itself; other pull request events do not need the PR text again.
           title: (if $body.action == "edited" then ($body.pull_request.title | clip(200)) else null end),
           body: (if $body.action == "edited" then ($body.pull_request.body // "" | clip(2000)) else null end),
-          merged: (if $body.action == "closed" then $body.pull_request.merged else null end)}} else {} end)
+          merged: (if $body.action == "closed" then $body.pull_request.merged else null end)},
+          draft: $body.pull_request.draft,
+          # What an edit changed: a new base means a different diff, which the new title and body alone cannot say.
+          changes: (if $body.changes == null then null else ({}
+            + (if $body.changes.title then {title: {from: ($body.changes.title.from | clip(200))}} else {} end)
+            + (if $body.changes.body then {body: {from: (($body.changes.body.from // "") | clip(2000))}} else {} end)
+            + (if $body.changes.base then {base: {ref: {from: $body.changes.base.ref.from}}} else {} end)
+            | if . == {} then null else . end) end)} else {} end)
       + (if $frame.event == "issue_comment" then {issue: {number: $body.issue.number}, comment: {id: $body.comment.id, body: $body.comment.body, html_url: ($body.comment.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, review: {state: $body.review.state, body: $body.review.body, html_url: ($body.review.html_url | repo_url)}} else {} end)
       + (if $frame.event == "pull_request_review_comment" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha}}, comment: {id: $body.comment.id, commit_id: $body.comment.commit_id, body: $body.comment.body, path: $body.comment.path, line: $body.comment.line, html_url: ($body.comment.html_url | repo_url)}} else {} end)
