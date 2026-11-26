@@ -136,6 +136,25 @@ test("an explicit GET keeps field flags a read", () => {
   expect(setup.delays()).toEqual([1]);
 });
 
+test("equals forms classify like their separate arguments", () => {
+  const input = fixture(["unexpected end of JSON input"]);
+  const result = input.run(["api", "graphql", "--input=-"], '{"query":"mutation { example }"}');
+  expect(result.exitCode).toBe(1);
+  expect(input.calls()).toHaveLength(1);
+  const get = fixture(["unexpected end of JSON input"]);
+  expect(get.run(["api", "repos/owner/repo/pulls/7/reviews", "--method=GET", "--field=per_page=100"]).exitCode).toBe(0);
+  const post = fixture(["unexpected end of JSON input"]);
+  expect(post.run(["api", "repos/owner/repo/check-runs", "--field=name=code-review"]).exitCode).toBe(1);
+});
+
+test("a later mutation keeps the write guard even when a query opens the document", () => {
+  const document = "query Read { viewer { login } } mutation Add { addComment { id } }";
+  const selected = fixture(["unexpected end of JSON input"]);
+  expect(selected.run(["api", "graphql", "-f", `query=${document}`, "-f", "operationName=Add"]).exitCode).toBe(1);
+  const alone = fixture(["unexpected end of JSON input"]);
+  expect(alone.run(["api", "graphql", "-f", "query=query($n: String!) { viewer { login } }"]).exitCode).toBe(0);
+});
+
 test("a GraphQL server error retries", () => {
   const setup = fixture(["GraphQL: Something went wrong while executing your query on 2026-11-25T16:14:45Z. Please include `8884:37234` when reporting this issue."]);
   expect(setup.run().exitCode).toBe(0);

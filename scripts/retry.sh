@@ -50,7 +50,7 @@ elif [[ $endpoint == graphql ]]; then
         next=$((index + 1)); value=${!next}
         [[ $value == query=* ]] && document=${value#query=} ;;
       query=*) value=${!index}; document=${value#query=} ;;
-      --input) writes=true ;;
+      --input | --input=*) writes=true ;;
     esac
   done
   # Only a document whose first significant token is `query` or a selection set reads; a comment,
@@ -58,6 +58,8 @@ elif [[ $endpoint == graphql ]]; then
   if [[ -n $document ]]; then
     operation=$(printf '%s' "$document" | awk '{ sub(/^[ \t]+/, "") } /^#/ || !length { next } { print; exit }')
     [[ $operation =~ ^(\{|query([[:space:]{\(]|$)) ]] || writes=true
+    # `operationName` can select a later mutation while the first definition is a query.
+    if printf '%s' "$document" | grep -Eq '(^|[^[:alnum:]_])mutation([[:space:]({]|$)'; then writes=true; fi
   fi
 else
   # An explicit method decides first: `--method GET` keeps field flags as query parameters,
@@ -66,13 +68,14 @@ else
   for ((index = 2; index <= $#; index++)); do
     case ${!index} in
       -X | --method) next=$((index + 1)); method=${!next} ;;
+      -X=* | --method=*) method=${!index#*=} ;;
     esac
   done
   if [[ -n $method && ${method^^} != GET ]]; then
     writes=true
   elif [[ -z $method ]]; then
     case " $* " in
-      *" --input "* | *" -f "* | *" --field "* | *" -F "* | *" --raw-field "*) writes=true ;;
+      *" --input "* | *" --input="* | *" -f "* | *" --field "* | *" --field="* | *" -F "* | *" --raw-field "* | *" --raw-field="*) writes=true ;;
     esac
   fi
 fi
