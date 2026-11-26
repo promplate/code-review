@@ -55,7 +55,9 @@ function runLoggedHook(log: string, overrides = {}) {
   const activities = injected.split("\n").filter(Boolean).map(line => JSON.parse(line));
   const contexts = JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line));
   expect(contexts).toEqual(activities.map(({ workflow, ...context }) => context));
-  return { ...hook, contexts, activities, text: formatted.stdout.toString().replace(/\u001b\[[0-9;]*m/g, "") };
+  // Each activity is a group whose body is the delivered record; assertions read the headers.
+  const text = formatted.stdout.toString().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length)).join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+  return { ...hook, contexts, activities, text };
 }
 
 type CIResponse = { pages?: object[]; error?: string };
@@ -1557,10 +1559,28 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
     JSON.stringify({ event: "check_run", check_run: { name: "CI ##[error]synthetic", details_url: "https://example.test/r/4" } }),
   ].join("\n") + "\n");
   expect(crafted).not.toContain("::stop-commands::");
-  expect(crafted).not.toMatch(/^ *::/m);
+  // Only the folding markers themselves may start a workflow command; nothing from a payload can.
+  for (const line of crafted.split("\n").filter(line => line.startsWith("::"))) {
+    expect(line === "::endgroup::" || line.startsWith("::group::")).toBe(true);
+  }
   expect(crafted).not.toContain("##[");
   expect(crafted).toContain(":​:error:​:forged");
   expect(crafted).toContain("#​#[error]synthetic");
+});
+
+test("an injected event folds the record the model received", () => {
+  const input = JSON.stringify({ event: "issue_comment", action: "created", sender: { login: "alice", type: "User" }, issue: { number: 7 },
+    comment: { id: 4, body: "hi ##[error]x", html_url: "/pull/7#issuecomment-4" }, workflow: "CI" });
+  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input + "\n") });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString();
+  // The header is what the live view reads; the record folds under it so the payload can be checked in place.
+  expect(output.startsWith("::group::\u001b[96missue_comment/created\u001b[0m alice /pull/7#issuecomment-4\n{\n")).toBe(true);
+  expect(output).toContain('  \u001b[36m"comment"\u001b[0m: {\n    \u001b[36m"id"\u001b[0m: \u001b[33m4\u001b[0m,');
+  expect(output).toContain('\u001b[32m"hi #\u200b#[error]x"\u001b[0m');
+  // `workflow` is display-only correlation the model never received.
+  expect(output).not.toContain('"workflow"');
+  expect(output.endsWith("\n::endgroup::\n\n")).toBe(true);
 });
 
 test("hook deliveries are published for the live log", () => {
@@ -1808,7 +1828,9 @@ test("injected command markers stay escaped when concurrent output splits a line
   const { dir } = runHook(frame("check_run", { action: "completed", sender: bot, check_run: check({ name: `${"x".repeat(4096)}::error::forged\n:::error title=forged:::payload` }) }));
   const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString()).not.toContain("::");
+  for (const line of result.stdout.toString().split("\n").filter(line => line.startsWith("::"))) {
+    expect(line === "::endgroup::" || line.startsWith("::group::")).toBe(true);
+  }
 });
 
 test("injected command escaping covers the runner's leading whitespace", () => {
@@ -1818,8 +1840,8 @@ test("injected command escaping covers the runner's leading whitespace", () => {
     const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(readFileSync(join(dir, "injected.log"))) });
     expect(result.exitCode).toBe(0);
     // Include U+0085 explicitly because JavaScript trimStart does not include it, whereas .NET does.
-    const lines = result.stdout.toString().split("\n").map((line) => line.replace(/^[\s\u0085]+/, ""));
-    expect(lines.some((line) => line.startsWith("::"))).toBe(false);
+    const lines = result.stdout.toString().split("\n").map((line) => line.replace(/^[\s\u0085]+/, "")).filter((line) => line.startsWith("::"));
+    expect(lines.every((line) => line === "::endgroup::" || line.startsWith("::group::"))).toBe(true);
   }
 });
 
@@ -2067,7 +2089,7 @@ test("injected changes link to the received commit in its PR when available", ()
   for (const pr of ["7", ""]) {
     const result = Bun.spawnSync(["jq", "-Rr", "-f", join(root, "scripts/injected-log.jq")], { stdin: Buffer.from(input), env: { ...process.env, PR_NUMBER: pr } });
     expect(result.exitCode).toBe(0);
-    const lines = result.stdout.toString().split("\n").filter(Boolean);
+    const lines = result.stdout.toString().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length));
     const path = pr ? `/pull/${pr}/commits/${head}` : `/commit/${head}`;
     for (const line of lines.slice(0, 2)) expect(line).toEndWith(path);
     for (const line of lines.slice(2, 4)) expect(line).not.toContain("/commit");

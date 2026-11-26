@@ -110,7 +110,7 @@ test.each([
   log.append(...records);
   await until(() => log.output().includes("subscription_recovery"));
   await log.finish();
-  expect(log.output().trim().split("\n").filter(Boolean)).toEqual([
+  expect(log.output().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length))).toEqual([
     "check_run/completed CI / dependabot job:success /actions/runs/90/job/1",
     "check_run/completed CI / human job:success /actions/runs/90/job/2",
     "check_run/completed blacksmith.sh / Proof:skipped https://blacksmith.sh/check/3",
@@ -150,7 +150,9 @@ test("CI log uses the hosted credential and escapes API-supplied names", async (
   await until(() => log.output().includes("check (windows, 3.12):success"));
   await log.finish();
   expect(log.calls()[0]).toMatchObject({ token: "", config: log.env.GH_CONFIG_DIR });
-  expect(log.output()).not.toContain("::");
+  for (const line of log.output().split("\n").filter(line => line.startsWith("::"))) {
+    expect(line === "::endgroup::" || line.startsWith("::group::")).toBe(true);
+  }
   expect(log.output()).not.toContain("##[");
 });
 
