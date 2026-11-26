@@ -666,6 +666,22 @@ esac
   }
 });
 
+test.each([false, true])("final check retries depend on whether the PATCH appends annotations (annotated=%s)", annotated => {
+  const setup = fixture();
+  executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+[ "$*" = 'api repos/owner/repo/check-runs/10 -X PATCH --input -' ] || exit 2
+jq -c . >> "$RUNNER_TEMP/patches"
+[ "$(wc -l < "$RUNNER_TEMP/patches")" -gt 1 ] || { echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; }`);
+  const annotations = annotated ? [{ path: "a.py", line: 1, level: "failure", message: "Fix this" }] : [];
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ summary: "Reviewed", commits: [{ sha: "head", conclusion: annotated ? "failure" : "success" }], annotations }));
+  const result = run("Publish check run", setup, { REVIEW_HOSTED: "true", PR_NUMBER: "" });
+  expect(result.exitCode).toBe(annotated ? 1 : 0);
+  const patches = readFileSync(join(setup.dir, "patches"), "utf8").trim().split("\n");
+  expect(JSON.parse(patches[0]).output.annotations).toHaveLength(annotations.length);
+  expect(patches).toEqual(annotated ? [patches[0]] : [patches[0], patches[0]]);
+});
+
 test("a failed final head refresh preserves the verdict and reports the missing reconciliation", () => {
   const setup = fixture();
   executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
