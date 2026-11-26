@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "$@" </dev/null; }
+retry() { bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$@" </dev/null; }
 endpoint="repos/$GITHUB_REPOSITORY/actions/artifacts"
 # An exact-name query works across refs and keeps unrelated workflow artifacts out of the lookup.
 key=$(printf '%s\0%s' "$MODEL_NAME" "$1" | sha256sum | cut -d ' ' -f1)

@@ -6,7 +6,7 @@ PUSHED=$(jq -Rrs '[split("\n")[] | select(startswith("data: ")) | .[6:] | fromjs
 # Pushes made with GITHUB_TOKEN, such as CI autofixes, start no workflow, so this review covers them instead of leaving them to a newer run.
 # The branch may move after the last Stop hook, before the SSE writer catches up.
 if [ -n "$PR_NUMBER" ]; then
-  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null) || {
+  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null) || {
     echo "::warning::Could not refresh PR #$PR_NUMBER before publication."; current=
     [ "${REVIEW_HOSTED:-}" != true ] || exit 1
   }
@@ -19,11 +19,11 @@ else
 # CI may push before this run subscribes, so whether a run exists tells them apart, not the push sender.
 for sha in $(git rev-parse HEAD) $PUSHED; do
   if [ "$sha" = "$HEAD_SHA" ]; then continue; fi
-  [ "$(GH_TOKEN=$REVIEW_ACTIONS_TOKEN bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha" \
+  [ "$(GH_TOKEN=$REVIEW_ACTIONS_TOKEN bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha" \
     --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" = true ] || continue
   # A seeded trigger can name an older push; only a commit ahead of HEAD supersedes this review.
   # The comparison needs Contents access, which the App token already has.
-  if [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/compare/$HEAD_SHA...$sha" \
+  if [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/compare/$HEAD_SHA...$sha" \
     --jq .status </dev/null)" = ahead ]; then NEWER=$sha; fi
 done
 fi
@@ -35,9 +35,9 @@ if [ -n "$NEWER" ]; then
   jq -n --arg newer "$NEWER" '{status: "completed", conclusion: "neutral", output: {
     title: ("Superseded by " + $newer[0:7] + " — review continues there"),
     summary: "A newer commit was pushed during this review, so no verdict is posted for this commit."}}' \
-    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
+    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
   # The run that continues on the newer commit keeps its own reaction; this one is done waiting.
-  [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null
+  [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent-delete gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null
   exit 0
 fi
 # Hosted verdict recovery only needs to close a superseded check. Its verdict may be missing or invalid.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Source this file to keep the selected executable and runtime in the calling shell.
-[ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH \
+[ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH \
   -f "output[title]=Setting up Codex…" -f "output[summary]=Installing Codex and the review hooks." </dev/null > /dev/null
 # The checkout keeps no credentials, so git fetches with the refreshed token as well; the empty helper skips credentials the runner's own helpers hold.
 # Reused checkouts already have both helpers; a plain set refuses to overwrite multiple values.
@@ -9,7 +9,7 @@ git config --add credential.https://github.com.helper "!gh auth git-credential"
 # Local commits and merges need an identity too; linked worktrees share this checkout's config.
 git config user.name "$BOT_LOGIN"
 # gh prints HTTP error bodies to stdout, so use only the successful attempt's ID.
-bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent bash -ec '
   bot_id=$(gh api "users/$BOT_LOGIN" --jq .id)
   git config user.email "$bot_id+$BOT_LOGIN@users.noreply.github.com"
 ' </dev/null

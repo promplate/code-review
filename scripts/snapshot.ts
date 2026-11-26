@@ -20,7 +20,7 @@ async function fetchKey() {
   const oidc = Bun.spawnSync(["bash", join(import.meta.dir, "oidc.sh"), broker]);
   if (oidc.exitCode) throw new Error(oidc.stderr.toString());
   // Only a completed transfer may supply the key. Keep failed attempts' bodies out of retry.sh's stdout.
-  const request = Bun.spawnSync(["bash", join(import.meta.dir, "retry.sh"), "bash", "-c", 'reply=$(curl "$@") && printf %s "$reply"', "_",
+  const request = Bun.spawnSync(["bash", join(import.meta.dir, "retry.sh"), "--idempotent", "bash", "-c", 'reply=$(curl "$@") && printf %s "$reply"', "_",
     "-fsS", "-w", "%{stderr}\\n%{http_code}\\n", "-X", "POST",
     "-H", `Authorization: Bearer ${oidc.stdout.toString().trim()}`, `${broker}/snapshot-key`], { stdin: "ignore" });
   const status = Number(request.stderr.toString().match(/^\d{3}$/gm)?.at(-1));
