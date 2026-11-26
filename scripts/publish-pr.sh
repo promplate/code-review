@@ -6,7 +6,7 @@ if [ "$REVIEW_HOSTED" = true ]; then
   if [ "$current" != "$HEAD_SHA" ]; then printf '%s\n' "$current" > "$RUNNER_TEMP/superseded"; exit 0; fi
 fi
 # The review state carries the verdict; its body is optional for approvals. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
-REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" </dev/null)
+REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" --paginate </dev/null)
 # The last verdict as a whole, so the state it stands in and the head it judged cannot disagree.
 VERDICT=$(jq -c '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last // {}' <<< "$REVIEWS")
 LAST=$(jq -r '.state // ""' <<< "$VERDICT")
