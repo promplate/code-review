@@ -79,9 +79,8 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
       + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha},
           base: ($body.pull_request.base | if .ref == null then null else {ref} end), draft: $body.pull_request.draft,
           # An edited title or description is the change itself; an opened one is new to the review. Other events do not repeat the PR text.
-          # An edited title or description is the change itself, and an opened one is new to the review.
-          title: (if (human_writer($frame; $body) and ($body.action | IN("edited", "opened"))) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
-          body: (if (human_writer($frame; $body) and ($body.action | IN("edited", "opened"))) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
+          title: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.title != null))) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
+          body: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.body != null))) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
           merged: (if $body.action == "closed" then $body.pull_request.merged else null end)},
           # What an edit changed: a new base means a different diff, which the new title and body alone cannot say.
           # Previous title/body text may belong to someone other than the editor, even when the editor has write access.
