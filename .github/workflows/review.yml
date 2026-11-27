@@ -55,6 +55,10 @@ on:
         description: Contents of a Codex model catalog; takes precedence over `model-catalog-file`.
         type: string
         default: ""
+      shared-uv-cache:
+        description: Share uv's download cache with every job on this runner. Only enable where every job that can write the cache is trusted with this review's credential.
+        type: boolean
+        default: false
     secrets:
       # Existing callers can pass the config as a secret.
       codex-config:
@@ -92,6 +96,7 @@ jobs:
           session-key: ${{ inputs.session-key }}
           broker: ${{ inputs.broker }}
           encrypt-snapshots: ${{ inputs.encrypt-snapshots }}
+          shared-uv-cache: ${{ inputs.shared-uv-cache }}
           debug-retention-days: ${{ vars.REVIEW_DEBUG_RETENTION_DAYS }}
           session-retention-days: ${{ vars.REVIEW_SESSION_RETENTION_DAYS }}
           setup: ${{ inputs.setup }}
