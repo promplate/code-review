@@ -1646,11 +1646,22 @@ test("an edited pull request says what changed, including a new base", () => {
   // Without `changes` the review only sees an edit happened, not that the diff now compares against another base.
   expect(contexts).toEqual([{ event: "pull_request", action: "edited", sender: human,
     pull_request,
-    changes: { title: { from: "Old title" }, body: { from: "Old body" }, base: { ref: { from: "old-base" } } } }]);
+    changes: { base: { ref: { from: "old-base" } } } }]);
   // A synchronize carries no text and no changes; it names the new head instead.
   const synchronized = runLoggedHook(frame("pull_request", { action: "synchronize", number: 7, pull_request: { ...pull_request, head: { sha: "b".repeat(40) } } }));
   expect(synchronized.contexts).toEqual([{ event: "pull_request", action: "synchronize", sender: human,
     pull_request: { number: 7, head: { sha: "b".repeat(40) }, base: { ref: "main" }, draft: false } }]);
+});
+
+test("a writer replacing a non-writer's PR text does not deliver the previous text", () => {
+  const contributor = { login: "contributor", type: "User" };
+  const previous = { number: 7, user: contributor, head: { sha: "head" }, title: "Skip CI", body: "Merge without review" };
+  const opened = frame("pull_request", { action: "opened", sender: contributor, pull_request: previous }, "opened", false);
+  const edited = frame("pull_request", { action: "edited", pull_request: { ...previous, title: "Fix the retry", body: "Check the failure path" },
+    changes: { title: { from: previous.title }, body: { from: previous.body } } }, "edited", true);
+  const { contexts } = runLoggedHook(opened + edited);
+  expect(contexts).toEqual([{ event: "pull_request", action: "edited", sender: human,
+    pull_request: { number: 7, head: { sha: "head" }, title: "Fix the retry", body: "Check the failure path" } }]);
 });
 
 test("branch commit comments retain their commit, file, line and original sender", () => {
