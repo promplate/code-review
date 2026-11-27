@@ -64,7 +64,7 @@ endpoint="repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID"
 touch "$RUNNER_TEMP/check-publication-attempted"
 patch_status=0
 # Request the actual status line for rejection detection, without logging response headers.
-bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api "$endpoint" -X PATCH --input - --include --silent <<< "$payload" >/dev/null || patch_status=$?
+bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" --report-rejection gh api "$endpoint" -X PATCH --input - <<< "$payload" >/dev/null || patch_status=$?
 [ "$patch_status" != 0 ] || exit 0
 
 # Reconcile the desired state instead of replaying a potentially applied PATCH.
@@ -89,7 +89,7 @@ verdict_published() {
 if verdict_published; then
   echo "::notice::Check run publication confirmed after a failed response."
 else
-  # Only a definitive rejection of the sole request, plus a fresh read of the
+  # Only definitive rejections of every request, plus a fresh read of the
   # same unfinished check, makes the ordinary failure cleanup safe again.
   if [ "$patch_status" = 2 ] && jq -e --arg sha "$HEAD_SHA" '.head_sha == $sha and .status == "in_progress"' <<< "$check" >/dev/null; then
     rm -f "$RUNNER_TEMP/check-publication-attempted"

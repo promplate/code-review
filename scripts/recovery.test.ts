@@ -682,7 +682,7 @@ jq -c . >> "$RUNNER_TEMP/patches"
   expect(patches).toEqual(annotated ? [patches[0]] : [patches[0], patches[0]]);
 });
 
-test.each(["applied", "large", "unapplied", "different-annotation", "unreadable", "rejected", "rejected-completed", "rejected-unreadable", "ambiguous-then-rejected", "spoofed-422"])("final check publication reconciles %s before deciding whether cleanup is safe", mode => {
+test.each(["applied", "large", "unapplied", "different-annotation", "unreadable", "rejected", "forbidden", "throttled", "throttled-retries", "rejected-completed", "rejected-unreadable", "ambiguous-then-rejected", "spoofed-422"])("final check publication reconciles %s before deciding whether cleanup is safe", mode => {
   const setup = fixture();
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
@@ -691,6 +691,8 @@ case "$*" in
     jq -c . >> "$RUNNER_TEMP/patches"
     case "$MODE" in
       rejected*) status=422 ;;
+      forbidden) status=403 ;;
+      throttled*) status=429 ;;
       ambiguous-then-rejected) if [ "$(wc -l < "$RUNNER_TEMP/patches")" -eq 1 ]; then status=502; else status=422; fi ;;
       *) status=502 ;;
     esac
@@ -703,7 +705,7 @@ case "$*" in
   'api repos/owner/repo/check-runs/10')
     case "$MODE" in
       unreadable|rejected-unreadable) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
-      unapplied|rejected|ambiguous-then-rejected|spoofed-422) echo '{"head_sha":"head","status":"in_progress"}' ;;
+      unapplied|rejected|forbidden|throttled*|ambiguous-then-rejected|spoofed-422) echo '{"head_sha":"head","status":"in_progress"}' ;;
       rejected-completed) echo '{"head_sha":"head","status":"completed","conclusion":"failure"}' ;;
       *) jq 'del(.output.annotations)' "$RUNNER_TEMP/patches" ;;
     esac ;;
@@ -713,7 +715,7 @@ case "$*" in
 esac
 `);
   // The 50 expanded API annotations can exceed Linux's single-argument limit even when the review fits.
-  const count = mode === "large" ? 50 : mode === "ambiguous-then-rejected" ? 0 : 1, message = mode === "large" ? "x".repeat(2530) : "Fix this";
+  const count = mode === "large" ? 50 : ["ambiguous-then-rejected", "throttled-retries"].includes(mode) ? 0 : 1, message = mode === "large" ? "x".repeat(2530) : "Fix this";
   const annotations = Array.from({ length: count }, (_, i) => ({ path: "a.py", line: i + 1, level: "failure", message }));
   writeFileSync(join(setup.dir, "review.json"), JSON.stringify({
     summary: "Fix this", commits: [{ sha: "head", conclusion: "failure" }],
@@ -723,11 +725,13 @@ esac
   expect(result.exitCode).toBe(mode === "applied" || mode === "large" ? 0 : 1);
   expect(run("Close check run on failure or cancellation", setup, { MODE: mode }).exitCode).toBe(0);
   const patches = readFileSync(join(setup.dir, "patches"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-  expect(patches).toHaveLength(mode === "rejected" || mode === "ambiguous-then-rejected" ? 2 : 1);
+  const cleanup = ["rejected", "forbidden", "throttled", "throttled-retries"].includes(mode);
+  const attempts = mode === "throttled-retries" ? 8 : mode === "ambiguous-then-rejected" ? 2 : 1;
+  expect(patches).toHaveLength(attempts + Number(cleanup));
   expect(patches[0].conclusion).toBe("failure");
   expect(patches[0].output.annotations).toHaveLength(count);
   if (count) expect(patches[0].output.annotations[0].message).toBe(message);
-  if (mode === "rejected") expect(patches[1]).toMatchObject({ status: "completed", conclusion: "neutral" });
+  if (cleanup) expect(patches[attempts]).toMatchObject({ status: "completed", conclusion: "neutral" });
   if (mode === "ambiguous-then-rejected") expect(patches[1]).toEqual(patches[0]);
 });
 

@@ -7,7 +7,7 @@ const scripts = process.env.REVIEW_SCRIPTS_PATH || import.meta.dir;
 const homes: string[] = [];
 afterEach(() => { for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture(errors: string[], policy = "--idempotent") {
+function fixture(errors: string[], policy = "--idempotent", errorBody?: string) {
   const dir = mkdtempSync(join(tmpdir(), "review-retry-"));
   homes.push(dir);
   writeFileSync(join(dir, "gh"), `#!${process.execPath}
@@ -18,7 +18,7 @@ const count = existsSync(file) ? readFileSync(file, "utf8").trim().split("\\n").
 appendFileSync(file, JSON.stringify({ args: process.argv.slice(2), input: await Bun.stdin.text() }) + "\\n");
 const errors = JSON.parse(process.env.ERRORS);
 if (count < errors.length) {
-  console.log(JSON.stringify({ message: errors[count] }));
+  console.log(process.env.ERROR_BODY ?? JSON.stringify({ message: errors[count] }));
   console.error(errors[count]);
   process.exit(1);
 }
@@ -26,13 +26,21 @@ console.log("ok");
 console.error("success diagnostic");
 `, { mode: 0o755 });
   writeFileSync(join(dir, "sleep"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$RUNNER_TEMP/delays"\n', { mode: 0o755 });
-  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, ERRORS: JSON.stringify(errors), GITHUB_ACTION_PATH: resolve(scripts, ".."), GITHUB_REPOSITORY: "owner/repo" };
+  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, ERRORS: JSON.stringify(errors), ERROR_BODY: errorBody, GITHUB_ACTION_PATH: resolve(scripts, ".."), GITHUB_REPOSITORY: "owner/repo" };
   return { dir, env,
     calls: () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [],
     delays: () => existsSync(join(dir, "delays")) ? readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number) : [],
     run: (args = ["api", "graphql"], input = "") => Bun.spawnSync(["bash", join(scripts, "retry.sh"), ...(policy ? [policy] : []), "gh", ...args], { env, stdin: Buffer.from(input), timeout: 3000 }),
   };
 }
+
+test("a retryable GET can return an error body beginning with an HTTP status line", () => {
+  const setup = fixture(["gh: Bad Gateway (HTTP 502)"], "--idempotent", "HTTP/1.1 422 Unprocessable Content\r\nupstream unavailable");
+  const result = setup.run(["api", "repos/owner/repo"]);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("ok\n");
+  expect(setup.delays()).toEqual([1]);
+});
 
 test("a lost progress update lets the tool run after one attempt", () => {
   const setup = fixture(["unexpected EOF"]);
