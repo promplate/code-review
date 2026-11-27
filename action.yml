@@ -225,14 +225,13 @@ runs:
         event=$GITHUB_EVENT_NAME
         [ "$event" != pull_request_target ] || event=pull_request
         echo "EVENT_NAME=$event" >> "$GITHUB_ENV"
-        key=$(EVENT_NAME=$event jq -r '[env.EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .check_suite.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .check_suite.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // .client_payload.sha // ""), (.comment.updated_at // .review.submitted_at
+        id=$(EVENT_NAME=$event jq -j '[env.EVENT_NAME, (.action // ""), ((if env.GITHUB_EVENT_NAME == "status" then .id else null end) // .comment.id // .review.id // .thread.id // .check_run.id // .check_suite.id // .workflow_run.id // .number // ""), (.after // .check_run.head_sha // .check_suite.head_sha // .workflow_run.head_sha // .sha // .pull_request.head.sha // .client_payload.sha // ""), (.comment.updated_at // .review.submitted_at
           # Successive edits on an unchanged head differ by the text they leave behind and when they landed, which keeps
           # their activity identities distinct even when an edit restores earlier text.
           // (if env.EVENT_NAME == "pull_request" and .action == "edited" then ((.pull_request.title // "") + "\n" + (.pull_request.body // "") + "\n" + (.pull_request.updated_at // "")) else null end)
-          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end),
-          # Two edits can land in the same second; the text they leave is what tells those revisions apart.
-          (if .comment then (.comment.body // "") else null end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
-        id=$(printf %s "$key" | sha256sum | cut -c1-40)
+          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end)),
+          # Only issue comment edits extend the existing broker key. Hash the body verbatim, including trailing newlines.
+          (if env.EVENT_NAME == "issue_comment" and .action == "edited" and .issue.pull_request == null then (.comment.body // "") else empty end)] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH" | sha256sum | cut -c1-40)
         # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
         [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"

@@ -2186,8 +2186,10 @@ test("an edited issue comment keeps a revision identity and is skipped once the 
   writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
   const first = /ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1];
   // A second edit in the same second still differs by the text it leaves behind.
-  writeFileSync(join(setup.dir, "event.json"), edited("second revision"));
-  expect(/ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1]).not.toBe(first);
+  for (const revision of ["second revision", "first revision\n"]) {
+    writeFileSync(join(setup.dir, "event.json"), edited(revision));
+    expect(/ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1]).not.toBe(first);
+  }
   // Once that revision is a receipt of the running agent, a queued job must present it no longer.
   writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([first]));
