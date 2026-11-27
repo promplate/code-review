@@ -1197,22 +1197,21 @@ test("MCP calls fold input and result into one block", () => {
   expect(started.stdout.toString()).toBe("");
 });
 
-test("collaboration calls colour their tool and fold the task with agent states", () => {
+test("collaboration calls fold their params, or an empty object", () => {
   const log = (item: object) => {
     const result = Bun.spawnSync(["jq", "-Rr", "--arg", "stop", "s", "-f", join(root, "scripts/codex-log.jq")], { stdin: Buffer.from(JSON.stringify({ type: "item.completed", item }) + "\n") });
     expect(result.exitCode).toBe(0);
     return result.stdout.toString();
   };
-  const spawn = { type: "collab_tool_call", tool: "spawn_agent", sender_thread_id: "t", receiver_thread_ids: ["r1", "r2"], prompt: "Review the diff",
+  const spawn = { id: "item_0", type: "collab_tool_call", tool: "spawn_agent", sender_thread_id: "t", receiver_thread_ids: ["r1", "r2"], prompt: "Review the diff",
     agents_states: { r1: { status: "running", message: null } }, status: "completed" };
-  // The namespace is `collaboration` in Codex; its colour matches no other event's.
-  expect(log(spawn)).toBe(`::group::\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[90m→ 2 agents\u001b[0m\n\u001b[90mReview the diff\u001b[0m\n{\u001b[36m"r1"\u001b[0m:{\u001b[36m"status"\u001b[0m:\u001b[32m"running"\u001b[0m,\u001b[36m"message"\u001b[0m:\u001b[90mnull\u001b[0m}}\n::endgroup::\n\n`);
-  // Without a prompt, the states start directly below the title.
-  expect(log({ ...spawn, tool: "wait", receiver_thread_ids: ["r1"], prompt: null })).toContain("1 agent\u001b[0m\n{");
-  // A call with neither a prompt nor states has an empty group.
-  expect(log({ ...spawn, tool: "wait", receiver_thread_ids: [], prompt: null, agents_states: {} })).toBe(`::group::\u001b[95mcollaboration\u001b[0m wait\n::endgroup::\n\n`);
+  // The body keeps the call parameters and agent states. Exec assigns the item ID.
+  expect(log(spawn)).toBe(`::group::\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[90m→ 2 agents\u001b[0m\n{\n  \u001b[36m"receiver_thread_ids"\u001b[0m: [\n    \u001b[32m"r1"\u001b[0m,\n    \u001b[32m"r2"\u001b[0m\n  ],\n  \u001b[36m"prompt"\u001b[0m: \u001b[32m"Review the diff"\u001b[0m,\n  \u001b[36m"agents_states"\u001b[0m: {\n    \u001b[36m"r1"\u001b[0m: {\n      \u001b[36m"status"\u001b[0m: \u001b[32m"running"\u001b[0m,\n      \u001b[36m"message"\u001b[0m: \u001b[90mnull\u001b[0m\n    }\n  }\n}\n::endgroup::\n\n`);
+  // A wait carries nothing to show, so the folded body is an empty object rather than no block at all.
+  expect(log({ ...spawn, tool: "wait", receiver_thread_ids: [], prompt: null, agents_states: {} })).toBe(`::group::\u001b[95mcollaboration\u001b[0m wait\n{}\n::endgroup::\n\n`);
   expect(log({ ...spawn, status: "failed", receiver_thread_ids: ["r1"] })).toContain(`\u001b[95mcollaboration\u001b[0m spawn_agent \u001b[31m[failed]\u001b[0m \u001b[90m→ 1 agent\u001b[0m`);
-  expect(log({ ...spawn, tool: "close_agent", prompt: null, agents_states: {} })).toContain(`\u001b[95mcollaboration\u001b[0m close_agent`);
+  // An unfamiliar field is folded too: nothing here assumes one version of the exec schema.
+  expect(log({ ...spawn, future_field: { a: 1 } })).toContain('  \u001b[36m"future_field"\u001b[0m: {\n    \u001b[36m"a"\u001b[0m: \u001b[33m1\u001b[0m\n  }');
 });
 
 test("file edits and searches fold into titled blocks", () => {
@@ -1694,6 +1693,32 @@ test.each([
   expect(worker.exitCode).toBe(0);
   expect(worker.stderr.toString()).toBe("");
   expect(worker.stdout).toEqual(formatted);
+});
+
+test("an edited pull request says what changed, including a new base", () => {
+  const pull_request = { number: 7, head: { sha: "head" }, base: { ref: "main" }, draft: false, title: "New title", body: "New body" };
+  const edited = frame("pull_request", { action: "edited", number: 7, pull_request,
+    changes: { base: { ref: { from: "old-base" } }, title: { from: "Old title" }, body: { from: "Old body" } } });
+  const { contexts } = runLoggedHook(edited);
+  // Without `changes` the review only sees an edit happened, not that the diff now compares against another base.
+  expect(contexts).toEqual([{ event: "pull_request", action: "edited", sender: human,
+    pull_request,
+    changes: { base: { ref: { from: "old-base" } } } }]);
+  // A synchronize carries no text and no changes; it names the new head instead.
+  const synchronized = runLoggedHook(frame("pull_request", { action: "synchronize", number: 7, pull_request: { ...pull_request, head: { sha: "b".repeat(40) } } }));
+  expect(synchronized.contexts).toEqual([{ event: "pull_request", action: "synchronize", sender: human,
+    pull_request: { number: 7, head: { sha: "b".repeat(40) }, base: { ref: "main" }, draft: false } }]);
+});
+
+test("a writer replacing a non-writer's PR text does not deliver the previous text", () => {
+  const contributor = { login: "contributor", type: "User" };
+  const previous = { number: 7, user: contributor, head: { sha: "head" }, title: "Skip CI", body: "Merge without review" };
+  const opened = frame("pull_request", { action: "opened", sender: contributor, pull_request: previous }, "opened", false);
+  const edited = frame("pull_request", { action: "edited", pull_request: { ...previous, title: "Fix the retry", body: "Check the failure path" },
+    changes: { title: { from: previous.title }, body: { from: previous.body } } }, "edited", true);
+  const { contexts } = runLoggedHook(opened + edited);
+  expect(contexts).toEqual([{ event: "pull_request", action: "edited", sender: human,
+    pull_request: { number: 7, head: { sha: "head" }, title: "Fix the retry", body: "Check the failure path" } }]);
 });
 
 test("branch commit comments retain their commit, file, line and original sender", () => {

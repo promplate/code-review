@@ -25,6 +25,9 @@ inputs:
   encrypt-snapshots:
     description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
     default: "false"
+  shared-uv-cache:
+    description: Share uv's download cache with every job on this runner. Only enable where every job that can write the cache is trusted with this review's credential.
+    default: "false"
   debug-retention-days:
     description: Positive whole days to keep `agent-debug-events`. An empty value uses the repository retention period.
   session-retention-days:
@@ -440,9 +443,14 @@ runs:
     - name: Install uv
       if: steps.app-token.outputs.skip != 'true' && (env.SKIP != 'true')
       shell: bash
+      env:
+        SHARED_UV_CACHE: ${{ inputs.shared-uv-cache }}
       run: |
-        # Everything uv downloads or builds stays under the job's temp directory, so a runner reused by other jobs keeps what it already had.
-        printf 'UV_CACHE_DIR=%s\nUV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/cache" "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
+        # Everything uv downloads or builds stays under the job's temp directory, unless the runner's owner opts in: a
+        # shared cache is shared code, so only enable it where every job that can write there is trusted with this one.
+        # A cold re-download is what outlasts the MCP server's handshake on a loaded runner.
+        printf 'UV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
+        [ "$SHARED_UV_CACHE" = true ] || printf 'UV_CACHE_DIR=%s\n' "$RUNNER_TEMP/uv/cache" >> "$GITHUB_ENV"
         # uvx ships with a full uv install but not with a bare uv binary; the gh MCP server spawns uvx, so a runner that has only uv must still get the complete toolchain.
         if ! command -v uv > /dev/null || ! command -v uvx > /dev/null; then
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
@@ -468,12 +476,16 @@ runs:
         # Each attempt replaces its file, so an error response cannot prefix a successful retry's body.
         # A 404 is permanent: a file only this branch has becomes a warning, while one nobody has stays a wrong input.
         fetch() {
+          local endpoint="repos/${{ github.repository }}/contents/$1"
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
             if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
             cat "$3" >&2; rm -f "$2"
             if [ -n "$4" ] && grep -q "HTTP 404" "$3" && git cat-file -e "HEAD:$5" 2> /dev/null; then echo "::warning::$4"; exit 0; fi
             exit 1
-          ' _ "repos/${{ github.repository }}/contents/$1" "$2" "$error" "$3" "$1" </dev/null
+          ' _ "$endpoint" "$2" "$error" "$3" "$1" </dev/null || {
+            echo "Failed to fetch $endpoint" >&2
+            return 1
+          }
         }
         [ -n "$CODEX_AUTH" ] || [ -z "$AUTH_FILE" ] || fetch "$AUTH_FILE" "$RUNNER_TEMP/auth.json"
         if [ -z "$CATALOG" ] && [ -n "$CATALOG_FILE" ]; then
