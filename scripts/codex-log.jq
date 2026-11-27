@@ -43,7 +43,7 @@ def pretty($depth):
 def body_render: (try fromjson catch null) as $j | if $j == null then dim else $j | json end;
 # Keep each operation recognizable when the viewer strips ANSI colours.
 def edit_mark: ({add: "\u001b[32m+\u001b[0m", update: "\u001b[33m~\u001b[0m", delete: "\u001b[31m-\u001b[0m"}[. // ""] // . // "?");
-def edit_path: "\(.kind | edit_mark) \(.path)";
+def edit_path: "\(.kind | edit_mark) \(.path)" + (if .patch.move_path then " → \(.patch.move_path)" else "" end);
 def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
 # A reset also keeps the final whitespace cleanup from trimming diff context.
 def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "\u001b[90m" end)\(.)\u001b[0m";

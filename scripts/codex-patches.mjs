@@ -25,7 +25,7 @@ function filePatch(change) {
   } else if (change.type === "add") {
     lines = lines.map(line => "+" + line);
   }
-  return { lines, added: lines.filter(line => line.startsWith("+")).length, removed: lines.filter(line => line.startsWith("-")).length };
+  return { lines, move_path: change.move_path, added: lines.filter(line => line.startsWith("+")).length, removed: lines.filter(line => line.startsWith("-")).length };
 }
 
 function attach(item, changes) {

@@ -1248,7 +1248,7 @@ test("file edits show exact totals and highlighted transcript diffs after resume
     raw({ "review.ts": { type: "update", unified_diff: "ignored" } }, "failed"),
     raw({ "review.ts": { type: "update", unified_diff: "--- old\n+++ new\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n" },
       "add.ts": { type: "add", content: "added\n\n" }, "delete.ts": { type: "delete", content: "gone\nlast line" } }),
-    raw({ "review.ts": { type: "update", unified_diff: "@@ -1 +1,2 @@\n keep\n+second edit\n" } }),
+    raw({ "review.ts": { type: "update", move_path: "renamed.ts", unified_diff: "@@ -1 +1,2 @@\n keep\n+second edit\n" } }),
   ];
   writeFileSync(rollout, records.map(event => JSON.stringify(event) + "\n").join(""), { flag: "a" });
   const render = (items: object[], cursor = baseline.stdout.toString().trim()) => {
@@ -1263,7 +1263,7 @@ test("file edits show exact totals and highlighted transcript diffs after resume
   const plain = result.replace(/\u001b\[[0-9;]*m/g, "");
   expect(plain).toContain("::group::edit ~ review.ts, + add.ts, - delete.ts (+3 -3)\n::stop-commands::s\n~ review.ts +1 -1\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n");
   expect(plain).toContain("+ add.ts +2 -0\n+added\n+\n- delete.ts +0 -2\n::s::\n::endgroup::");
-  expect(plain).toContain("::group::edit ~ review.ts (+1 -0)\n~ review.ts +1 -0\n@@ -1 +1,2 @@\n keep\n+second edit");
+  expect(plain).toContain("::group::edit ~ review.ts → renamed.ts (+1 -0)\n~ review.ts → renamed.ts +1 -0\n@@ -1 +1,2 @@\n keep\n+second edit");
   expect(plain).not.toContain("stale");
   expect(result).toContain("\u001b[90m@@ -1 +1,2 @@\u001b[0m\n\u001b[90m keep\u001b[0m");
   expect(result).toContain("\u001b[31m---old\u001b[0m\n\u001b[32m+++ ##[error]new\u001b[0m");
