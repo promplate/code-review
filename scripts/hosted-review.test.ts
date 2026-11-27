@@ -81,6 +81,11 @@ await Bun.write(process.argv[process.argv.indexOf('--output-last-message')+1],JS
 await Bun.write(process.env.CODEX_HOME+'/auth.json',JSON.stringify({tokens:{refresh_token:'refreshed'}}));
 console.log(JSON.stringify({type:'thread.started',thread_id:'test-thread'}));
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(verdict)}}));
+if(mode==='stderr-after-verdict') {
+  console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:17,output_tokens:3}}));
+  console.error('42');
+  process.exitCode=1;
+}
 `);
   const event = join(temp, "event.json"), config = join(temp, "config.toml"), auth = join(temp, "auth.json");
   writeFileSync(event, JSON.stringify({ action: "opened", sender: {login:"author",type:"User"}, pull_request: {number:7,head:{sha:head}} }));
@@ -311,6 +316,15 @@ test.each(["stale-verdict", "moved-on-retry", "moved-on-retry-error"])("hosted %
   expect(calls.filter(args => args[1] === "repos/owner/repo/check-runs/10" && args.includes("--input"))).toHaveLength(1);
   expect(calls.some(args => args[0] === "pr" && args[1] === "comment")).toBe(false);
   expect(existsSync(join(setup.temp, "reviews"))).toBe(false);
+});
+
+test("a non-object stderr line leaves the recovered verdict, thread and usage intact", () => {
+  const setup = fixture("stderr-after-verdict"), result = setup.run();
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.temp, "review.json"), "utf8")).conclusion).toBe("success");
+  expect(readFileSync(join(setup.state, "last-thread-id"), "utf8").trim()).toBe("test-thread");
+  expect(result.stdout.toString()).toContain("17 input, 0% cached · 3 output");
+  expect(existsSync(join(setup.temp, "retried"))).toBe(false);
 });
 
 test("an invalid verdict on the current head still retries and reports the failure", () => {
