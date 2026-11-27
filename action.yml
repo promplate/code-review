@@ -448,10 +448,9 @@ runs:
       run: |
         # Everything uv downloads or builds stays under the job's temp directory, unless the runner's owner opts in: a
         # shared cache is shared code, so only enable it where every job that can write there is trusted with this one.
-        # A cold re-download is what outlasts the MCP server's handshake on a loaded runner.
         printf 'UV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
         [ "$SHARED_UV_CACHE" = true ] || printf 'UV_CACHE_DIR=%s\n' "$RUNNER_TEMP/uv/cache" >> "$GITHUB_ENV"
-        # uvx ships with a full uv install but not with a bare uv binary; the gh MCP server spawns uvx, so a runner that has only uv must still get the complete toolchain.
+        # Setup uses uv to install the default server. Caller-supplied MCP commands may still use uvx.
         if ! command -v uv > /dev/null || ! command -v uvx > /dev/null; then
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
