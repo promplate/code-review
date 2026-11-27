@@ -55,7 +55,10 @@ command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
 EOF
 # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh.
 # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
-"$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e '
+"$GITHUB_ACTION_PATH/scripts/review-bun.sh" --no-env-file -e '
+  import { spawnSync } from "node:child_process";
+  import { accessSync, constants } from "node:fs";
+  import { join } from "node:path";
   const path = process.argv[1];
   let text = await Bun.file(path).text();
   // The input overrides the root setting, including quoted or indented keys, without editing multiline strings.
@@ -66,12 +69,23 @@ EOF
     await Bun.write(path, text);
   }
   if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
-  // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
-  // Forward the uv directories to keep downloads inside the job. Codex already forwards PATH by default.
-  const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 30\n" +
-    "env_vars = [\"GH_CONFIG_DIR\", \"UV_CACHE_DIR\", \"UV_TOOL_DIR\", \"UV_PYTHON_INSTALL_DIR\"]\n";
+  const bin = join(process.env.RUNNER_TEMP, "gh-mcp-bin");
+  const command = join(bin, process.platform === "win32" ? "gh-mcp.exe" : "gh-mcp");
+  const config = text + "\n[mcp_servers.gh]\ncommand = " + JSON.stringify(command) +
+    "\nrequired = true\nstartup_timeout_sec = 30\nenv_vars = [\"GH_CONFIG_DIR\"]\n";
   try { Bun.TOML.parse(config); }
   catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
+  // Never resolve packages inside the handshake, even if the uv cache is empty.
+  const install = spawnSync("uv", ["tool", "install", "gh-mcp"], {
+    cwd: process.env.RUNNER_TEMP, env: { ...process.env, UV_TOOL_BIN_DIR: bin },
+    timeout: 300_000, stdio: ["ignore", "inherit", "inherit"],
+  });
+  if (install.status !== 0 || install.error) {
+    console.error("::error::Could not install gh-mcp before starting Codex.");
+    process.exit(1);
+  }
+  try { accessSync(command, constants.X_OK); }
+  catch { console.error("::error::uv did not install an executable gh-mcp."); process.exit(1); }
   await Bun.write(path, config);
 ' "$CODEX_HOME/config.toml"
 # Hosted tracing sends only metadata to the coordinator. Disable the stock

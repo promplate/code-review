@@ -20,6 +20,7 @@ if [ "$1" = add ] || [ "$PWD" = "$RUNNER_TEMP/prices" ]; then exit 0; fi
 if [ -n "$REVIEW_BUN_LOG" ]; then printf '%s\\t%s\\t%s\\n' "$PWD" "$1" "$2" >> "$REVIEW_BUN_LOG"; fi
 exec '${process.execPath}' "$@"
 `);
+  executable("uv", "#!/usr/bin/env bash\nset -eu\n[ \"$*\" = \"tool install gh-mcp\" ]\nprintf 'install\\n' >> \"$RUNNER_TEMP/gh-mcp-installs\"\nmkdir -p \"$UV_TOOL_BIN_DIR\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$UV_TOOL_BIN_DIR/gh-mcp\"\nchmod +x \"$UV_TOOL_BIN_DIR/gh-mcp\"\n");
   executable("tail", "#!/bin/sh\nexit 0\n");
   executable("sleep", "#!/bin/sh\nexit 0\n");
   executable("gh", `#!${process.execPath}
@@ -286,7 +287,7 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   // The two sides of the review pipeline can start in either order.
   expect(calls.filter(call => call[2] === patches)).toEqual([args(patches)]);
   expect(calls.filter(call => call[2] !== patches)).toEqual([
-    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
+    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "--no-env-file", ...(entry === "hosted" ? ["-e"] : []), ...launch,
   ].map(args));
 });
 

@@ -23,6 +23,7 @@ function fixture(event: object = comment) {
   const dir = mkdtempSync(join(tmpdir(), "review-recovery-"));
   homes.push(dir);
   mkdirSync(join(dir, "sessions"));
+  executable(dir, "uv", "#!/usr/bin/env bash\nset -eu\n[ \"$*\" = \"tool install gh-mcp\" ]\nprintf 'install\\n' >> \"$RUNNER_TEMP/gh-mcp-installs\"\nmkdir -p \"$UV_TOOL_BIN_DIR\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$UV_TOOL_BIN_DIR/gh-mcp\"\nchmod +x \"$UV_TOOL_BIN_DIR/gh-mcp\"\n");
   for (const file of ["github-env", "sse.jsonl", "check-runs.jsonl"]) writeFileSync(join(dir, file), "");
   writeFileSync(join(dir, "event.json"), JSON.stringify(event));
   const env = { ...process.env, REVIEW_HOSTED: "", PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, CODEX_HOME: dir, GITHUB_ACTION_PATH: root,
