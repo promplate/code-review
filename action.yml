@@ -229,11 +229,12 @@ runs:
           # Successive edits on an unchanged head differ by the text they leave behind and when they landed, which keeps
           # their activity identities distinct even when an edit restores earlier text.
           // (if env.EVENT_NAME == "pull_request" and .action == "edited" then ((.pull_request.title // "") + "\n" + (.pull_request.body // "") + "\n" + (.pull_request.updated_at // "")) else null end)
-          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end)),
-          # Only issue comment edits extend the existing broker key. Hash the body verbatim, including trailing newlines.
-          (if env.EVENT_NAME == "issue_comment" and .action == "edited" and .issue.pull_request == null then (.comment.body // "") else empty end)] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH" | sha256sum | cut -c1-40)
-        # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
-        [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
+          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH" | sha256sum | cut -c1-40)
+        # These events can repeat with an identical payload: a repeated thread transition, and a second label on the
+        # same issue. A new triggering run is new activity, while its retries are not.
+        case $GITHUB_EVENT_NAME in
+          pull_request_review_thread|issues) id="trigger:$GITHUB_RUN_ID" ;;
+        esac
         echo "ACTIVITY_ID=$id" >> "$GITHUB_ENV"
         # A completed check alone can precede failed PR publication. Only a saved publication checkpoint closes this head.
         published=$(cat "$CODEX_HOME/sessions/.github-published-head" 2>/dev/null || true)

@@ -2177,24 +2177,30 @@ test("a run skips activity another review consumed, and strangers, but never a n
   expect(push).not.toContain("SKIP=true");
 });
 
-test("an edited issue comment keeps a revision identity and is skipped once the agent took it", () => {
+test("an edited issue comment keeps the broker's identity and is skipped once the agent took it", () => {
   const setup = fixture();
   mkdirSync(join(setup.dir, "sessions"), { recursive: true });
   executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
-  const edited = (body: string) => JSON.stringify({ action: "edited", sender: human, issue: { number: 7 }, comment: { id: 9, body, updated_at: "2026-11-27T00:00:00Z" } });
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "edited", sender: human, issue: { number: 7 }, comment: { id: 9, body: "first revision", updated_at: "2026-11-27T00:00:00Z" } }));
   const env = { GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "", ISSUE_NUMBER: "7", AGENT: "true", HEAD_SHA: "head" };
-  writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
   const first = /ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1];
-  // A second edit in the same second still differs by the text it leaves behind.
-  for (const revision of ["second revision", "first revision\n"]) {
-    writeFileSync(join(setup.dir, "event.json"), edited(revision));
-    expect(/ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1]).not.toBe(first);
-  }
+  // The identity is the five-field one the broker also derives; a body in the key would never match its delivery.
+  const expected = new Bun.CryptoHasher("sha256").update("issue_comment:edited:9::2026-11-27T00:00:00Z").digest("hex").slice(0, 40);
+  expect(first).toBe(expected);
   // Once that revision is a receipt of the running agent, a queued job must present it no longer.
-  writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
   writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([first]));
   writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
   expect(runGate(setup.dir, env)).toContain("SKIP=true");
+});
+
+test("a second label on the same issue is new activity", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "labeled", sender: human, issue: { number: 7 }, label: { name: "triage" } }));
+  const env = { GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "", ISSUE_NUMBER: "7", AGENT: "true", HEAD_SHA: "head" };
+  // Each label webhook starts its own run, so identity follows the run rather than the unchanged payload.
+  expect(runGate(setup.dir, { ...env, GITHUB_RUN_ID: "12" })).toContain("ACTIVITY_ID=trigger:12");
+  expect(runGate(setup.dir, { ...env, GITHUB_RUN_ID: "13" })).toContain("ACTIVITY_ID=trigger:13");
 });
 
 test("a broker skip response skips every action step before saving credentials", () => {
