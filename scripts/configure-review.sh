@@ -68,12 +68,19 @@ EOF
   if (Bun.TOML.parse(text).mcp_servers?.gh) process.exit(0);
   // uvx resolves gh-mcp where it runs, so the job installs nothing; required keeps the first tool catalog from missing it, since optional servers only get a moment.
   // Forward the uv directories to keep downloads inside the job. Codex already forwards PATH by default.
-  const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 30\n" +
+  // A cold resolve outlasted the handshake deadline once on a self-hosted runner, and a required server that misses it
+  // ends the whole session; the install below warms the tool directory before Codex starts.
+  const config = text + "\n[mcp_servers.gh]\ncommand = \"uvx\"\nargs = [\"gh-mcp\"]\nrequired = true\nstartup_timeout_sec = 60\n" +
     "env_vars = [\"GH_CONFIG_DIR\", \"UV_CACHE_DIR\", \"UV_TOOL_DIR\", \"UV_PYTHON_INSTALL_DIR\"]\n";
   try { Bun.TOML.parse(config); }
   catch { console.log("::warning::The supplied config writes mcp_servers inline, so gh-mcp stays out of this run."); process.exit(0); }
   await Bun.write(path, config);
 ' "$CODEX_HOME/config.toml"
+# `uvx` fetches gh-mcp on first use; doing it here spends that time outside Codex's handshake window. A failure only
+# restores the old behaviour, where the server resolves at startup.
+if command -v uvx >/dev/null; then
+  timeout 120 uv tool install gh-mcp >/dev/null 2>&1 || true
+fi
 # Hosted tracing sends only metadata to the coordinator. Disable the stock
 # plugin even when supplied config or a restored installation enables it: it
 # uploads prompt history and tool bodies and reads repository Langfuse config.
