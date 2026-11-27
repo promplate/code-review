@@ -1850,14 +1850,13 @@ test("injected command escaping covers the runner's leading whitespace", () => {
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
   const { env } = fixture();
-  executable(env.RUNNER_TEMP, "uv", "#!/usr/bin/env bash\nset -eu\n[ \"$*\" = \"tool install gh-mcp\" ]\nprintf 'install\\n' >> \"$RUNNER_TEMP/gh-mcp-installs\"\nmkdir -p \"$UV_TOOL_BIN_DIR\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$UV_TOOL_BIN_DIR/gh-mcp\"\nchmod +x \"$UV_TOOL_BIN_DIR/gh-mcp\"\n");
   const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
   const run = (config: string) => {
     const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, GITHUB_ACTION_PATH: root } });
     expect(result.exitCode).toBe(0);
     return Bun.TOML.parse(readFileSync(join(env.CODEX_HOME, "config.toml"), "utf8")) as any;
   };
-  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: join(env.RUNNER_TEMP, "gh-mcp-bin", "gh-mcp"), required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR"] });
+  expect(run('model = "m"\n').mcp_servers.gh).toEqual({ command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] });
   // A supplied config that already names the server keeps its own definition instead of a duplicate table.
   expect(run('[mcp_servers.gh]\ncommand = "custom"\n').mcp_servers.gh).toEqual({ command: "custom" });
   expect(run('mcp_servers.gh = { command = "custom" }\n').mcp_servers.gh).toEqual({ command: "custom" });
@@ -1870,17 +1869,11 @@ test("codex is configured with the gh MCP server and the token config dir", () =
   for (const key of ["mcp_servers", "  mcp_servers", "\tmcp_servers", '"mcp_servers"', "'mcp_servers'", '"mcp_\\u0073ervers"']) {
     expect(run(`${key} = { other = { command = "x" } }\n`).mcp_servers).toEqual({ other: { command: "x" } });
   }
-  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: join(env.RUNNER_TEMP, "gh-mcp-bin", "gh-mcp"), required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR"] } });
-  expect(readFileSync(join(env.RUNNER_TEMP, "gh-mcp-installs"), "utf8")).toBe("install\ninstall\n");
-  executable(env.RUNNER_TEMP, "uv", "#!/bin/sh\nexit 7\n");
-  const failed = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: 'model = "m"', GITHUB_ACTION_PATH: root } });
-  expect(failed.exitCode).toBe(1);
-  expect(failed.stderr.toString()).toContain("Could not install gh-mcp before starting Codex");
+  expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] } });
 });
 
 test("the catalog input overrides TOML keys without changing other values", () => {
   const { env } = fixture();
-  executable(env.RUNNER_TEMP, "uv", "#!/usr/bin/env bash\nset -eu\n[ \"$*\" = \"tool install gh-mcp\" ]\nprintf 'install\\n' >> \"$RUNNER_TEMP/gh-mcp-installs\"\nmkdir -p \"$UV_TOOL_BIN_DIR\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$UV_TOOL_BIN_DIR/gh-mcp\"\nchmod +x \"$UV_TOOL_BIN_DIR/gh-mcp\"\n");
   const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
   for (const key of ["model_catalog_json", "  model_catalog_json", "\tmodel_catalog_json", '"model_catalog_json"', "'model_catalog_json'", '"model_catalog_\\u006ason"']) {
     const config = `${key} = "/old/models.json"\ndeveloper_instructions = """\nmodel_catalog_json = an example, not a setting\n"""\n[mcp_servers.other]\ncommand = "custom"\n`;
@@ -1890,7 +1883,7 @@ test("the catalog input overrides TOML keys without changing other values", () =
     expect(actual.model_catalog_json).toBe(join(env.CODEX_HOME, "models.json"));
     expect(actual.developer_instructions).toBe((Bun.TOML.parse(config) as any).developer_instructions);
     expect(actual.mcp_servers.other).toEqual({ command: "custom" });
-    expect(actual.mcp_servers.gh).toEqual({ command: join(env.RUNNER_TEMP, "gh-mcp-bin", "gh-mcp"), required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR"] });
+    expect(actual.mcp_servers.gh).toEqual({ command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 30, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] });
     expect(actual.hooks.Stop[0].hooks[0].command).toBe(`bash ${root}/scripts/review-hook.sh`);
   }
 });
