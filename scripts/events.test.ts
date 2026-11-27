@@ -1568,6 +1568,19 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   expect(crafted).toContain("#​#[error]synthetic");
 });
 
+test("one writer prints activity only between whole tool records", () => {
+  const dir = mkdtempSync(join(tmpdir(), "review-mux-"));
+  homes.push(dir);
+  writeFileSync(join(dir, "injected.rendered"), "\n::group::activity\n{}\n::endgroup::\n");
+  const toolLog = "::group::$\nsleep 1\n::endgroup::\nplain line\n";
+  const result = Bun.spawnSync(["bash", join(scripts, "review-bun.sh"), join(root, "scripts/log-mux.mjs")], {
+    env: { ...process.env, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root }, stdin: Buffer.from(toolLog), timeout: 8000,
+  });
+  expect(result.exitCode).toBe(0);
+  // The activity block is whole and lands outside the tool group, whatever the tool writer was doing.
+  expect(result.stdout.toString()).toBe("\n::group::activity\n{}\n::endgroup::\n" + toolLog);
+});
+
 test("an injected event folds the record the model received", () => {
   const input = JSON.stringify({ event: "issue_comment", action: "created", sender: { login: "alice", type: "User" }, issue: { number: 7 },
     comment: { id: 4, body: "hi ##[error]x", html_url: "/pull/7#issuecomment-4" }, workflow: "CI" });

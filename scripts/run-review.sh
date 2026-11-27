@@ -83,7 +83,10 @@ fresh() {
     "$OPEN"
 }
 codex_patches() { "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/codex-patches.mjs" "$@"; }
-log() { codex_patches "${1:-}" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq"; }
+# One process owns stdout: the activity worker renders into a file and this multiplexer prints it between records.
+export LOG_RENDERED="$RUNNER_TEMP/injected.rendered"
+: > "$LOG_RENDERED"
+log() { codex_patches "${1:-}" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" | bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs"; }
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
@@ -98,6 +101,8 @@ finish_injected() {
     kill "$INJECTED_TAIL" 2>/dev/null || true
   fi
   wait "$INJECTED_TAIL" 2>/dev/null || true
+  # The worker can finish after the tool stream; print what it rendered in the meantime.
+  bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs" --drain || true
   # The hosted parent flushes during cleanup. Actions runs this script directly.
   if [ "${REVIEW_HOSTED:-}" != true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
     "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
