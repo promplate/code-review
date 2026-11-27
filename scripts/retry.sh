@@ -27,13 +27,23 @@ fi
 # GraphQL queries are the bulk of this argument list; the head of it still names the endpoint and its arguments.
 give_up() {
   printf 'retry.sh: failed after %s attempt(s): %s\n' "${attempt:-1}" "$(printf '%.240s' "$*" | tr '\n' ' ')" >&2
-  exit 1
+  exit "$failure_status"
 }
+failure_status=1
 delay=1
 max_delay=30
 for attempt in 1 2 3 4 5 6 7 8; do
   if printf '%s' "$input" | "$@" 2> "$err"; then cat "$err" >&2; exit 0; fi
   cat "$err" >&2
+  # With gh api --include, the status line is independent of the response body.
+  # Exit 2 only for a first-attempt validation rejection: a later 422 cannot
+  # establish that an earlier request did not commit.
+  if [[ "$attempt" = 1 && "$1" = gh && "$2" = api ]] &&
+    IFS= read -r status_line < "$response" &&
+    [[ "$status_line" =~ ^HTTP/[0-9.]+\ 422([[:space:]]|$) ]]; then
+    failure_status=2
+    give_up "$@"
+  fi
   # A failed command does not establish whether its effects took place.
   [[ "$idempotent" = true ]] || give_up "$@"
   # gh reports HTTP statuses in parentheses; git/curl use "returned error: NNN".

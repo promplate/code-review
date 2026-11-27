@@ -46,6 +46,10 @@ else if(path?.endsWith('/reactions')) console.log('9');
 else if(path?.endsWith('/check-runs') && args.includes('--jq')) console.log('10');
 else if(path?.endsWith('/check-runs/42') && !args.includes('-X')) console.log(process.env.TEST_CHECK_STATUS||'completed');
 else if(path?.endsWith('/check-runs/10') && !args.includes('-X')) {
+ if(mode==='check-reply-rejected'||mode==='check-reply-unapplied') {
+  console.log(JSON.stringify({head_sha:process.env.HEAD_SHA,status:'in_progress'}));
+  process.exit(0);
+ }
  const check=JSON.parse(readFileSync(temp+'/check.json','utf8'));
  delete check.output.annotations;
  console.log(JSON.stringify(check));
@@ -66,7 +70,11 @@ else if(args.includes('--input') && args[args.indexOf('--input')+1]==='-') {
  const body=await Bun.stdin.text();
  if(path?.includes('/check-runs/')) {
   await Bun.write(temp+'/check.json',body);
-  if(mode.startsWith('check-reply-')) { console.error('gh: Bad Gateway (HTTP 502)'); process.exit(1); }
+  if(mode.startsWith('check-reply-')) {
+   const status=mode==='check-reply-rejected'?422:502;
+   if(args.includes('--include')) process.stdout.write('HTTP/2.0 '+status+' Fixture\\nContent-Type: application/json\\r\\n\\r\\n');
+   console.error('gh: request failed (HTTP '+status+')'); process.exit(1);
+  }
  }
 }
 `);
@@ -343,8 +351,9 @@ test.each(["codex-fails", "publish-fails"])("hosted %s leaves the publication ch
   expect(Bun.file(join(setup.state,"sessions/.github-published-head")).size).toBe(0);
 });
 
-test.each([true, false])("hosted check publication with a lost response (confirmed: %s)", confirmed => {
-  const setup = fixture(confirmed ? "check-reply-lost" : "check-reply-unverified"), result = setup.run();
+test.each(["lost", "unverified", "unapplied", "rejected"])("hosted check publication with a %s response", mode => {
+  const confirmed = mode === "lost";
+  const setup = fixture("check-reply-" + mode), result = setup.run();
   expect(result.exitCode).toBe(confirmed ? 0 : 1);
   expect(JSON.parse(readFileSync(join(setup.temp, "result.json"), "utf8"))).toMatchObject({
     status: confirmed ? "completed" : "failed", published: confirmed,
@@ -352,8 +361,8 @@ test.each([true, false])("hosted check publication with a lost response (confirm
   const calls = readFileSync(join(setup.temp, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
   const patches = calls.filter(args => args[1] === "repos/owner/repo/check-runs/10" && args.includes("PATCH"));
   expect(patches.filter(args => args.includes("--input"))).toHaveLength(1);
-  expect(patches.some(args => args.includes("conclusion=neutral"))).toBe(false);
-  expect(calls.filter(args => args[1] === "repos/owner/repo/check-runs/10/annotations")).toHaveLength(1);
+  expect(patches.some(args => args.includes("conclusion=neutral"))).toBe(mode === "rejected");
+  expect(calls.filter(args => args[1] === "repos/owner/repo/check-runs/10/annotations")).toHaveLength(mode === "lost" || mode === "unverified" ? 1 : 0);
   if (confirmed) expect(JSON.parse(readFileSync(join(setup.temp, "reviews"), "utf8"))).toMatchObject({ event: "REQUEST_CHANGES", commit_id: setup.head });
   else expect(existsSync(join(setup.temp, "reviews"))).toBe(false);
 });

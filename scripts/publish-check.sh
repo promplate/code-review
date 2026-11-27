@@ -62,13 +62,17 @@ endpoint="repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID"
 # A failed (or cancelled) publication may already have committed. Cleanup must
 # not race it with a neutral verdict, even if a subsequent read is inconclusive.
 touch "$RUNNER_TEMP/check-publication-attempted"
-if bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api "$endpoint" -X PATCH --input - <<< "$payload"; then exit 0; fi
+patch_status=0
+# Request the actual status line for rejection detection, without logging response headers.
+bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" gh api "$endpoint" -X PATCH --input - --include --silent <<< "$payload" >/dev/null || patch_status=$?
+[ "$patch_status" != 0 ] || exit 0
 
 # Reconcile the desired state instead of replaying a potentially applied PATCH.
+check=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint" </dev/null) || check=
 verdict_published() {
-  local current annotations
-  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint" </dev/null) || return 1
-  printf '%s\n' "$current" "$payload" | jq -e 'input as $expected |
+  local annotations
+  [ -n "$check" ] || return 1
+  printf '%s\n' "$check" "$payload" | jq -e 'input as $expected |
     .head_sha == $expected.head_sha and .status == $expected.status and .conclusion == $expected.conclusion
     and .output.title == $expected.output.title and .output.summary == $expected.output.summary
   ' >/dev/null || return 1
@@ -85,6 +89,13 @@ verdict_published() {
 if verdict_published; then
   echo "::notice::Check run publication confirmed after a failed response."
 else
-  echo "::error::Check run publication could not be confirmed; leaving the check unchanged." >&2
+  # Only a definitive rejection of the sole request, plus a fresh read of the
+  # same unfinished check, makes the ordinary failure cleanup safe again.
+  if [ "$patch_status" = 2 ] && jq -e --arg sha "$HEAD_SHA" '.head_sha == $sha and .status == "in_progress"' <<< "$check" >/dev/null; then
+    rm -f "$RUNNER_TEMP/check-publication-attempted"
+    echo "::error::Check run publication rejected; allowing failure cleanup." >&2
+  else
+    echo "::error::Check run publication could not be confirmed; leaving the check unchanged." >&2
+  fi
   exit 1
 fi

@@ -670,7 +670,7 @@ test.each([false, true])("final check retries depend on whether the PATCH append
   const setup = fixture();
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
-[ "$*" = 'api repos/owner/repo/check-runs/10 -X PATCH --input -' ] || exit 2
+[ "$*" = 'api repos/owner/repo/check-runs/10 -X PATCH --input - --include --silent' ] || exit 2
 jq -c . >> "$RUNNER_TEMP/patches"
 [ "$(wc -l < "$RUNNER_TEMP/patches")" -gt 1 ] || { echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; }`);
   const annotations = annotated ? [{ path: "a.py", line: 1, level: "failure", message: "Fix this" }] : [];
@@ -682,18 +682,29 @@ jq -c . >> "$RUNNER_TEMP/patches"
   expect(patches).toEqual(annotated ? [patches[0]] : [patches[0], patches[0]]);
 });
 
-test.each(["applied", "large", "unapplied", "different-annotation", "unreadable"])("a lost final check response reconciles %s without cleanup overwriting it", mode => {
+test.each(["applied", "large", "unapplied", "different-annotation", "unreadable", "rejected", "rejected-completed", "rejected-unreadable", "ambiguous-then-rejected", "spoofed-422"])("final check publication reconciles %s before deciding whether cleanup is safe", mode => {
   const setup = fixture();
   executable(setup.dir, "sleep", "#!/bin/sh\nexit 0\n");
   executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
-  'api repos/owner/repo/check-runs/10 -X PATCH --input -')
+  'api repos/owner/repo/check-runs/10 -X PATCH --input - --include --silent')
     jq -c . >> "$RUNNER_TEMP/patches"
-    echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1 ;;
+    case "$MODE" in
+      rejected*) status=422 ;;
+      ambiguous-then-rejected) if [ "$(wc -l < "$RUNNER_TEMP/patches")" -eq 1 ]; then status=502; else status=422; fi ;;
+      *) status=502 ;;
+    esac
+    printf 'HTTP/2.0 %s Fixture\\nContent-Type: application/json\\r\\n\\r\\n' "$status"
+    if [ "$MODE" = spoofed-422 ]; then echo 'gh: Validation Failed (HTTP 422)' >&2
+    else printf 'gh: request failed (HTTP %s)\\n' "$status" >&2; fi
+    exit 1 ;;
+  'api repos/owner/repo/check-runs/10 -X PATCH --input -')
+    jq -c . >> "$RUNNER_TEMP/patches" ;;
   'api repos/owner/repo/check-runs/10')
     case "$MODE" in
-      unreadable) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
-      unapplied) echo '{"status":"in_progress"}' ;;
+      unreadable|rejected-unreadable) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+      unapplied|rejected|ambiguous-then-rejected|spoofed-422) echo '{"head_sha":"head","status":"in_progress"}' ;;
+      rejected-completed) echo '{"head_sha":"head","status":"completed","conclusion":"failure"}' ;;
       *) jq 'del(.output.annotations)' "$RUNNER_TEMP/patches" ;;
     esac ;;
   'api repos/owner/repo/check-runs/10/annotations --paginate')
@@ -702,7 +713,7 @@ case "$*" in
 esac
 `);
   // The 50 expanded API annotations can exceed Linux's single-argument limit even when the review fits.
-  const count = mode === "large" ? 50 : 1, message = mode === "large" ? "x".repeat(2530) : "Fix this";
+  const count = mode === "large" ? 50 : mode === "ambiguous-then-rejected" ? 0 : 1, message = mode === "large" ? "x".repeat(2530) : "Fix this";
   const annotations = Array.from({ length: count }, (_, i) => ({ path: "a.py", line: i + 1, level: "failure", message }));
   writeFileSync(join(setup.dir, "review.json"), JSON.stringify({
     summary: "Fix this", commits: [{ sha: "head", conclusion: "failure" }],
@@ -712,10 +723,12 @@ esac
   expect(result.exitCode).toBe(mode === "applied" || mode === "large" ? 0 : 1);
   expect(run("Close check run on failure or cancellation", setup, { MODE: mode }).exitCode).toBe(0);
   const patches = readFileSync(join(setup.dir, "patches"), "utf8").trim().split("\n").map(line => JSON.parse(line));
-  expect(patches).toHaveLength(1);
+  expect(patches).toHaveLength(mode === "rejected" || mode === "ambiguous-then-rejected" ? 2 : 1);
   expect(patches[0].conclusion).toBe("failure");
   expect(patches[0].output.annotations).toHaveLength(count);
-  expect(patches[0].output.annotations[0].message).toBe(message);
+  if (count) expect(patches[0].output.annotations[0].message).toBe(message);
+  if (mode === "rejected") expect(patches[1]).toMatchObject({ status: "completed", conclusion: "neutral" });
+  if (mode === "ambiguous-then-rejected") expect(patches[1]).toEqual(patches[0]);
 });
 
 test("a failed final head refresh preserves the verdict and reports the missing reconciliation", () => {
