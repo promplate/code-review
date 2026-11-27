@@ -2177,6 +2177,24 @@ test("a run skips activity another review consumed, and strangers, but never a n
   expect(push).not.toContain("SKIP=true");
 });
 
+test("an edited issue comment keeps a revision identity and is skipped once the agent took it", () => {
+  const setup = fixture();
+  mkdirSync(join(setup.dir, "sessions"), { recursive: true });
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  const edited = (body: string) => JSON.stringify({ action: "edited", sender: human, issue: { number: 7 }, comment: { id: 9, body, updated_at: "2026-11-27T00:00:00Z" } });
+  const env = { GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "", ISSUE_NUMBER: "7", AGENT: "true", HEAD_SHA: "head" };
+  writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
+  const first = /ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1];
+  // A second edit in the same second still differs by the text it leaves behind.
+  writeFileSync(join(setup.dir, "event.json"), edited("second revision"));
+  expect(/ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1]).not.toBe(first);
+  // Once that revision is a receipt of the running agent, a queued job must present it no longer.
+  writeFileSync(join(setup.dir, "event.json"), edited("first revision"));
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([first]));
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  expect(runGate(setup.dir, env)).toContain("SKIP=true");
+});
+
 test("a broker skip response skips every action step before saving credentials", () => {
   const {dir,env}=fixture(), output=join(dir,"github-output");
   executable(dir,"curl",`#!/bin/sh\ncase "$*" in */oidc*) echo '{"value":"fixture-oidc"}' ;; *) echo '{"skip":true}' ;; esac\n`);

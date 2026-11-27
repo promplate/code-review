@@ -229,7 +229,9 @@ runs:
           # Successive edits on an unchanged head differ by the text they leave behind and when they landed, which keeps
           # their activity identities distinct even when an edit restores earlier text.
           // (if env.EVENT_NAME == "pull_request" and .action == "edited" then ((.pull_request.title // "") + "\n" + (.pull_request.body // "") + "\n" + (.pull_request.updated_at // "")) else null end)
-          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
+          // (if env.GITHUB_EVENT_NAME == "workflow_run" and .workflow_run.run_attempt > 1 then .workflow_run.run_attempt else "" end),
+          # Two edits can land in the same second; the text they leave is what tells those revisions apart.
+          (if .comment then (.comment.body // "") else null end))] | map(tostring) | join(":")' "$GITHUB_EVENT_PATH")
         id=$(printf %s "$key" | sha256sum | cut -c1-40)
         # Thread resolution can repeat with an identical payload; a new triggering run is new activity, while its retries are not.
         [ "$GITHUB_EVENT_NAME" != pull_request_review_thread ] || id="trigger:$GITHUB_RUN_ID"
@@ -253,9 +255,10 @@ runs:
             fi ;;
           issue_comment|issues|pull_request_review|pull_request_review_comment|pull_request_review_thread)
             if [ -n "$published" ] && [ -f "$receipts" ] && jq -e --arg id "$id" 'index($id)' "$receipts" > /dev/null; then
-              # A PR still needs a verdict on each head. Issue comment creation and deletion happen once per comment.
+              # A PR still needs a verdict on each head. An issue comment's identity is its revision, so a receipt
+              # from the running agent covers an edit too, not only the first comment or its deletion.
               if { [ -n "$PR_NUMBER" ] && [ "$published" = "$HEAD_SHA" ]; } \
-                || { [ "$AGENT" = true ] && [ "$event" = issue_comment ] && jq -e '.action | IN("created", "deleted")' "$GITHUB_EVENT_PATH" > /dev/null; }; then
+                || { [ "$AGENT" = true ] && [ "$event" = issue_comment ]; }; then
                 echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::A running review already took this event."
               fi
             fi
