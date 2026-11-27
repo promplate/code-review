@@ -215,14 +215,14 @@ test.each([["Actions", "npm"], ["hosted", "npm"], ["Actions", "direct"], ["hoste
   const marker = join(setup.temp, "preload-ran"), startup = join(setup.temp, "codex-startup.jsonl");
   const actionPath = join(setup.temp, "action path");
   symlinkSync(root, actionPath);
-  const env = { ...setup.env, GITHUB_ACTION_PATH: actionPath, REVIEW_BUN_LOG: log, LANGFUSE_PUBLIC_KEY: "", HOME: setup.temp };
+  const env = { ...setup.env, GITHUB_ACTION_PATH: actionPath, REVIEW_BUN_LOG: log, LANGFUSE_PUBLIC_KEY: "", MODEL_CATALOG: undefined, HOME: setup.temp };
   writeFileSync(join(setup.checkout, "bunfig.toml"), 'preload = ["./untrusted-preload.ts"]\nconsole.depth = 1\n');
   writeFileSync(join(setup.checkout, "untrusted-preload.ts"), `
 import { writeFileSync } from "node:fs";
 writeFileSync(${JSON.stringify(marker)}, "executed");
 throw new Error("checkout preload executed");
 `);
-  writeFileSync(join(setup.checkout, ".env"), "REVIEW_STARTUP_DOTENV=checkout-dotenv\n");
+  writeFileSync(join(setup.checkout, ".env"), "REVIEW_STARTUP_DOTENV=checkout-dotenv\nMODEL_CATALOG=checkout-catalog\n");
   // An absolute trusted entry point alone must still reproduce the unsafe startup.
   const probe = join(setup.temp, "trusted-probe.ts");
   writeFileSync(probe, 'console.log("trusted entry reached");\n');
@@ -278,6 +278,7 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   expect(launches[0].args).toEqual(["--version"]);
   expect(launches[1].args[0]).toBe("exec");
   if (launcher === "npm") expect(launches.map(({ dotenv }) => dotenv)).toEqual(["checkout-dotenv", "checkout-dotenv"]);
+  expect(Bun.TOML.parse(readFileSync(join(setup.state, "config.toml"), "utf8"))).not.toHaveProperty("model_catalog_json");
   const calls = readFileSync(log, "utf8").trimEnd().split("\n").map(line => line.split("\t"))
     .filter(([cwd, arg]) => cwd === setup.checkout && arg !== "--version");
   const launch = launcher === "npm" ? [codex] : [];
@@ -286,7 +287,7 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   // The two sides of the review pipeline can start in either order.
   expect(calls.filter(call => call[2] === patches)).toEqual([args(patches)]);
   expect(calls.filter(call => call[2] !== patches)).toEqual([
-    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
+    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "--no-env-file", ...(entry === "hosted" ? ["-e"] : []), ...launch,
   ].map(args));
 });
 
