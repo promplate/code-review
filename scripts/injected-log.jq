@@ -51,19 +51,19 @@ def pretty($depth):
       end
     else scalar end;
 # Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading whitespace, and legacy `##[` anywhere.
-# Break every marker, including overlapping colons: concurrent tool output can insert a newline inside a long event record.
-# A zero-width space keeps the log readable without sharing the tool logger's suppression token.
+# Break every marker, including overlapping colons, without sharing the tool logger's suppression token.
 def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​");
+# JSON escapes keep the folded record parseable back to the exact payload, including command-like strings.
+def escape_json_commands: gsub("##\\["; "#\\u0023[") | gsub(":(?=:)"; "\\u003a");
 # The Actions runner decodes percent escapes in a group title. The hosted log reads it directly.
 def group_title: event_line | escape_commands | gsub("\n"; " ") | if env.REVIEW_HOSTED == "true" then . else gsub("%"; "%25") end;
-(fromjson? // null) as $event
+(if type == "string" then fromjson? // null else . end) as $event
 # The line stays the summary the live view reads; the record itself folds under it so a reviewer can check what the model was told.
 # Only the record is escaped: the group markers are ours and the runner has to read them.
 | (if $event == null then . | escape_commands else
     # A group title is one line: a payload newline inside a name would end the fold at the runner.
-    # A newline first: the tool log writer shares stdout and can be mid-line, and a header it swallows would leave our close marker to end its group.
     "\n::group::" + ($event | group_title)
-    + "\n" + ($event | del(.workflow) | pretty(0) | escape_commands)
+    + "\n" + ($event | del(.workflow) | pretty(0) | escape_json_commands)
     + "\n::endgroup::"
   end)
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.

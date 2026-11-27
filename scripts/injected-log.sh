@@ -35,10 +35,10 @@ while IFS= read -r line <&3; do
       enriched=$(jq -c --arg workflow "${workflows[$key]}" '. + {workflow: $workflow}' <<< "$line" 2>/dev/null) && line=$enriched
     fi
   fi
-  # The action routes this through the log multiplexer, which is the only writer on stdout; anywhere else prints.
+  # JSON-string framing publishes a complete record only after its final newline, even across multiple jq writes.
   if [ -n "${LOG_RENDERED:-}" ]; then
-    printf '%s\n' "$line" | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" >> "$LOG_RENDERED"
+    printf '%s\n' "$line" | jq --unbuffered -c -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq" >> "$LOG_RENDERED"
   else
-    printf '%s\n' "$line" | jq --unbuffered -rR -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq"
+    printf '%s\n' "$line" | jq --unbuffered -r -f "$GITHUB_ACTION_PATH/scripts/injected-log.jq"
   fi
 done

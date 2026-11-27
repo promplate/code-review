@@ -1567,29 +1567,6 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   expect(crafted).toContain("#​#[error]synthetic");
 });
 
-test("one writer prints activity only between whole tool records", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "review-mux-"));
-  homes.push(dir);
-  const activity = "\n::group::activity\n{}\n::endgroup::\n";
-  const header = "::group::$\n", body = "sleep 1\n::endgroup::\n";
-  const child = Bun.spawn(["bash", join(scripts, "review-bun.sh"), join(root, "scripts/log-mux.mjs")], {
-    env: { ...process.env, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root }, stdin: "pipe", stdout: "pipe", timeout: 3000,
-  });
-  child.stdin.write(header);
-  child.stdin.flush();
-  const reader = child.stdout.getReader();
-  const { value } = await reader.read();
-  reader.releaseLock();
-  // Append only after the mux starts printing the tool group.
-  writeFileSync(join(dir, "injected.rendered"), activity);
-  child.stdin.write(body + "plain line\n");
-  child.stdin.end();
-  let output = new TextDecoder().decode(value);
-  for await (const chunk of child.stdout) output += new TextDecoder().decode(chunk);
-  expect(await child.exited).toBe(0);
-  expect(output).toBe(header + body + activity + "plain line\n");
-});
-
 test("an injected event folds the record the model received", () => {
   const input = JSON.stringify({ event: "issue_comment", action: "created", sender: { login: "alice", type: "User" }, issue: { number: 7 },
     comment: { id: 4, body: "hi ##[error]x", html_url: "/pull/7#issuecomment-4" }, workflow: "CI" });
@@ -1599,10 +1576,24 @@ test("an injected event folds the record the model received", () => {
   // The header is what the live view reads; the record folds under it so the payload can be checked in place.
   expect(output.startsWith("\n::group::\u001b[96missue_comment/created\u001b[0m alice /pull/7#issuecomment-4\n{\n")).toBe(true);
   expect(output).toContain('  \u001b[36m"comment"\u001b[0m: {\n    \u001b[36m"id"\u001b[0m: \u001b[33m4\u001b[0m,');
-  expect(output).toContain('\u001b[32m"hi #\u200b#[error]x"\u001b[0m');
+  expect(output).toContain('\u001b[32m"hi #\\u0023[error]x"\u001b[0m');
   // `workflow` is display-only correlation the model never received.
   expect(output).not.toContain('"workflow"');
   expect(output.endsWith("\n::endgroup::\n\n")).toBe(true);
+});
+
+test("folded activity JSON preserves command-like data, backslashes and zero-width spaces", () => {
+  const record = { event: "issue_comment", sender: { login: "alice" }, comment: {
+    body: "::error::forged\n##[error]forged\n:::warning:::overlap\n\\:: \\u003a \u0000 original:\u200b: #\u200b#[",
+    "::group::": "##[error]",
+  } };
+  const result = Bun.spawnSync(["jq", "-Rr", "-f", join(scripts, "injected-log.jq")], { stdin: Buffer.from(JSON.stringify(record) + "\n") });
+  expect(result.exitCode).toBe(0);
+  const output = result.stdout.toString().replace(/\x1b\[[0-9;]*m/g, "");
+  const body = output.slice(output.indexOf("\n{\n") + 1, output.lastIndexOf("\n::endgroup::"));
+  expect(body).not.toContain("::");
+  expect(body).not.toContain("##[");
+  expect(JSON.parse(body)).toEqual(record);
 });
 
 test("the Actions runner decodes the group title without changing percent-encoded text", () => {

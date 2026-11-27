@@ -84,9 +84,9 @@ fresh() {
 }
 codex_patches() { "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/codex-patches.mjs" "$@"; }
 # One process owns stdout: the activity worker renders into a file and this multiplexer prints it between records.
-log() { codex_patches "${1:-}" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" | bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs"; }
+log() { codex_patches "${1:-}" | jq --unbuffered -c --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" | bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs"; }
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
-# This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
+# The worker frames each formatted record for the same writer as the tool log, including while Codex is quiet.
 : > "$RUNNER_TEMP/injected.log"
 : > "$RUNNER_TEMP/injected.rendered"
 rm -f "$RUNNER_TEMP/injected.done" "$RUNNER_TEMP/injected.offset"
@@ -101,7 +101,7 @@ finish_injected() {
   fi
   wait "$INJECTED_TAIL" 2>/dev/null || true
   # The worker can finish after the tool stream; print what it rendered in the meantime.
-  bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs" --drain || true
+  bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs" --drain </dev/null || true
   # The hosted parent flushes during cleanup. Actions runs this script directly.
   if [ "${REVIEW_HOSTED:-}" != true ] && [ -n "${REVIEW_TRACE_RELAY_URL:-}" ]; then
     "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/review-trace.mjs" --flush || true
@@ -177,7 +177,9 @@ if [ "$AGENT" != true ] && ! verdict && [ -s "$CODEX_HOME/last-thread-id" ]; the
   supersede_stale_hosted_check
   if [ ! -s "$RUNNER_TEMP/superseded" ]; then
     # A capacity error leaves the thread intact but clears on its own schedule; one pause is cheaper than a failed review.
-    if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then sleep 30; fi
+    if grep -Eq 'capacity|overloaded|too many requests' "$RUNNER_TEMP/codex.jsonl"; then
+      sleep 30 | bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs"
+    fi
     echo "::warning::Codex ended without a verdict; asking for the review object once."
     baseline=$(codex_patches --baseline "$(cat "$CODEX_HOME/last-thread-id")")
     ${CODEX_RUNTIME:+"$CODEX_RUNTIME"} "$CODEX_BIN" exec resume --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust ${tier[@]+"${tier[@]}"} \
