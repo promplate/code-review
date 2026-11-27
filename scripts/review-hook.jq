@@ -79,15 +79,13 @@ def is_subject_issue($number): (env.ISSUE_NUMBER // "") as $subject | $subject !
       + (if $frame.event == "pull_request" then {pull_request: {number: $body.pull_request.number, head: {sha: $body.pull_request.head.sha},
           base: ($body.pull_request.base | if .ref == null then null else {ref} end), draft: $body.pull_request.draft,
           # An edited title or description is the change itself; an opened one is new to the review. Other events do not repeat the PR text.
-          title: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.title != null))) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
-          body: (if (human_writer($frame; $body) and ($body.action == "opened" or ($body.action == "edited" and $body.changes.body != null))) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
+          # An edited title or description is the change itself, and an opened one is new to the review.
+          title: (if (human_writer($frame; $body) and ($body.action | IN("edited", "opened"))) then ($body.pull_request.title | clip(200; "PR #\($body.pull_request.number)")) else null end),
+          body: (if (human_writer($frame; $body) and ($body.action | IN("edited", "opened"))) then ($body.pull_request.body // "" | clip(2000; "PR #\($body.pull_request.number)")) else null end),
           merged: (if $body.action == "closed" then $body.pull_request.merged else null end)},
           # What an edit changed: a new base means a different diff, which the new title and body alone cannot say.
-          changes: (if $body.changes == null then null else ({}
-            + (if human_writer($frame; $body) and $body.changes.title then {title: {from: ($body.changes.title.from | clip(200; "PR #\($body.pull_request.number)"))}} else {} end)
-            + (if human_writer($frame; $body) and $body.changes.body then {body: {from: (($body.changes.body.from // "") | clip(2000; "PR #\($body.pull_request.number)"))}} else {} end)
-            + (if $body.changes.base then {base: {ref: {from: $body.changes.base.ref.from}}} else {} end)
-            | if . == {} then null else . end) end)} else {} end)
+          # Previous title/body text may belong to someone other than the editor, even when the editor has write access.
+          changes: (if $body.changes.base then {base: {ref: {from: $body.changes.base.ref.from}}} else null end)} else {} end)
       # A label or assignee change carries no text of its own, so name what changed or the review learns only that something did.
       + (if $frame.event == "pull_request" and ($body.action | IN("labeled", "unlabeled")) then {label: {name: $body.label.name}} else {} end)
       + (if $frame.event == "pull_request" and ($body.action | IN("assigned", "unassigned")) then {assignee: {login: $body.assignee.login}} else {} end)
