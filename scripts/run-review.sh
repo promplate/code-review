@@ -150,10 +150,10 @@ if grep -Eq '^(Error: .*|.*"type":"(error|turn\.failed)".*)(unsupported_persiste
   fresh < /dev/null 2>&1 | tee "$RUNNER_TEMP/codex.jsonl" | log && ran=1
 fi
 # A turn that fails after the review is complete, such as when the provider is at capacity for the next turn, still leaves the verdict it produced.
-[ "$AGENT" = true ] || [ "$ran" = 1 ] || jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "item.completed" and .item.type == "agent_message") | .item.text] | last // empty' \
+[ "$AGENT" = true ] || [ "$ran" = 1 ] || jq -Rrs '[split("\n")[] | fromjson? | objects | select(.type == "item.completed" and .item.type == "agent_message") | .item.text] | last // empty' \
   < "$RUNNER_TEMP/codex.jsonl" > "$RUNNER_TEMP/review.json"
 # Recorded before the verdict check, so a fresh review can resume the thread it just started.
-jq -Rrs '[split("\n")[] | fromjson? // empty | select(.type == "thread.started")] | first | .thread_id // empty' \
+jq -Rrs '[split("\n")[] | fromjson? | objects | select(.type == "thread.started")] | first | .thread_id // empty' \
   < "$RUNNER_TEMP/codex.jsonl" > "$CODEX_HOME/last-thread-id"
 # A successfully resumed thread remembers the policy and pre-run compaction count in its next snapshot.
 if [ "$ran" = 1 ] && [ -s "$CODEX_HOME/last-thread-id" ]; then
@@ -192,7 +192,7 @@ fi
 # The line and the turns the price reads come from one pass, so the price judges the same turns the counts describe.
 { read -r usage; read -r turns; } < <(jq -Rrs '
   def h: if . >= 1000000 then "\(. / 100000 | round / 10)M" elif . >= 1000 then "\(. / 100 | round / 10)k" else "\(.)" end;
-  [split("\n")[] | fromjson? // empty | select(.type == "turn.completed") | .usage] as $turns
+  [split("\n")[] | fromjson? | objects | select(.type == "turn.completed") | .usage] as $turns
   | ($turns | map(.input_tokens) | add // 0) as $input
   | ($turns | map(.cached_input_tokens) | add // 0) as $cached
   | ($turns | map(.output_tokens) | add // 0) as $output
