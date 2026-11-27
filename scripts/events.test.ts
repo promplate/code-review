@@ -1849,7 +1849,9 @@ test("injected command escaping covers the runner's leading whitespace", () => {
 });
 
 test("codex is configured with the gh MCP server and the token config dir", () => {
-  const { env } = fixture();
+  const { env, dir } = fixture();
+  const installs = join(dir, "installs");
+  executable(dir, "uv", '#!/bin/sh\nprintf "%s\\n" "$* at $UV_TOOL_BIN_DIR" >> "$RUNNER_TEMP/installs"\nexit 1\n');
   const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
   const run = (config: string) => {
     const result = Bun.spawnSync(["bash", "-ec", region], { env: { ...env, CODEX_CONFIG: config, GITHUB_ACTION_PATH: root } });
@@ -1870,10 +1872,13 @@ test("codex is configured with the gh MCP server and the token config dir", () =
     expect(run(`${key} = { other = { command = "x" } }\n`).mcp_servers).toEqual({ other: { command: "x" } });
   }
   expect(run('[mcp_servers.other]\ncommand = "x"\n').mcp_servers).toEqual({ other: { command: "x" }, gh: { command: "uvx", args: ["gh-mcp"], required: true, startup_timeout_sec: 60, env_vars: ["GH_CONFIG_DIR", "UV_CACHE_DIR", "UV_TOOL_DIR", "UV_PYTHON_INSTALL_DIR"] } });
+  // Only the two generated servers need warming. A failed install leaves their startup fallback in place.
+  expect(readFileSync(installs, "utf8").trimEnd().split("\n")).toEqual(Array(2).fill(`tool install gh-mcp at ${dir}/uv/bin`));
 });
 
 test("the catalog input overrides TOML keys without changing other values", () => {
   const { env } = fixture();
+  executable(env.RUNNER_TEMP, "uv", "#!/bin/sh\nexit 0\n");
   const region = step("Configure codex").run.match(/printf '%s\\n' "\$CODEX_CONFIG"[\s\S]*?\n' "\$CODEX_HOME\/config\.toml"\n/)![0];
   for (const key of ["model_catalog_json", "  model_catalog_json", "\tmodel_catalog_json", '"model_catalog_json"', "'model_catalog_json'", '"model_catalog_\\u006ason"']) {
     const config = `${key} = "/old/models.json"\ndeveloper_instructions = """\nmodel_catalog_json = an example, not a setting\n"""\n[mcp_servers.other]\ncommand = "custom"\n`;

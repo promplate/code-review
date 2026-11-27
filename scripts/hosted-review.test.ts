@@ -21,6 +21,7 @@ if [ -n "$REVIEW_BUN_LOG" ]; then printf '%s\\t%s\\t%s\\n' "$PWD" "$1" "$2" >> "
 exec '${process.execPath}' "$@"
 `);
   executable("tail", "#!/bin/sh\nexit 0\n");
+  executable("uv", "#!/bin/sh\nexit 0\n");
   executable("sleep", "#!/bin/sh\nexit 0\n");
   executable("gh", `#!${process.execPath}
 import {appendFileSync, existsSync, readFileSync} from 'node:fs';
@@ -286,7 +287,7 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   // The two sides of the review pipeline can start in either order.
   expect(calls.filter(call => call[2] === patches)).toEqual([args(patches)]);
   expect(calls.filter(call => call[2] !== patches)).toEqual([
-    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
+    ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "--no-env-file", ...(entry === "hosted" ? ["-e"] : []), ...launch,
   ].map(args));
 });
 
