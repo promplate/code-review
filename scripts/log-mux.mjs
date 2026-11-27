@@ -1,7 +1,7 @@
 // The only process that writes the review's stdout: it prints the tool log and, between whole records, whatever the
 // activity worker rendered in the meantime. Two writers interleaved a fold marker with tool output, which the runner
 // then paired with the wrong group.
-import { readFileSync, writeFileSync, writeSync } from "node:fs";
+import { fstatSync, openSync, readFileSync, readSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 const rendered = join(process.env.RUNNER_TEMP, "injected.rendered");
@@ -11,16 +11,22 @@ let offset = 0;
 try {
   offset = Number(readFileSync(cursor, "utf8").trim() || 0);
 } catch {}
+const activityBuffer = Buffer.allocUnsafe(64 * 1024);
+let renderedFd;
 const drain = () => {
-  let content;
   try {
-    content = readFileSync(rendered);
+    renderedFd ??= openSync(rendered, "r");
   } catch {
-    return; // The worker creates it; nothing to drain before that.
+    return; // The optional activity log may be unavailable.
   }
-  if (content.length <= offset) return;
-  writeSync(1, content.subarray(offset));
-  offset = content.length;
+  const end = fstatSync(renderedFd).size;
+  if (end <= offset) return;
+  while (offset < end) {
+    const size = readSync(renderedFd, activityBuffer, 0, Math.min(end - offset, activityBuffer.length), offset);
+    if (!size) break;
+    for (let written = 0; written < size;) written += writeSync(1, activityBuffer, written, size - written);
+    offset += size;
+  }
   writeFileSync(cursor, String(offset));
 };
 

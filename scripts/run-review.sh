@@ -84,14 +84,13 @@ fresh() {
 }
 codex_patches() { "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/codex-patches.mjs" "$@"; }
 # One process owns stdout: the activity worker renders into a file and this multiplexer prints it between records.
-export LOG_RENDERED="$RUNNER_TEMP/injected.rendered"
-: > "$LOG_RENDERED"
 log() { codex_patches "${1:-}" | jq --unbuffered -rR --arg stop "$(openssl rand -hex 16)" -f "$GITHUB_ACTION_PATH/scripts/codex-log.jq" | bash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs"; }
 # Hook deliveries never reach the exec stream, so the hook writes them aside and this tail shows them as they land.
 # This writer escapes command syntax instead of stopping commands, since the tool log above holds the runner's one suppression token.
 : > "$RUNNER_TEMP/injected.log"
-rm -f "$RUNNER_TEMP/injected.done"
-REVIEW_ACTIONS_TOKEN="${REVIEW_ACTIONS_TOKEN:-}" bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
+: > "$RUNNER_TEMP/injected.rendered"
+rm -f "$RUNNER_TEMP/injected.done" "$RUNNER_TEMP/injected.offset"
+LOG_RENDERED="$RUNNER_TEMP/injected.rendered" REVIEW_ACTIONS_TOKEN="${REVIEW_ACTIONS_TOKEN:-}" bash "$GITHUB_ACTION_PATH/scripts/injected-log.sh" "$RUNNER_TEMP/injected.log" &
 INJECTED_TAIL=$!
 # Only the background log worker needs the GitHub Actions lookup credential.
 unset REVIEW_ACTIONS_TOKEN

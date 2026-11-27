@@ -225,10 +225,14 @@ test.each([0, 7])("review log cleanup preserves exit code %i and drains its fina
   const { dir, env } = fixture();
   const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");
   const region = source.slice(source.indexOf(': > "$RUNNER_TEMP/injected.log"'), source.indexOf("trap finish_injected EXIT") + "trap finish_injected EXIT".length);
+  // A reused runner can retain the previous review's spool and cursor.
+  writeFileSync(join(dir, "injected.rendered"), "old activity\n".repeat(200));
+  writeFileSync(join(dir, "injected.offset"), String(readFileSync(join(dir, "injected.rendered")).length));
   writeFileSync(join(dir, "records"), JSON.stringify(event(100, "last job", { workflow: "CI" })) + "\n");
   const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${region}\ncat "$RUNNER_TEMP/records" >> "$RUNNER_TEMP/injected.log"\nexit ${code}`], { env, timeout: 3000 });
   expect(result.exitCode).toBe(code);
   expect(result.stdout.toString()).toContain("CI / last job:success");
+  expect(result.stdout.toString()).not.toContain("old activity");
   expect(result.stdout.toString()).not.toContain("review_log_end");
   expect(() => process.kill(Number(readFileSync(join(dir, "tail.pid"), "utf8")), 0)).toThrow();
 });

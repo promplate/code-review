@@ -1568,17 +1568,27 @@ test("injected GitHub activity is logged with a colour per meaning", () => {
   expect(crafted).toContain("#​#[error]synthetic");
 });
 
-test("one writer prints activity only between whole tool records", () => {
+test("one writer prints activity only between whole tool records", async () => {
   const dir = mkdtempSync(join(tmpdir(), "review-mux-"));
   homes.push(dir);
-  writeFileSync(join(dir, "injected.rendered"), "\n::group::activity\n{}\n::endgroup::\n");
-  const toolLog = "::group::$\nsleep 1\n::endgroup::\nplain line\n";
-  const result = Bun.spawnSync(["bash", join(scripts, "review-bun.sh"), join(root, "scripts/log-mux.mjs")], {
-    env: { ...process.env, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root }, stdin: Buffer.from(toolLog), timeout: 8000,
+  const activity = "\n::group::activity\n{}\n::endgroup::\n";
+  const header = "::group::$\n", body = "sleep 1\n::endgroup::\n";
+  const child = Bun.spawn(["bash", join(scripts, "review-bun.sh"), join(root, "scripts/log-mux.mjs")], {
+    env: { ...process.env, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root }, stdin: "pipe", stdout: "pipe", timeout: 3000,
   });
-  expect(result.exitCode).toBe(0);
-  // The activity block is whole and lands outside the tool group, whatever the tool writer was doing.
-  expect(result.stdout.toString()).toBe("\n::group::activity\n{}\n::endgroup::\n" + toolLog);
+  child.stdin.write(header);
+  child.stdin.flush();
+  const reader = child.stdout.getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+  // Append only after the mux starts printing the tool group.
+  writeFileSync(join(dir, "injected.rendered"), activity);
+  child.stdin.write(body + "plain line\n");
+  child.stdin.end();
+  let output = new TextDecoder().decode(value);
+  for await (const chunk of child.stdout) output += new TextDecoder().decode(chunk);
+  expect(await child.exited).toBe(0);
+  expect(output).toBe(header + body + activity + "plain line\n");
 });
 
 test("an injected event folds the record the model received", () => {
