@@ -446,19 +446,21 @@ runs:
       env:
         SHARED_UV_CACHE: ${{ inputs.shared-uv-cache }}
       run: |
-        # uv keeps a per-user download cache, so jobs on a reused runner share it; a cold re-download per job is what
-        # outlasts the MCP server's handshake. A read-only home, or a caller that distrusts the cache's other writers,
-        # keeps everything inside the job instead. Installed tools and interpreters always stay there.
-        cache="${XDG_CACHE_HOME:-$HOME/.cache}/uv"
-        if [ "$SHARED_UV_CACHE" != true ] || ! { mkdir -p "$cache" 2>/dev/null && [ -w "$cache" ]; }; then
-          printf 'UV_CACHE_DIR=%s\n' "$RUNNER_TEMP/uv/cache" >> "$GITHUB_ENV"
-        fi
-        printf 'UV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
         # uvx ships with a full uv install but not with a bare uv binary; the gh MCP server spawns uvx, so a runner that has only uv must still get the complete toolchain.
+        uv=uv
         if ! command -v uv > /dev/null || ! command -v uvx > /dev/null; then
           curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$RUNNER_TEMP/uv/bin" UV_NO_MODIFY_PATH=1 sh
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
+          uv="$RUNNER_TEMP/uv/bin/uv"
         fi
+        # A warm shared cache avoids resolving gh-mcp inside the startup timeout.
+        cache="$RUNNER_TEMP/uv/cache"
+        if [ "$SHARED_UV_CACHE" = true ] && shared=$(
+          cd "$RUNNER_TEMP" && "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/uv-cache.ts" "$uv" "$OLDPWD"
+        ); then
+          cache=$shared
+        fi
+        printf 'UV_CACHE_DIR=%s\nUV_TOOL_DIR=%s\nUV_PYTHON_INSTALL_DIR=%s\n' "$cache" "$RUNNER_TEMP/uv/tools" "$RUNNER_TEMP/uv/python" >> "$GITHUB_ENV"
 
     - name: Fetch config files
       id: catalog
