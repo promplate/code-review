@@ -26,8 +26,8 @@ inputs:
     description: Encrypt session and debug artifacts with a key the broker derives for this repository; requires a broker that serves `/snapshot-key`. Off, anyone who can read the repository can download them.
     default: "false"
   shared-uv-cache:
-    description: Reuse uv's per-user download cache across jobs on a runner. Set it to false on runners whose cache is shared with jobs that are not trusted with this review's credential.
-    default: "true"
+    description: Reuse uv's download cache across jobs. Only enable where every job that can write the cache is trusted with this review's credential.
+    default: "false"
   debug-retention-days:
     description: Positive whole days to keep `agent-debug-events`. An empty value uses the repository retention period.
   session-retention-days:
