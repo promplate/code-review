@@ -56,9 +56,9 @@ on:
         type: string
         default: ""
       shared-uv-cache:
-        description: Share uv's download cache with every job on this runner. Only enable where every job that can write the cache is trusted with this review's credential.
+        description: Reuse uv's per-user download cache across jobs on a runner. Set it to false on runners whose cache is shared with jobs that are not trusted with this review's credential.
         type: boolean
-        default: false
+        default: true
     secrets:
       # Existing callers can pass the config as a secret.
       codex-config:
