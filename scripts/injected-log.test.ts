@@ -35,7 +35,7 @@ if (response.fail) { console.error("HTTP 403"); process.exit(1); }
 console.log(JSON.stringify(response.body || {}));
 `);
   for (const name of ["gh", "tail"]) chmodSync(join(dir, name), 0o755);
-  return { setup, dir, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GH_CONFIG_DIR: join(dir, "gh-config"), REVIEW_ACTIONS_TOKEN: "job-token", GH_TOKEN: "app-token", GITHUB_TOKEN: "", ...env } };
+  return { setup, dir, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, LOG_RENDERED: "", GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GH_CONFIG_DIR: join(dir, "gh-config"), REVIEW_ACTIONS_TOKEN: "job-token", GH_TOKEN: "app-token", GITHUB_TOKEN: "", ...env } };
 }
 
 async function until(predicate: () => boolean, timeout = 2000) {
@@ -44,6 +44,10 @@ async function until(predicate: () => boolean, timeout = 2000) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for log worker");
     await Bun.sleep(10);
   }
+}
+
+function groupTitles(output: string) {
+  return output.split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length));
 }
 
 function start(responses: Record<string, object> = {}, env = {}) {
@@ -83,7 +87,7 @@ test("CI log resolves and caches the exact suite using only the Actions credenti
   await until(() => log.output().includes("CI / check (windows, 3.13):success"));
   await log.finish();
   expect(log.output()).toContain("CI / check (windows, 3.12):success");
-  expect(log.output()).not.toContain("dependabot");
+  expect(groupTitles(log.output()).join("\n")).not.toContain("dependabot");
   expect(log.calls()).toEqual([{ argv: ["api", "repos/owner/repo/actions/runs?check_suite_id=100&per_page=1"], token: "job-token", config: log.env.GH_CONFIG_DIR, stdin: "" }]);
 });
 
@@ -110,7 +114,7 @@ test.each([
   log.append(...records);
   await until(() => log.output().includes("subscription_recovery"));
   await log.finish();
-  expect(log.output().trim().split("\n").filter(Boolean)).toEqual([
+  expect(groupTitles(log.output())).toEqual([
     "check_run/completed CI / dependabot job:success /actions/runs/90/job/1",
     "check_run/completed CI / human job:success /actions/runs/90/job/2",
     "check_run/completed blacksmith.sh / Proof:skipped https://blacksmith.sh/check/3",
@@ -150,7 +154,9 @@ test("CI log uses the hosted credential and escapes API-supplied names", async (
   await until(() => log.output().includes("check (windows, 3.12):success"));
   await log.finish();
   expect(log.calls()[0]).toMatchObject({ token: "", config: log.env.GH_CONFIG_DIR });
-  expect(log.output()).not.toContain("::");
+  for (const line of log.output().split("\n").filter(line => line.startsWith("::"))) {
+    expect(line === "::endgroup::" || line.startsWith("::group::")).toBe(true);
+  }
   expect(log.output()).not.toContain("##[");
 });
 
@@ -215,15 +221,179 @@ console.log(JSON.stringify({ type: "thread.started", thread_id: "fixture" }));
   expect(result.stdout.toString()).toContain("CI / check (windows, 3.12):success");
 }, 7000);
 
+test.each(["rejected resume", "missing verdict"])("the live log survives %s and drains activity after the final attempt", async mode => {
+  const { setup, dir, env } = fixture({ 100: { wait: true, body: run() } });
+  const comment = (id: number) => ({ event: "issue_comment", action: "created", sender: { login: "alice" },
+    comment: { id, body: `${id}: ${"边界🙂".repeat(4096)}`, html_url: `/pull/7#issuecomment-${id}` } });
+  const records = [comment(1), event(100, "between attempts", { id: 2 }), comment(3), comment(4)];
+  writeFileSync(join(dir, "records.json"), JSON.stringify(records));
+  writeFileSync(join(dir, "last-record"), JSON.stringify(records[3]) + "\n");
+  writeFileSync(join(dir, "event.json"), JSON.stringify({ action: "opened", sender: { login: "alice" }, issue: { number: 7 } }));
+  if (mode === "rejected resume") writeFileSync(join(dir, "last-thread-id"), "previous-thread\n");
+  // Pricing runs after the last log() pipeline. Its final delivery can only be printed by the EXIT drain.
+  writeFileSync(join(dir, "bun"), `#!/usr/bin/env bash
+if [[ $1 == --config=* ]]; then exec '${process.execPath}' "$@"; fi
+if [[ $1 == -e ]]; then cat "$RUNNER_TEMP/last-record" >> "$RUNNER_TEMP/injected.log"; fi
+`);
+  writeFileSync(join(dir, "codex"), `#!${process.execPath}
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const dir = process.env.RUNNER_TEMP;
+const attempts = dir + "/attempts.jsonl";
+const attempt = existsSync(attempts) ? readFileSync(attempts, "utf8").trim().split("\\n").length + 1 : 1;
+appendFileSync(attempts, JSON.stringify({ attempt, resume: process.argv[3] === "resume" }) + "\\n");
+const records = JSON.parse(readFileSync(dir + "/records.json", "utf8"));
+const append = index => appendFileSync(dir + "/injected.log", JSON.stringify(records[index]) + "\\n");
+const waitFor = async predicate => {
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Fixture gate was not released");
+    await Bun.sleep(10);
+  }
+};
+console.log(JSON.stringify({ type: "thread.started", thread_id: "fixture-thread" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "bash -lc 'attempt-" + attempt + "'",
+  aggregated_output: "tool-" + attempt + "\\n" + "完整 output 🙂".repeat(8192) + "\\nend-" + attempt + "\\n" } }));
+if (attempt === 1) {
+  await waitFor(() => existsSync(dir + "/deliver-first"));
+  append(0);
+  // The parent waits for the actual visible activity while this Codex stdout stays open and idle.
+  await waitFor(() => existsSync(dir + "/release-first"));
+  append(1);
+  // Keep this record's real activity formatter behind an in-flight metadata lookup across log() attempts.
+  await waitFor(() => existsSync(dir + "/calls") && readFileSync(dir + "/calls", "utf8").includes("check_suite_id=100"));
+  if (process.env.RETRY_MODE === "rejected resume") {
+    console.log(JSON.stringify({ type: "error", message: "modelProviderMismatch" }));
+    process.exit(1);
+  }
+} else {
+  await waitFor(() => existsSync(dir + "/deliver-second"));
+  append(2);
+  await waitFor(() => existsSync(dir + "/release-second"));
+  const output = process.argv[process.argv.indexOf("--output-last-message") + 1];
+  writeFileSync(output, JSON.stringify({ conclusion: "success", summary: "complete", commits: [{ sha: process.env.HEAD_SHA, conclusion: "success" }] }));
+}
+`);
+  for (const name of ["bun", "codex"]) chmodSync(join(dir, name), 0o755);
+  const child = Bun.spawn(["bash", join(import.meta.dir, "run-review.sh")], {
+    env: { ...env, RETRY_MODE: mode, AGENT: String(mode === "rejected resume"), PR_NUMBER: "", CHECK_ID: "1", ISSUE_NUMBER: "7",
+      BASE: "main", HEAD_BRANCH: "fixture", FORK_KEY: "", HEAD_SHA: head, BEFORE: "", DISPATCHED_SHA: head, DISPATCHED_BASE: "main",
+      CODEX_HOME: dir, CODEX_BIN: join(dir, "codex"), CODEX_RUNTIME: "", REVIEW_HOSTED: "", REVIEW_TRACE_RELAY_URL: "",
+      GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(dir, "event.json"), GITHUB_STEP_SUMMARY: join(dir, "summary.md") },
+    stdout: "pipe", stderr: "pipe", timeout: 10000,
+  });
+  setup.process = child;
+  let output = "";
+  const decoder = new TextDecoder();
+  const stdout = (async () => {
+    for await (const chunk of child.stdout) output += decoder.decode(chunk, { stream: true });
+    output += decoder.decode();
+  })();
+  const stderr = new Response(child.stderr).text();
+  try {
+    await until(() => output.includes("end-1\u001b[0m\n::endgroup::"), 5000);
+    writeFileSync(join(dir, "deliver-first"), "");
+    await until(() => output.includes("/pull/7#issuecomment-1"), 5000);
+    // The gate holds the worker at this complete frame; stdout can arrive before its cursor write finishes.
+    const firstOffset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => firstOffset > 0 && existsSync(join(dir, "injected.offset"))
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === firstOffset, 5000);
+    expect(child.exitCode).toBeNull();
+    expect(firstOffset).toBeGreaterThan(0);
+    writeFileSync(join(dir, "release-first"), "");
+    await until(() => readFileSync(join(dir, "attempts.jsonl"), "utf8").trim().split("\n").length === 2, 5000);
+    await until(() => output.includes("end-2\u001b[0m\n::endgroup::"), 5000);
+    writeFileSync(join(dir, "release"), "");
+    writeFileSync(join(dir, "deliver-second"), "");
+    await until(() => output.includes("/pull/7#issuecomment-3"), 5000);
+    const secondOffset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => secondOffset > firstOffset
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === secondOffset, 5000);
+    expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBeGreaterThan(firstOffset);
+    writeFileSync(join(dir, "release-second"), "");
+    expect(await child.exited).toBe(0);
+    await stdout;
+    expect(await stderr).toBe("");
+  } finally {
+    for (const name of ["release", "deliver-first", "deliver-second", "release-first", "release-second"]) writeFileSync(join(dir, name), "");
+  }
+  const visible = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const groups = [...visible.matchAll(/^::group::([^\n]*)\n([\s\S]*?)^::endgroup::$/gm)];
+  const activities = groups.filter(([, title]) => !title.startsWith("$ ")).map(([, , body]) => JSON.parse(body));
+  expect(activities).toEqual(records);
+  expect(groups.filter(([, title]) => title.startsWith("$ ")).map(([, title, body]) => [title, body])).toEqual([1, 2].map(attempt => [
+    `$ attempt-${attempt}`, `tool-${attempt}\n${"完整 output 🙂".repeat(8192)}\nend-${attempt}\n`,
+  ]));
+  expect(visible.indexOf("/pull/7#issuecomment-4")).toBeGreaterThan(visible.indexOf("::notice::"));
+  expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBe(readFileSync(join(dir, "injected.rendered")).length);
+  expect(readFileSync(join(dir, "attempts.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line).resume))
+    .toEqual(mode === "rejected resume" ? [true, false] : [false, true]);
+  expect(() => process.kill(Number(readFileSync(join(dir, "tail.pid"), "utf8")), 0)).toThrow();
+}, 15000);
+
+test("activity remains live during the capacity cooldown and is not replayed by the next mux", async () => {
+  const { setup, dir, env } = fixture();
+  const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");
+  const region = source.slice(source.indexOf(': > "$RUNNER_TEMP/injected.log"'), source.indexOf("trap finish_injected EXIT") + "trap finish_injected EXIT".length);
+  const cooldown = source.match(/    if grep -Eq 'capacity\|overloaded\|too many requests'[\s\S]*?\n    fi/)?.[0];
+  expect(cooldown).toBeDefined();
+  writeFileSync(join(dir, "codex.jsonl"), "capacity\n");
+  writeFileSync(join(dir, "sleep"), `#!${process.execPath}
+import { existsSync, writeFileSync } from "node:fs";
+if (process.argv[2] !== "30") throw new Error("Expected the production cooldown");
+writeFileSync(process.env.RUNNER_TEMP + "/sleeping", "");
+while (!existsSync(process.env.RUNNER_TEMP + "/release-sleep")) await Bun.sleep(10);
+`);
+  chmodSync(join(dir, "sleep"), 0o755);
+  const child = Bun.spawn(["bash", "-eo", "pipefail", "-c", `${region}\n${cooldown}\nbash "$GITHUB_ACTION_PATH/scripts/review-bun.sh" "$GITHUB_ACTION_PATH/scripts/log-mux.mjs" </dev/null`], {
+    env, stdout: "pipe", stderr: "pipe", timeout: 5000,
+  });
+  setup.process = child;
+  let output = "";
+  const decoder = new TextDecoder();
+  const stdout = (async () => {
+    for await (const chunk of child.stdout) output += decoder.decode(chunk, { stream: true });
+    output += decoder.decode();
+  })();
+  const stderr = new Response(child.stderr).text();
+  const record = { event: "issue_comment", sender: { login: "alice" }, comment: { id: 1, body: "during cooldown 边界🙂\n".repeat(512) } };
+  let offset = 0;
+  try {
+    await until(() => existsSync(join(dir, "sleeping")));
+    appendFileSync(join(dir, "injected.log"), JSON.stringify(record) + "\n");
+    await until(() => output.includes("::endgroup::"));
+    offset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => offset > 0 && existsSync(join(dir, "injected.offset"))
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === offset);
+    expect(child.exitCode).toBeNull();
+    const body = output.replace(/\x1b\[[0-9;]*m/g, "").match(/^::group::[^\n]*\n([\s\S]*?)^::endgroup::$/m)![1];
+    expect(JSON.parse(body)).toEqual(record);
+    expect(offset).toBeGreaterThan(0);
+  } finally {
+    writeFileSync(join(dir, "release-sleep"), "");
+  }
+  expect(await child.exited).toBe(0);
+  await stdout;
+  expect(await stderr).toBe("");
+  expect(groupTitles(output)).toHaveLength(1);
+  expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBe(offset);
+  expect(offset).toBe(readFileSync(join(dir, "injected.rendered")).length);
+});
+
 test.each([0, 7])("review log cleanup preserves exit code %i and drains its final row", code => {
   const { dir, env } = fixture();
   const source = readFileSync(join(import.meta.dir, "run-review.sh"), "utf8");
   const region = source.slice(source.indexOf(': > "$RUNNER_TEMP/injected.log"'), source.indexOf("trap finish_injected EXIT") + "trap finish_injected EXIT".length);
+  // A reused runner can retain the previous review's spool and cursor.
+  writeFileSync(join(dir, "injected.rendered"), "old activity\n".repeat(200));
+  writeFileSync(join(dir, "injected.offset"), String(readFileSync(join(dir, "injected.rendered")).length));
   writeFileSync(join(dir, "records"), JSON.stringify(event(100, "last job", { workflow: "CI" })) + "\n");
   const result = Bun.spawnSync(["bash", "-eo", "pipefail", "-c", `${region}\ncat "$RUNNER_TEMP/records" >> "$RUNNER_TEMP/injected.log"\nexit ${code}`], { env, timeout: 3000 });
   expect(result.exitCode).toBe(code);
   expect(result.stdout.toString()).toContain("CI / last job:success");
+  expect(result.stdout.toString()).not.toContain("old activity");
   expect(result.stdout.toString()).not.toContain("review_log_end");
+  expect(groupTitles(result.stdout.toString())).toHaveLength(1);
+  expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBe(readFileSync(join(dir, "injected.rendered")).length);
   expect(() => process.kill(Number(readFileSync(join(dir, "tail.pid"), "utf8")), 0)).toThrow();
 });
 

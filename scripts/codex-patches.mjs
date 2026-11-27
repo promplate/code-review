@@ -92,6 +92,8 @@ if (process.argv[2] === "--baseline") {
         if (paired) { console.log(JSON.stringify(event)); continue; }
       } catch { paired = false; }
     }
-    console.log(line);
+    // Keep stderr readable while feeding JSON to jq: its older raw-input reader corrupts split UTF-8 characters.
+    if (event !== null && typeof event === "object" && !Array.isArray(event)) console.log(line);
+    else console.log(JSON.stringify({ type: "error", message: line }));
   }
 }

@@ -61,7 +61,7 @@ def prose: gsub("\r"; "") | gsub("(?m)[ \t]+$"; "")
   | if . == "" then "" else split("\n") | map(if . == "" then . else "\u001b[1;34m\(.)\u001b[0m" end) | join("\n") end;
 # The settled verdict is one JSON record, marked by its conclusion so it does not read as more prose.
 def verdict: (. | fromjson? // null) as $v | if ($v | type) == "object" and $v.conclusion then "\u001b[1;\(if $v.conclusion == "failure" then 31 else 32 end)m\(if $v.conclusion == "failure" then "✗" else "✓" end)\u001b[0m \($v | json)" else prose end;
-fromjson? // {type: "error", message: .}
+if type == "string" then fromjson? // {type: "error", message: .} else . end
 | if .type == "error" then .message
   elif .type == "turn.failed" then .error.message
   elif .type == "item.completed" and .item.type == "agent_message" then (.item.text // "" | verdict)

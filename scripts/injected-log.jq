@@ -33,12 +33,39 @@ def event_line: "\u001b[\(event_color)m\(.event)\(if .action then "/" + .action 
   + (event_subject | if . == "" then "" else " " + . end)
   + (verdict | if . then ":" + . else "" end)
   + (target_url | if . then " " + . else "" end);
+# The folded body is the record the model received, so colour it the way jq colours a terminal: keys, strings, numbers and literals each get a colour.
+def hkey: tojson | "\u001b[36m\(.)\u001b[0m";
+def scalar: if type == "string" then tojson | "\u001b[32m\(.)\u001b[0m"
+  elif type == "number" then "\u001b[33m\(tostring)\u001b[0m"
+  elif type == "boolean" then "\u001b[35m\(tostring)\u001b[0m"
+  else "\u001b[90mnull\u001b[0m" end;
+def pretty($depth):
+  (reduce range(0; $depth) as $i (""; . + "  ")) as $pad
+  | if type == "object" then
+      if length == 0 then "{}" else
+        "{\n" + (to_entries | map($pad + "  " + (.key | hkey) + ": " + (.value | pretty($depth + 1))) | join(",\n")) + "\n" + $pad + "}"
+      end
+    elif type == "array" then
+      if length == 0 then "[]" else
+        "[\n" + (map($pad + "  " + pretty($depth + 1)) | join(",\n")) + "\n" + $pad + "]"
+      end
+    else scalar end;
 # Event text comes from GitHub payloads, and the runner parses a workflow command in any line of stdout: `::` after leading whitespace, and legacy `##[` anywhere.
-# Break every marker, including overlapping colons: concurrent tool output can insert a newline inside a long event record.
-# A zero-width space keeps the log readable without sharing the tool logger's suppression token.
+# Break every marker, including overlapping colons, without sharing the tool logger's suppression token.
 def escape_commands: gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​");
-(fromjson? // null) as $event
-| (if $event == null then . else ($event | event_line) end)
-| escape_commands
+# JSON escapes keep the folded record parseable back to the exact payload, including command-like strings.
+def escape_json_commands: gsub("##\\["; "#\\u0023[") | gsub(":(?=:)"; "\\u003a");
+# The Actions runner decodes percent escapes in a group title. The hosted log reads it directly.
+def group_title: event_line | escape_commands | gsub("\n"; " ") | if env.REVIEW_HOSTED == "true" then . else gsub("%"; "%25") end;
+(if type == "string" then fromjson? // null else . end) as $event
+# The line stays the summary the live view reads; the record itself folds under it so a reviewer can check what the model was told.
+# Only the record is escaped: the group markers are ours and the runner has to read them.
+| (if $event == null then . | escape_commands else
+    # A group title is one line: a payload newline inside a name would end the fold at the runner.
+    "\n::group::" + ($event | group_title)
+    + "\n" + ($event | del(.workflow) | pretty(0) | escape_json_commands)
+    + "\n::endgroup::"
+  end)
 # The live log view paints a band behind lines that carry only whitespace, and copied logs keep it; emit no trailing spaces.
-| gsub("(?m)[ \t]+$"; "") | rtrimstr("\n") + "\n"
+# Start only at the first space in a run so a long stretch inside a comment takes one pass.
+| gsub("(?m)(?<![ \t])[ \t]+$"; "") | rtrimstr("\n") + "\n"

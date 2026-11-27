@@ -283,9 +283,11 @@ exec '${process.execPath}' --config="$RUNNER_TEMP/mock-bun.toml" "$RUNNER_TEMP/d
   const launch = launcher === "npm" ? [codex] : [];
   const args = (entrypoint: string) => [setup.checkout, `--config=${join(actionPath, "scripts", "review-bun.toml")}`, entrypoint];
   const patches = join(actionPath, "scripts", "codex-patches.mjs");
-  // The two sides of the review pipeline can start in either order.
+  const mux = join(actionPath, "scripts", "log-mux.mjs");
+  // Pipeline stages start concurrently. The mux runs once more for the final drain.
   expect(calls.filter(call => call[2] === patches)).toEqual([args(patches)]);
-  expect(calls.filter(call => call[2] !== patches)).toEqual([
+  expect(calls.filter(call => call[2] === mux)).toEqual([args(mux), args(mux)]);
+  expect(calls.filter(call => call[2] !== patches && call[2] !== mux)).toEqual([
     ...launch, join(actionPath, "scripts", "doc-fallbacks.ts"), "-e", ...(entry === "hosted" ? ["-e"] : []), ...launch,
   ].map(args));
 });
