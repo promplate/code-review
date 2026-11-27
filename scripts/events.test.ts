@@ -1690,7 +1690,7 @@ test.each([
   // Run the same records through the actual shared worker used by both entry points.
   const path = join(dir, "injected.log");
   writeFileSync(path, readFileSync(path, "utf8") + '{"review_log_end":true}\n');
-  const worker = Bun.spawnSync(["bash", join(scripts, "injected-log.sh"), path], { env: { ...hookEnv, ...env }, timeout: 3000 });
+  const worker = Bun.spawnSync(["bash", join(scripts, "injected-log.sh"), path], { env: { ...hookEnv, ...env, LOG_RENDERED: "" }, timeout: 3000 });
   expect(worker.exitCode).toBe(0);
   expect(worker.stderr.toString()).toBe("");
   expect(worker.stdout).toEqual(formatted);

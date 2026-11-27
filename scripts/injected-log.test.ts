@@ -35,7 +35,7 @@ if (response.fail) { console.error("HTTP 403"); process.exit(1); }
 console.log(JSON.stringify(response.body || {}));
 `);
   for (const name of ["gh", "tail"]) chmodSync(join(dir, name), 0o755);
-  return { setup, dir, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GH_CONFIG_DIR: join(dir, "gh-config"), REVIEW_ACTIONS_TOKEN: "job-token", GH_TOKEN: "app-token", GITHUB_TOKEN: "", ...env } };
+  return { setup, dir, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, LOG_RENDERED: "", GITHUB_ACTION_PATH: root, GITHUB_REPOSITORY: "owner/repo", GH_CONFIG_DIR: join(dir, "gh-config"), REVIEW_ACTIONS_TOKEN: "job-token", GH_TOKEN: "app-token", GITHUB_TOKEN: "", ...env } };
 }
 
 async function until(predicate: () => boolean, timeout = 2000) {
