@@ -250,18 +250,19 @@ test("a malformed activity during tool idle exits without consuming later record
   expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBe(firstBytes.length);
 });
 
-test("the production patch bridge preserves long Unicode stderr through JSON formatting", async () => {
+test("the production patch bridge preserves Unicode and JSON-valued stderr through formatting", async () => {
   const stderr = "raw stderr: " + "字🙂x".repeat(24000) + "\u0000 end";
+  const lines = [stderr, "false", "null", "42", '"quoted"', "[1,2]"];
   const bridge = Bun.spawnSync([process.execPath, `--config=${join(scripts, "review-bun.toml")}`, join(scripts, "codex-patches.mjs")], {
-    stdin: Buffer.from(stderr + "\n"), env: { ...process.env, CODEX_HOME: "" },
+    stdin: Buffer.from(lines.join("\n") + "\n"), env: { ...process.env, CODEX_HOME: "" },
   });
   expect(bridge.exitCode).toBe(0);
-  const record = JSON.parse(bridge.stdout.toString());
-  expect(record.type).toBe("error");
-  expect(record.message === stderr).toBe(true);
+  const records = bridge.stdout.toString().trimEnd().split("\n").map(line => JSON.parse(line));
+  expect(records.every(record => record.type === "error")).toBe(true);
+  expect(records.map(record => record.message)).toEqual(lines);
   const formatted = Bun.spawnSync(formatter("codex"), { stdin: bridge.stdout });
   expect(formatted.exitCode).toBe(0);
   const log = mux(fixture());
   log.child.stdin.write(formatted.stdout);
-  expect(await log.finish() === stderr + "\n\n").toBe(true);
+  expect(await log.finish() === lines.join("\n\n") + "\n\n").toBe(true);
 });
