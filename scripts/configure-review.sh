@@ -55,7 +55,7 @@ command = "bash $GITHUB_ACTION_PATH/scripts/review-hook.sh"
 EOF
 # gh-mcp shells out to gh, so it needs the config dir whose hosts.yml the token loop keeps fresh.
 # A codex-config that already names this server keeps its own definition; one that writes mcp_servers as an inline value cannot be extended by a table.
-"$GITHUB_ACTION_PATH/scripts/review-bun.sh" -e '
+"$GITHUB_ACTION_PATH/scripts/review-bun.sh" --no-env-file -e '
   const path = process.argv[1];
   let text = await Bun.file(path).text();
   // The input overrides the root setting, including quoted or indented keys, without editing multiline strings.
