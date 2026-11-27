@@ -292,9 +292,12 @@ if (attempt === 1) {
   try {
     await until(() => output.includes("end-1\u001b[0m\n::endgroup::"), 5000);
     writeFileSync(join(dir, "deliver-first"), "");
-    await until(() => output.includes("/pull/7#issuecomment-1") && existsSync(join(dir, "injected.offset")), 5000);
+    await until(() => output.includes("/pull/7#issuecomment-1"), 5000);
+    // The gate holds the worker at this complete frame; stdout can arrive before its cursor write finishes.
+    const firstOffset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => firstOffset > 0 && existsSync(join(dir, "injected.offset"))
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === firstOffset, 5000);
     expect(child.exitCode).toBeNull();
-    const firstOffset = Number(readFileSync(join(dir, "injected.offset"), "utf8"));
     expect(firstOffset).toBeGreaterThan(0);
     writeFileSync(join(dir, "release-first"), "");
     await until(() => readFileSync(join(dir, "attempts.jsonl"), "utf8").trim().split("\n").length === 2, 5000);
@@ -302,6 +305,9 @@ if (attempt === 1) {
     writeFileSync(join(dir, "release"), "");
     writeFileSync(join(dir, "deliver-second"), "");
     await until(() => output.includes("/pull/7#issuecomment-3"), 5000);
+    const secondOffset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => secondOffset > firstOffset
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === secondOffset, 5000);
     expect(Number(readFileSync(join(dir, "injected.offset"), "utf8"))).toBeGreaterThan(firstOffset);
     writeFileSync(join(dir, "release-second"), "");
     expect(await child.exited).toBe(0);
@@ -354,11 +360,13 @@ while (!existsSync(process.env.RUNNER_TEMP + "/release-sleep")) await Bun.sleep(
   try {
     await until(() => existsSync(join(dir, "sleeping")));
     appendFileSync(join(dir, "injected.log"), JSON.stringify(record) + "\n");
-    await until(() => output.includes("::endgroup::") && existsSync(join(dir, "injected.offset")));
+    await until(() => output.includes("::endgroup::"));
+    offset = readFileSync(join(dir, "injected.rendered")).lastIndexOf(10) + 1;
+    await until(() => offset > 0 && existsSync(join(dir, "injected.offset"))
+      && Number(readFileSync(join(dir, "injected.offset"), "utf8")) === offset);
     expect(child.exitCode).toBeNull();
     const body = output.replace(/\x1b\[[0-9;]*m/g, "").match(/^::group::[^\n]*\n([\s\S]*?)^::endgroup::$/m)![1];
     expect(JSON.parse(body)).toEqual(record);
-    offset = Number(readFileSync(join(dir, "injected.offset"), "utf8"));
     expect(offset).toBeGreaterThan(0);
   } finally {
     writeFileSync(join(dir, "release-sleep"), "");
