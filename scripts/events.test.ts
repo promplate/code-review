@@ -1221,8 +1221,12 @@ test("file edits and searches fold into titled blocks", () => {
     return result.stdout.toString();
   };
   const changes = [{ path: "a.ts", kind: "update" }, { path: "b.ts", kind: "add" }, { path: "c.ts", kind: "delete" }];
-  const edit = "\u001b[36medit\u001b[0m";
+  // The label names the operation and carries its colour; a mixed set falls back to the generic one.
+  const edit = "\u001b[33m~ edit\u001b[0m";
   const rows = ["\u001b[33m~\u001b[0m a.ts", "\u001b[32m+\u001b[0m b.ts", "\u001b[31m-\u001b[0m c.ts"];
+  expect(log({ type: "file_change", changes: [changes[0]], status: "completed" })).toBe(`::group::${edit} a.ts\n${rows[0]}\n::endgroup::\n\n`);
+  expect(log({ type: "file_change", changes: [changes[1]], status: "completed" })).toBe(`::group::\u001b[32m+ write\u001b[0m b.ts\n${rows[1]}\n::endgroup::\n\n`);
+  expect(log({ type: "file_change", changes: [changes[2]], status: "completed" })).toBe(`::group::\u001b[31m- delete\u001b[0m c.ts\n${rows[2]}\n::endgroup::\n\n`);
   expect(log({ type: "file_change", changes, status: "completed" })).toBe(`::group::${edit} ${rows.join(", ")}\n${rows.join("\n")}\n::endgroup::\n\n`);
   expect(log({ type: "file_change", changes, status: "failed" })).toContain(`::group::${edit} \u001b[31m[failed]\u001b[0m ${rows.join(", ")}`);
   expect(log({ type: "file_change", changes: [...changes, { path: "d.ts", kind: "add" }, { path: "e.ts", kind: "update" }], status: "completed" })).toContain(`::group::${edit} 5 files\n${rows.join("\n")}`);
@@ -1263,9 +1267,10 @@ test("file edits show exact totals and highlighted transcript diffs after resume
   };
   const result = render([edits("item_0", [update], "failed"), edits("item_1", [update, { path: "add.ts", kind: "add" }, { path: "delete.ts", kind: "delete" }]), edits("item_2", [update])]);
   const plain = result.replace(/\u001b\[[0-9;]*m/g, "");
-  expect(plain).toContain("::group::edit ~ review.ts, + add.ts, - delete.ts (+3 -3)\n::stop-commands::s\n~ review.ts +1 -1\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n");
+  expect(plain).toContain("::group::~ edit ~ review.ts, + add.ts, - delete.ts (+3 -3)\n::stop-commands::s\n~ review.ts +1 -1\n@@ -1,2 +1,2 @@\n---old\n+++ ##[error]new\n keep\n");
   expect(plain).toContain("+ add.ts +2 -0\n+added\n+\n- delete.ts +0 -2\n::s::\n::endgroup::");
-  expect(plain).toContain("::group::edit ~ review.ts (+1 -0)\n~ review.ts +1 -0\n@@ -1 +1,2 @@\n keep\n+second edit");
+  // One file is named in the title, so the body carries only its patch.
+  expect(plain).toContain("::group::~ edit review.ts (+1 -0)\n@@ -1 +1,2 @@\n keep\n+second edit");
   expect(plain).not.toContain("stale");
   expect(result).toContain("\u001b[90m@@ -1 +1,2 @@\u001b[0m\n\u001b[90m keep\u001b[0m");
   expect(result).toContain("\u001b[31m---old\u001b[0m\n\u001b[32m+++ ##[error]new\u001b[0m");
