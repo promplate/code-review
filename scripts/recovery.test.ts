@@ -547,13 +547,17 @@ test("success reviews keep useful text and omit empty comments", () => {
     ["reviewer[bot]", earlier, text, null],
     ["reviewer[bot]", [], "", null],
     ["reviewer[bot]", earlier, " \n", null],
+    ["writer", [{ user: { login: "reviewer[bot]" }, state: "APPROVED" }], "", null],
   ] as const) {
     const setup = fixture();
+    // A busy PR can place the bot's latest review on the next page.
+    const firstPage = reviews.length ? Array(100).fill({ user: { login: "writer" }, state: "COMMENTED" }) : [];
     executable(setup.dir, "git", "#!/bin/sh\nprintf 'head\\n'\n");
     executable(setup.dir, "gh", `#!/bin/sh
 case "$*" in
   *'api graphql'*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
-  *'/reviews?'*) printf '%s\\n' '${JSON.stringify(reviews)}' ;;
+  *'/reviews?'*'--paginate'*) printf '%s\\n' '${JSON.stringify([...firstPage, ...reviews])}' ;;
+  *'/reviews?'*) printf '%s\\n' '${JSON.stringify(firstPage)}' ;;
   *'/files?'*) printf '[]\\n' ;;
   *'/reviews --input'*) while [ $# -gt 1 ]; do shift; done; cp "$1" "$RUNNER_TEMP/posted.json" ;;
   *) cat > /dev/null; printf '{}\\n' ;;
