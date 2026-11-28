@@ -45,9 +45,9 @@ fi
 if [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
   echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
 fi
-jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --rawfile document "$RUNNER_TEMP/review.json" '
 include "summary";
-($review.commits[] | select(.sha == $sha)) as $commit | {
+($document | fromjson) as $review | ($review.commits[] | select(.sha == $sha)) as $commit | {
 name: "code-review", head_sha: $sha, status: "completed",
 conclusion: $commit.conclusion,
 output: {

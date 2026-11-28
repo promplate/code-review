@@ -536,6 +536,35 @@ esac
   });
 }
 
+test("both publishers accept one large verdict and reject a second verdict in the file", () => {
+  const setup = fixture();
+  executable(setup.dir, "git", "#!/bin/sh\necho head\n");
+  executable(setup.dir, "gh", `#!/bin/sh
+case "$*" in
+  *'/pulls/7 --jq .head.sha') echo head ;;
+  *'/check-runs/10 -X PATCH --input -') cat > "$RUNNER_TEMP/check.json" ;;
+  *'/reviews?'*|*'/files?'*) echo '[]' ;;
+  *'api graphql'*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *'/reviews --input '*) cp "$4" "$RUNNER_TEMP/submitted.json" ;;
+  *) exit 2 ;;
+esac`);
+  const annotations = Array.from({ length: 50 }, (_, i) => ({ path: "a.py", line: i + 1, level: "warning", message: "x".repeat(3000) }));
+  writeFileSync(join(setup.dir, "review.json"), JSON.stringify({ conclusion: "success", summary: "", commits: [{ sha: "head", conclusion: "success" }], annotations }));
+  expect(run("Publish check run", setup).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "check.json"), "utf8")).output.annotations).toHaveLength(50);
+  expect(run("Publish PR review", setup).exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(join(setup.dir, "submitted.json"), "utf8"))).toEqual({ event: "APPROVE" });
+
+  // Recovery can copy a failed run's last message verbatim into review.json.
+  const blocking = { conclusion: "failure", summary: "Fix this", commits: [{ sha: "head", conclusion: "failure" }], annotations: [] };
+  writeFileSync(join(setup.dir, "review.json"), "\n" + JSON.stringify(blocking), { flag: "a" });
+  rmSync(join(setup.dir, "submitted.json"));
+  expect(run("Publish check run", setup).exitCode).not.toBe(0);
+  expect(readFileSync(join(setup.dir, "check.json"), "utf8")).toBe("");
+  expect(run("Publish PR review", setup).exitCode).not.toBe(0);
+  expect(existsSync(join(setup.dir, "submitted.json"))).toBe(false);
+});
+
 test("success reviews keep useful text and omit empty comments", () => {
   const text = "Disabling built-in filtering also disables DOM sorting for custom items.";
   const earlier = [{ user: { login: "reviewer[bot]" }, state: "COMMENTED", body: text }];
