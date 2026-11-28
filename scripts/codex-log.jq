@@ -44,6 +44,8 @@ def body_render: (try fromjson catch null) as $j | if $j == null then dim else $
 # Keep each operation recognizable when the viewer strips ANSI colours.
 def edit_mark: ({add: "\u001b[32m+\u001b[0m", update: "\u001b[33m~\u001b[0m", delete: "\u001b[31m-\u001b[0m"}[. // ""] // . // "?");
 def edit_path: "\(.kind | edit_mark) \(.path)";
+# The label names the operation, in its own colour: a whole edit is `~ edit`, a new file `+ write`, a removal `- delete`.
+def edit_kind($kind): if $kind == "add" then "\u001b[32m+ write\u001b[0m" elif $kind == "delete" then "\u001b[31m- delete\u001b[0m" else "\u001b[33m~ edit\u001b[0m" end;
 def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
 # A reset also keeps the final whitespace cleanup from trimming diff context.
 def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "\u001b[90m" end)\(.)\u001b[0m";
@@ -94,9 +96,17 @@ if type == "string" then fromjson? // {type: "error", message: .} else . end
   elif .type == "item.completed" and .item.type == "file_change" then
     (.item.changes // []) as $changes
     | ($changes | length) as $count
-    | (if $count == 0 or $count > 4 then "\($count) files" else ($changes | map(edit_path) | join(", ")) end) as $preview
+    | (if $count == 0 or $count > 4 then "\($count) files"
+       elif $count == 1 then $changes[0].path
+       else ($changes | map(edit_path) | join(", ")) end) as $preview
     | (if $count > 0 and all($changes[]; .patch != null) then ($changes | {added: (map(.patch.added) | add), removed: (map(.patch.removed) | add)} | " (\(edit_stats))") else "" end) as $stats
-    | fold("\u001b[36medit\u001b[0m \(if .item.status == "failed" then "\u001b[31m[failed]\u001b[0m " else "" end)\($preview)\($stats)"; $changes | map(edit_body) | join("\n"))
+    | ($changes | map(.kind) | unique) as $kinds
+    | (if ($kinds | length) == 1 then edit_kind($kinds[0]) else "\u001b[33m~ edit\u001b[0m" end) as $label
+    # One file is already named in the title, so its body is just the patch.
+    | (if $count == 1 and $changes[0].patch != null then ($changes[0].patch.lines | map(edit_line) | join("\n"))
+       elif $count == 1 then ($changes[0] | edit_path)
+       else ($changes | map(edit_body) | join("\n")) end) as $body
+    | fold("\($label) \(if .item.status == "failed" then "\u001b[31m[failed]\u001b[0m " else "" end)\($preview)\($stats)"; $body)
   # A search folds its query and results; the other actions name their target instead.
   elif .type == "item.completed" and .item.type == "web_search" then
     .item as $search
