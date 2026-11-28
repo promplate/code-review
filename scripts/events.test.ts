@@ -53,7 +53,8 @@ function runLoggedHook(log: string, overrides = {}) {
   expect(formatted.exitCode).toBe(0);
   expect(formatted.stderr.toString()).toBe("");
   const activities = injected.split("\n").filter(Boolean).map(line => JSON.parse(line));
-  const contexts = JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line));
+  // A hook that correctly delivers nothing prints nothing.
+  const contexts = hook.output ? JSON.parse(hook.output).reason.split("\n").slice(1, -1).map((line: string) => JSON.parse(line)) : [];
   expect(contexts).toEqual(activities.map(({ workflow, ...context }) => context));
   // Each activity is a group whose body is the delivered record; assertions read the headers.
   const text = formatted.stdout.toString().split("\n").filter(line => line.startsWith("::group::")).map(line => line.slice("::group::".length)).join("\n").replace(/\u001b\[[0-9;]*m/g, "");
@@ -429,20 +430,23 @@ test("activity links drop this repository's prefix and keep external ones", () =
 });
 
 test("an edited pull request title and body reach the review", () => {
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "New title", body: "New description", head: { sha: "head" } } }, "edit"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { title: { from: "Old title" }, body: { from: "Old description" } },
+    pull_request: { number: 7, title: "New title", body: "New description", head: { sha: "head" } } }, "edit"));
   expect(output).toContain('\\"title\\":\\"New title\\"');
   expect(output).toContain('\\"body\\":\\"New description\\"');
 });
 
 test.each([null, ""])("clearing a PR description preserves an explicit empty body (%j)", (body) => {
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { body: { from: "Old description" } },
+    pull_request: { number: 7, title: "Unchanged title", body, head: { sha: "head" } } }, "clear-description"));
   const activity = JSON.parse(JSON.parse(output).reason.split("\n")[1]);
   expect(activity.pull_request.body).toBe("");
 });
 
 test("a truncated edit says so instead of hiding the change", () => {
   const body = "x".repeat(2000) + "TAIL";
-  const { output } = runHook(frame("pull_request", { action: "edited", pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));
+  const { output } = runHook(frame("pull_request", { action: "edited", changes: { title: { from: "Old title" }, body: { from: "Old description" } },
+    pull_request: { number: 7, title: "t".repeat(201), body, head: { sha: "head" } } }, "long-edit"));
   expect(output).toContain("truncated at 2000 of 2004 characters");
   expect(output).not.toContain("TAIL");
   expect(output).toContain("truncated at 200 of 201 characters");
@@ -1049,6 +1053,24 @@ test("an issue wakes the agent without a verdict schema", () => {
   expect(out).not.toContain("JSON review");
   expect(out).not.toContain("--output-schema");
   expect(out).toContain(`--output-last-message\n${join(dir, "last-message.md")}\n`);
+});
+
+test("the issue prompt consumes the triggering comment before the next hook", () => {
+  const { dir, env } = fixture();
+  const trigger = { action: "created", sender: human, issue: { number: 7 }, comment: { id: 9, body: "Review the examples" } };
+  writeFileSync(join(dir, "event.json"), JSON.stringify(trigger));
+  writeFileSync(join(dir, "sse.jsonl"), frame("issue_comment", trigger, "trigger")
+    + frame("issue_comment", { ...trigger, comment: { id: 10, body: "Include the README" } }, "follow-up"));
+  const issueEnv = { ...env, AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "7", GITHUB_EVENT_NAME: "issue_comment", ACTIVITY_ID: "trigger" };
+  const run = step("Run codex review").run;
+  const setup = run.slice(run.indexOf("# Seed the hook receipts"), run.indexOf("fresh() {"));
+  const prompts = Bun.spawnSync(["bash", "-ec", setup + '\nprintf "%s\\n" "$OPEN" "$CONTINUE"'], { env: issueEnv });
+  expect(prompts.exitCode).toBe(0);
+  expect(prompts.stdout.toString().match(/Review the examples/g)).toHaveLength(2);
+  const hook = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], { env: issueEnv, stdin: Buffer.from('{"hook_event_name":"Stop"}') });
+  expect(hook.exitCode).toBe(0);
+  expect(hook.stdout.toString()).toContain("Include the README");
+  expect(hook.stdout.toString()).not.toContain("Review the examples");
 });
 
 test("issue runs propagate Codex failures without requiring a verdict", () => {
@@ -2020,6 +2042,32 @@ function runGate(dir: string, env: Record<string, string>) {
   return readFileSync(join(dir, "github-env"), "utf8");
 }
 
+test.each(["pull_request", "pull_request_target"])("seeded %s edits carry the sender's write permission", event => {
+  const { dir, env } = fixture();
+  const edit = { action: "edited", sender: human, changes: { body: { from: "Earlier body" } },
+    pull_request: { number: 7, title: "Unchanged", body: "New description", head: { sha: "head" } } };
+  writeFileSync(join(dir, "event.json"), JSON.stringify(edit));
+  executable(dir, "gh", `#!/bin/sh
+[ "$*" = "api repos/owner/repo/collaborators/collaborator/permission --jq .permission" ] || exit 1
+echo "$TEST_PERMISSION"
+`);
+  mkdirSync(join(dir, "scripts"));
+  writeFileSync(join(dir, "scripts/subscribe.sh"), "exit 0\n");
+  const subscription = step("Subscribe PR updates via SSE").run;
+  for (const permission of ["read", "write"]) {
+    const gate = runGate(dir, { ...env, GITHUB_EVENT_NAME: event, TEST_PERMISSION: permission });
+    expect(gate).not.toContain("SKIP=true");
+    const seed = Bun.spawnSync(["bash", "-ec", 'set -a\nsource "$GITHUB_ENV"\n' + subscription], {
+      env: { ...env, ACTIVITY_WRITER: "false", GITHUB_ACTION_PATH: dir, GITHUB_EVENT_NAME: event },
+    });
+    expect(seed.exitCode).toBe(0);
+    const { contexts } = runLoggedHook(readFileSync(join(dir, "sse.jsonl"), "utf8"));
+    expect(contexts[0].pull_request.body).toBe(permission === "write" ? edit.pull_request.body : undefined);
+    expect(contexts[0]).not.toHaveProperty("changes");
+    expect(contexts[0].pull_request).not.toHaveProperty("title");
+  }
+});
+
 test("the action distinguishes commit statuses on the same SHA", async () => {
   const { dir, env } = fixture(), ids: string[] = [];
   for (const id of [1, 2, 1]) {
@@ -2250,4 +2298,119 @@ test("hosted same run path with different workflow ID retains failure", () => {
   expect(result.exitCode).toBe(1);
   expect(result.stdout.toString()).toContain("test: failure");
   expectTailReleased(dir);
+});
+
+test("an issue run hears its own issue and new issues that name it", () => {
+  const comment = { id: 9, body: "Also check the retry path", html_url: "https://github.com/owner/repo/issues/77#issuecomment-9" };
+  const asked = frame("issue_comment", { action: "created", issue: { number: 77 }, comment }, "asked");
+  const elsewhere = frame("issue_comment", { action: "created", issue: { number: 78 }, comment: { ...comment, id: 10 } }, "elsewhere");
+  const named = frame("issues", { action: "opened", issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.",
+    html_url: "https://github.com/owner/repo/issues/79" } }, "named");
+  const unrelated = frame("issues", { action: "opened", issue: { number: 80, state: "open", title: "Unrelated", body: "" } }, "unrelated");
+  const branchComment = frame("commit_comment", { action: "created", comment: { id: 11, body: "About this commit", commit_id: "head" } }, "branch-comment");
+  const { contexts, text, output } = runLoggedHook(asked + elsewhere + named + unrelated + branchComment, { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  const message = JSON.parse(output).reason;
+  expect(message).toStartWith("New GitHub activity on issue #77:");
+  expect(message).not.toContain("JSON review");
+  expect(contexts).toEqual([
+    { event: "issue_comment", action: "created", sender: human, issue: { number: 77 }, comment: { ...comment, html_url: "/issues/77#issuecomment-9" } },
+    { event: "issues", action: "opened", sender: human,
+      issue: { number: 79, state: "open", title: "Follow-up for #77", body: "Split from #77.", html_url: "/issues/79" } },
+  ]);
+  expect(text.trim().split(/\n+/)).toEqual([
+    "issue_comment/created collaborator /issues/77#issuecomment-9",
+    "issues/opened collaborator /issues/79",
+  ]);
+});
+
+test("an interrupted issue subscription recovers the issue discussion", () => {
+  const { contexts } = runLoggedHook(frame("subscription_recovery", { reason: "connection_failed" }), { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "77" });
+  expect(contexts[0].recovery).toContain("issue #77");
+  expect(contexts[0].recovery).toContain("write access");
+});
+
+test("label, assignee and preview deployment changes reach the review with what changed", () => {
+  const pull_request = { number: 7, head: { sha: "head" } };
+  const labeled = frame("pull_request", { action: "labeled", number: 7, pull_request, label: { name: "skip-review" } }, "labeled");
+  const assigned = frame("pull_request", { action: "assigned", number: 7, pull_request, assignee: { login: "maintainer" } }, "assigned");
+  const deployed = frame("deployment_status", { action: "created", deployment: { sha: "head", ref: "feature", environment: "Preview" },
+    deployment_status: { state: "success", environment_url: "https://preview.example.test", target_url: "" } }, "deployed");
+  const stale = frame("deployment_status", { action: "created", deployment: { sha: "older", ref: "feature", environment: "Preview" },
+    deployment_status: { state: "success", environment_url: "https://old.example.test" } }, "stale");
+  const opened = frame("pull_request", { action: "opened", number: 8, pull_request: { ...pull_request, number: 8, title: "Retry the upload", body: "Covers #7." } }, "opened");
+  const other = frame("pull_request", { action: "opened", number: 9, pull_request: { ...pull_request, number: 9, title: "Unrelated work", body: "Fixes #71." } }, "other");
+  const foreign = frame("issues", { action: "opened", issue: { number: 10, title: "Follow-up", body: "Fixes upstream/repo#7." } }, "foreign");
+  const self = frame("pull_request", { action: "opened", number: 7, pull_request: { ...pull_request, body: "Feedback on #7." } }, "self");
+  const { contexts, text } = runLoggedHook(labeled + assigned + deployed + stale + opened + other + foreign + self);
+  expect(contexts).toEqual([
+    { event: "pull_request", action: "labeled", sender: human, pull_request: { number: 7, head: { sha: "head" } }, label: { name: "skip-review" } },
+    { event: "pull_request", action: "assigned", sender: human, pull_request: { number: 7, head: { sha: "head" } }, assignee: { login: "maintainer" } },
+    { event: "deployment_status", action: "created", sender: human, deployment: { sha: "head", ref: "feature", environment: "Preview" },
+      deployment_status: { state: "success", environment_url: "https://preview.example.test", target_url: "" } },
+    { event: "pull_request", action: "opened", sender: human,
+      pull_request: { number: 8, head: { sha: "head" }, title: "Retry the upload", body: "Covers #7." } },
+  ]);
+  expect(text.trim().split(/\n+/)).toEqual([
+    "pull_request/labeled collaborator",
+    "pull_request/assigned collaborator",
+    "deployment_status/created Preview:success https://preview.example.test",
+    "pull_request/opened collaborator",
+  ]);
+});
+
+test("untrusted side references and unchanged issue prose do not reach the reviewer", () => {
+  const issue = { number: 8, title: "Regarding #7", body: "Old description" };
+  const outsider = frame("issues", { action: "opened", issue }, "outsider", false);
+  const outsiderPr = frame("pull_request", { action: "opened", pull_request: { number: 8, title: "Regarding #7", body: "Outsider text" } }, "outsider-pr", false);
+  expect(runLoggedHook(outsider + outsiderPr).contexts).toEqual([]);
+
+  const labeled = frame("issues", { action: "labeled", issue, label: { name: "triage" } }, "labeled");
+  const edited = frame("issues", { action: "edited", issue, changes: { body: { from: "Earlier body" } } }, "edited");
+  const { contexts } = runLoggedHook(labeled + edited, { PR_NUMBER: "", ISSUE_NUMBER: "8" });
+  expect(contexts[0]).toMatchObject({ action: "labeled", issue: { number: 8 }, label: { name: "triage" } });
+  expect(contexts[0].issue).not.toHaveProperty("title");
+  expect(contexts[0].issue).not.toHaveProperty("body");
+  expect(contexts[1]).toMatchObject({ action: "edited", issue: { number: 8, body: issue.body } });
+  expect(contexts[1].issue).not.toHaveProperty("title");
+});
+
+test("deployment statuses preserve the reported environment and log URL", () => {
+  const deployment = { sha: "head", environment: "Staging" };
+  const url = "https://ci.example.test/deployment/1";
+  const status = { state: "failure", environment: "Preview", environment_url: "", log_url: url, target_url: url };
+  const { contexts, text } = runLoggedHook(frame("deployment_status", { action: "created", deployment, deployment_status: status }));
+  expect(contexts[0].deployment_status).toEqual(status);
+  expect(text.trim()).toBe(`deployment_status/created Preview:failure ${url}`);
+});
+
+test("a truncated side issue directs the reviewer to the issue", () => {
+  const issue = { number: 8, title: "Regarding Owner/Repo#7", body: "x".repeat(2001) };
+  const { contexts } = runLoggedHook(frame("issues", { action: "opened", issue }));
+  expect(contexts[0].issue.body).toEndWith("read the full text from issue #8]");
+});
+
+test("an edited issue comment keeps the broker's identity and is skipped once the agent took it", () => {
+  const setup = fixture();
+  mkdirSync(join(setup.dir, "sessions"), { recursive: true });
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "edited", sender: human, issue: { number: 7 }, comment: { id: 9, body: "first revision", updated_at: "2026-11-27T00:00:00Z" } }));
+  const env = { GITHUB_EVENT_NAME: "issue_comment", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "", ISSUE_NUMBER: "7", AGENT: "true", HEAD_SHA: "head" };
+  const first = /ACTIVITY_ID=(.*)/.exec(runGate(setup.dir, env))![1];
+  // The identity is the five-field one the broker also derives; a body in the key would never match its delivery.
+  const expected = new Bun.CryptoHasher("sha256").update("issue_comment:edited:9::2026-11-27T00:00:00Z").digest("hex").slice(0, 40);
+  expect(first).toBe(expected);
+  // Once that revision is a receipt of the running agent, a queued job must present it no longer.
+  writeFileSync(join(setup.dir, "sessions/.github-deliveries.json"), JSON.stringify([first]));
+  writeFileSync(join(setup.dir, "sessions/.github-published-head"), "head\n");
+  expect(runGate(setup.dir, env)).toContain("SKIP=true");
+});
+
+test("a second label on the same issue is new activity", () => {
+  const setup = fixture();
+  executable(setup.dir, "gh", "#!/usr/bin/env bash\nprintf 'write\\n'\n");
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ action: "labeled", sender: human, issue: { number: 7 }, label: { name: "triage" } }));
+  const env = { GITHUB_EVENT_NAME: "issues", GITHUB_EVENT_PATH: join(setup.dir, "event.json"), PR_NUMBER: "", ISSUE_NUMBER: "7", AGENT: "true", HEAD_SHA: "head" };
+  // Each label webhook starts its own run, so identity follows the run rather than the unchanged payload.
+  expect(runGate(setup.dir, { ...env, GITHUB_RUN_ID: "12" })).toContain("ACTIVITY_ID=trigger:12");
+  expect(runGate(setup.dir, { ...env, GITHUB_RUN_ID: "13" })).toContain("ACTIVITY_ID=trigger:13");
 });

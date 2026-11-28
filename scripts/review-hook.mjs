@@ -30,8 +30,11 @@ try {
     try { appendFileSync(log, lines(result.delivered.map(value => JSON.stringify(value)))); } catch {}
   }
   if (result.context) {
-    const subject = process.env.PR_NUMBER ? `PR #${process.env.PR_NUMBER}` : `branch ${process.env.HEAD_BRANCH}`;
-    const message = `New GitHub activity on ${subject}:\n${result.context}\nTake it into account, answer each message where it was posted when useful, and output the JSON review covering what this run saw.`;
+    const issue = process.env.AGENT === "true" && process.env.ISSUE_NUMBER;
+    const subject = issue ? `issue #${issue}` : process.env.PR_NUMBER ? `PR #${process.env.PR_NUMBER}` : `branch ${process.env.HEAD_BRANCH}`;
+    const instruction = issue ? "Continue working on the issue and reply there when useful."
+      : "Take it into account, answer each message where it was posted when useful, and output the JSON review covering what this run saw.";
+    const message = `New GitHub activity on ${subject}:\n${result.context}\n${instruction}`;
     const output = Buffer.from(JSON.stringify(event === "Stop" ? { decision: "block", reason: message }
       : { hookSpecificOutput: { hookEventName: event, additionalContext: message } }, null, 2) + "\n");
     // Complete stdout before acknowledging delivery, including partial writes.

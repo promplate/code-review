@@ -476,6 +476,20 @@ test("a cached session without a conversation does not become a fork", () => {
   expect(existsSync(join(fork, "sessions"))).toBe(true);
 });
 
+test.each(["created", "deleted"])("a queued issue comment skips a checkpointed %s delivery", action => {
+  const setup = fixture({ ...comment, action, issue: { number: 7 } });
+  executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
+  const env = { AGENT: "true", PR_NUMBER: "", ISSUE_NUMBER: "7" };
+  const first = gate(setup, env);
+  expect(first).not.toContain("SKIP=true");
+  const id = /ACTIVITY_ID=(.*)/.exec(first)![1];
+  writeFileSync(join(setup.dir, "injected-deliveries.log"), id + "\n");
+  expect(run("Checkpoint published review", setup, env).exitCode).toBe(0);
+  expect(gate(setup, { ...env, HEAD_SHA: "new-default-branch-head" })).toContain("SKIP=true");
+  writeFileSync(join(setup.dir, "event.json"), JSON.stringify({ ...comment, action, issue: { number: 7 }, comment: { id: 2 } }));
+  expect(gate(setup, env)).not.toContain("SKIP=true");
+});
+
 test("hook receipts survive publication and restore from the cached JSON format", () => {
   const setup = fixture();
   executable(setup.dir, "gh", "#!/bin/sh\nprintf 'write\\n'\n");
