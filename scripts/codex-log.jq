@@ -100,11 +100,10 @@ if type == "string" then fromjson? // {type: "error", message: .} else . end
        elif $count == 1 then $changes[0].path
        else ($changes | map(edit_path) | join(", ")) end) as $preview
     | (if $count > 0 and all($changes[]; .patch != null) then ($changes | {added: (map(.patch.added) | add), removed: (map(.patch.removed) | add)} | " (\(edit_stats))") else "" end) as $stats
-    | ($changes | map(.kind) | unique) as $kinds
-    | (if ($kinds | length) == 1 then edit_kind($kinds[0]) else "\u001b[33m~ edit\u001b[0m" end) as $label
+    # One label for the set only when every change is the same operation; `edit_kind` names the rest `~ edit`.
+    | edit_kind(if all($changes[]; .kind == $changes[0].kind) then $changes[0].kind else null end) as $label
     # One file is already named in the title, so its body is just the patch.
     | (if $count == 1 and $changes[0].patch != null then ($changes[0].patch.lines | map(edit_line) | join("\n"))
-       elif $count == 1 then ($changes[0] | edit_path)
        else ($changes | map(edit_body) | join("\n")) end) as $body
     | fold("\($label) \(if .item.status == "failed" then "\u001b[31m[failed]\u001b[0m " else "" end)\($preview)\($stats)"; $body)
   # A search folds its query and results; the other actions name their target instead.
