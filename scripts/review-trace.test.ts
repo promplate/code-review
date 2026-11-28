@@ -269,6 +269,27 @@ test("Codex 0.171 durable completion-only items retain Code Mode commands and MC
   expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|code_mode-|different-turn|foreign/);
 });
 
+test("completion-only Extension items export known kinds and keep payload fields out of metadata", async () => {
+  const f = fixture();
+  const items = [
+    { kind: "web.search", query: "PRIVATE_QUERY", action: null, results: [{ text: "PRIVATE_RESULT" }] },
+    { kind: "image_gen.generation", status: "completed", revisedPrompt: "PRIVATE_PROMPT", savedPath: "/PRIVATE_PATH" },
+    { kind: "clock.sleep", durationMs: 1000 },
+    { kind: "private.future_kind" },
+  ];
+  writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
+    + f.line(1, "event_msg", { type: "task_started", turn_id: "turn" })
+    + items.map((item, i) => f.line(2000 + i, "event_msg", { type: "item_completed", turn_id: "turn",
+      started_at_ms: f.since + 1000 + i, completed_at_ms: f.since + 2000 + i,
+      item: { type: "Extension", id: `PRIVATE_CALL_${i}`, ...item } })).join("")
+    + f.line(3000, "event_msg", { type: "task_complete" }));
+  const events = await collectRollout(f.file, { since: f.since });
+  expect(events.filter(event => event.kind === "tool").map(event => [event.toolName, event.status])).toEqual([
+    ["web.search", "unknown"], ["image_gen.generation", "success"], ["clock.sleep", "unknown"],
+  ]);
+  expect(JSON.stringify(events)).not.toMatch(/PRIVATE_|private\.future_kind/);
+});
+
 test("lifecycle and model records for the same call deduplicate; legacy MCP failures keep only their status", async () => {
   const f = fixture();
   writeFileSync(f.file, f.line(0, "session_meta", { id: "session" })
