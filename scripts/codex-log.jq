@@ -50,10 +50,12 @@ def edit_stats: "\u001b[32m+\(.added)\u001b[0m \u001b[31m-\(.removed)\u001b[0m";
 # A reset also keeps the final whitespace cleanup from trimming diff context.
 def edit_line: "\(if startswith("+") then "\u001b[32m" elif startswith("-") then "\u001b[31m" else "\u001b[90m" end)\(.)\u001b[0m";
 def edit_body: edit_path + (if .patch then " \(.patch | edit_stats)" + (.patch.lines | map("\n" + edit_line) | join("")) else "" end);
+# Actions decodes percent escapes on the group command line. A multiline shell command continues as ordinary output.
+def group: "::group::" + (if env.REVIEW_HOSTED == "true" then . else sub("^(?<title>[^\n]*)"; .title | gsub("%"; "%25")) end);
 # Item titles are data too; break command markers there and suppress commands while printing their bodies.
 def fold($title; $body):
   ($body | gsub("\r"; "")) as $out
-  | "::group::\($title | gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​"))"
+  | ($title | gsub("\r"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​") | group)
     + (if $out == "" then ""
        elif $out | test("##\\[|::") then "\n::stop-commands::\($stop)\n" + $out + "\n::\($stop)::"
        else "\n" + $out end)
@@ -73,7 +75,7 @@ if type == "string" then fromjson? // {type: "error", message: .} else . end
   elif .type == "item.completed" and .item.type == "command_execution" then
     (.item.aggregated_output | gsub("\r"; "") | rtrimstr("\n") | gsub("(?m)[ \t]+$"; "")) as $out
     # Multiline scripts reach stdout before output suppression; break command markers as in injected activity.
-    | ("::group::\u001b[90m$\u001b[0m \(.item.command | script | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​"))"
+    | (("\u001b[90m$\u001b[0m \(.item.command | script | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | gsub("##\\["; "#​#[") | gsub(":(?=:)"; ":​"))" | group)
       + (if ($out | test("##\\[")) or ($out | test("(?m)^\\s*::")) then "\n::stop-commands::\($stop)\n" + ($out | dim) + "\n::\($stop)::"
          elif $out == "" then "" else "\n" + ($out | dim) end)
       + "\n::endgroup::")
@@ -87,8 +89,9 @@ if type == "string" then fromjson? // {type: "error", message: .} else . end
       + (if $body == "" then "" else "\n" + ($body | gsub("\r"; "") | gsub("(?m)[ \t]+$"; "") | body_render) end)
       + (if $call.error then "\n\u001b[31m\($call.error.message | gsub("\r"; "") | gsub("(?m)[ \t]+$"; ""))\u001b[0m" else "" end)
       | gsub("\r"; "")) as $out
-    | ("::group::\($call.server).\($call.tool)"
+    | (("\($call.server).\($call.tool)"
       + (if $args == "" then "" else " " + ($args | if length > 160 then .[0:160] else . end | jsontext) + (if ($args | length) > 160 then "\u001b[90m…\u001b[0m" else "" end) end)
+      | group)
       # Results and errors can contain workflow commands, including legacy markers after ANSI escapes.
       + (if $out | test("##\\[|::") then "\n::stop-commands::\($stop)" + $out + "\n::\($stop)::" else $out end)
       + "\n::endgroup::")
