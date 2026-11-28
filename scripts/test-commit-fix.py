@@ -261,7 +261,7 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory(prefix="commit-fix-") as tmp:
             ROOT = Path(tmp)
             (ROOT / "scripts").mkdir()
-            (ROOT / "scripts/retry.sh").write_text('#!/usr/bin/env bash\nexec "$@"\n')
+            (ROOT / "scripts/retry.sh").write_text('#!/usr/bin/env bash\ncase "$1" in --idempotent|--idempotent-delete) shift;; esac\nexec "$@"\n')
             (ROOT / "bin").mkdir()
             gh = ROOT / "bin/gh"
             gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} '

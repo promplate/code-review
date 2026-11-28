@@ -19,7 +19,7 @@ export GITHUB_STEP_SUMMARY="$RUNNER_TEMP/summary.md"
 export UV_CACHE_DIR="$RUNNER_TEMP/uv/cache" UV_TOOL_DIR="$RUNNER_TEMP/uv/tools" UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/uv/python"
 mkdir -p "$CODEX_HOME/sessions" "$RUNNER_TEMP"
 umask 077
-rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json"
+rm -f "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/check-publication-attempted"
 SSE_PID= review_started=false published=false check_published=false check_started=false
 # Optional progress index for callers that redirect stdout and stderr to a file. The
 # newline makes each boundary safe for line-oriented readers and credential masking.
@@ -38,9 +38,9 @@ result() {
 finish_without_review() {
   if [ -n "${CHECK_ID:-}" ]; then
     # A caller may queue a check before scheduling us; preserve completed verdicts while closing unused pending checks.
-    status=$(retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" --jq .status </dev/null)
+    status=$(retry --idempotent gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" --jq .status </dev/null)
     if [ "$status" != completed ]; then
-      retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
+      retry --idempotent gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
         -f 'output[title]=Hosted review skipped' -f 'output[summary]=The scheduled review is no longer needed for this pull request.' </dev/null >/dev/null
     fi
   fi
@@ -58,24 +58,25 @@ cleanup() {
   if [ "$code" != 0 ]; then
     result failed
     # A supplied check may hold an earlier verdict until this attempt successfully starts it.
-    if [ "$check_started" = true ] && [ "$check_published" != true ]; then
-      retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
+    # A failed publication may have applied its verdict; leave uncertain checks for reconciliation.
+    if [ "$check_started" = true ] && [ "$check_published" != true ] && [ ! -e "$RUNNER_TEMP/check-publication-attempted" ]; then
+      retry --idempotent gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=completed -f conclusion=neutral \
         -f 'output[title]=Review failed' -f 'output[summary]=The hosted review failed before completing publication. See the hosted run for details.' </dev/null >/dev/null || true
     fi
   fi
-  [ -z "${EYES_REACTION_PATH:-}" ] || retry gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null >/dev/null || true
+  [ -z "${EYES_REACTION_PATH:-}" ] || retry --idempotent-delete gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null >/dev/null || true
   rm -rf "$CODEX_HOME/.tmp"
   exit "$code"
 }
 trap cleanup EXIT
 step resolve
-pr=$(retry gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" </dev/null)
+pr=$(retry --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" </dev/null)
 current=$(jq -r .head.sha <<< "$pr")
 if ! jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" >/dev/null; then finish_without_review skipped; exit 0; fi
 if [ "$current" != "$HEAD_SHA" ]; then finish_without_review superseded "$current"; exit 0; fi
 export HEAD_BRANCH="$(jq -r .head.ref <<< "$pr")" BASE="$(jq -r .base.ref <<< "$pr")" PR_AUTHOR="$(jq -r .user.login <<< "$pr")"
 if [ "$PR_AUTHOR" = "$BOT_LOGIN" ] && [ "$(jq -r .draft <<< "$pr")" = true ]; then finish_without_review skipped; exit 0; fi
-if [ -z "${DEFAULT_BRANCH:-}" ]; then DEFAULT_BRANCH=$(retry gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch </dev/null); fi
+if [ -z "${DEFAULT_BRANCH:-}" ]; then DEFAULT_BRANCH=$(retry --idempotent gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch </dev/null); fi
 export DEFAULT_BRANCH
 export TRIGGER_SENDER="$(jq -r '.sender.login // "unknown"' "$GITHUB_EVENT_PATH")" TRIGGER_TYPE="$(jq -r '.sender.type // "unknown"' "$GITHUB_EVENT_PATH")"
 # The checkout must be exactly the authorized head; a cached worktree cannot silently review another revision.
@@ -90,7 +91,7 @@ if [ -z "${CHECK_ID:-}" ]; then
   CHECK_ID=$(retry gh api "repos/$GITHUB_REPOSITORY/check-runs" -f name=code-review -f head_sha="$HEAD_SHA" -f status=in_progress \
     -f details_url="$DETAILS_URL" -f "external_id=$SESSION_KEY" -f 'output[title]=Restoring the Codex session…' -f 'output[summary]=Preparing the hosted review.' --jq .id </dev/null)
 else
-  retry gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=in_progress -f details_url="$DETAILS_URL" </dev/null >/dev/null
+  retry --idempotent gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID" -X PATCH -f status=in_progress -f details_url="$DETAILS_URL" </dev/null >/dev/null
 fi
 check_started=true
 export CHECK_ID

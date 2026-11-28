@@ -7,7 +7,7 @@ const scripts = process.env.REVIEW_SCRIPTS_PATH || import.meta.dir;
 const homes: string[] = [];
 afterEach(() => { for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture(errors: string[]) {
+function fixture(errors: string[], policy = "--idempotent", errorBody?: string) {
   const dir = mkdtempSync(join(tmpdir(), "review-retry-"));
   homes.push(dir);
   writeFileSync(join(dir, "gh"), `#!${process.execPath}
@@ -18,7 +18,7 @@ const count = existsSync(file) ? readFileSync(file, "utf8").trim().split("\\n").
 appendFileSync(file, JSON.stringify({ args: process.argv.slice(2), input: await Bun.stdin.text() }) + "\\n");
 const errors = JSON.parse(process.env.ERRORS);
 if (count < errors.length) {
-  console.log(JSON.stringify({ message: errors[count] }));
+  console.log(process.env.ERROR_BODY ?? JSON.stringify({ message: errors[count] }));
   console.error(errors[count]);
   process.exit(1);
 }
@@ -26,13 +26,35 @@ console.log("ok");
 console.error("success diagnostic");
 `, { mode: 0o755 });
   writeFileSync(join(dir, "sleep"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$RUNNER_TEMP/delays"\n', { mode: 0o755 });
-  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, ERRORS: JSON.stringify(errors), GITHUB_ACTION_PATH: resolve(scripts, ".."), GITHUB_REPOSITORY: "owner/repo" };
+  const env = { ...process.env, PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, ERRORS: JSON.stringify(errors), ERROR_BODY: errorBody, GITHUB_ACTION_PATH: resolve(scripts, ".."), GITHUB_REPOSITORY: "owner/repo" };
   return { dir, env,
     calls: () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line)) : [],
     delays: () => existsSync(join(dir, "delays")) ? readFileSync(join(dir, "delays"), "utf8").trim().split("\n").map(Number) : [],
-    run: (args = ["api", "graphql"], input = "") => Bun.spawnSync(["bash", join(scripts, "retry.sh"), "gh", ...args], { env, stdin: Buffer.from(input), timeout: 3000 }),
+    run: (args = ["api", "graphql"], input = "") => Bun.spawnSync(["bash", join(scripts, "retry.sh"), ...(policy ? [policy] : []), "gh", ...args], { env, stdin: Buffer.from(input), timeout: 3000 }),
   };
 }
+
+test("a retryable GET can return an error body beginning with an HTTP status line", () => {
+  const setup = fixture(["gh: Bad Gateway (HTTP 502)"], "--idempotent", "HTTP/1.1 422 Unprocessable Content\r\nupstream unavailable");
+  const result = setup.run(["api", "repos/owner/repo"]);
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe("ok\n");
+  expect(setup.delays()).toEqual([1]);
+});
+
+test("a lost progress update lets the tool run after one attempt", () => {
+  const setup = fixture(["unexpected EOF"]);
+  const result = Bun.spawnSync(["bash", join(scripts, "review-hook.sh")], {
+    env: { ...setup.env, CHECK_ID: "10" }, timeout: 3000,
+    stdin: Buffer.from(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } })),
+  });
+  expect(result.exitCode).toBe(0);
+  expect(setup.calls()).toHaveLength(1);
+  const [call] = setup.calls();
+  expect(call.args).toEqual(["api", "repos/owner/repo/check-runs/10", "-X", "PATCH", "--input", "-"]);
+  expect(JSON.parse(call.input).output.summary).toContain("ls");
+  expect(setup.delays()).toEqual([]);
+});
 
 test.each([
   ...[400, 401, 403, 404, 422].map(status => `gh: request failed (HTTP ${status})`),
@@ -56,122 +78,64 @@ test.each([
   expect(setup.delays()).toEqual([]);
 });
 
-test("a read that loses its reply retries, a write does not", () => {
-  const read = fixture(['Post "https://api.github.com/graphql": unexpected EOF']);
-  expect(read.run(["api", "repos/owner/repo/pulls/7/reviews"]).exitCode).toBe(0);
-  expect(read.calls()).toHaveLength(2);
-  expect(read.delays()).toEqual([1]);
-  const write = fixture(['fatal: the remote end hung up unexpectedly']);
-  const result = write.run(["api", "graphql", "--input", "-"], '{"query":"mutation { example }"}');
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s)");
-  expect(write.calls()).toHaveLength(1);
-});
-
-test.each([
-  ["-H", "Accept: application/vnd.github+json"],
-  ["--preview", "mercy"],
-  ["-ip", "mercy"],
-])("a GraphQL read retries with %s before the endpoint", (flag, value) => {
-  const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", flag, value, "graphql", "-f", "query={viewer{login}}"]);
-  expect(result.exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(2);
-});
-
-test("a GraphQL document keeps the write guard unless it opens with query", () => {
-  const commented = fixture(["unexpected end of JSON input"]);
-  expect(commented.run(["api", "graphql", "-f", "query=# note\nquery { viewer { login } }"]).exitCode).toBe(0);
-  const fragment = fixture(["unexpected end of JSON input"]);
-  const result = fragment.run(["api", "graphql", "-f", "query=fragment F on User { login } mutation { example }"]);
-  expect(result.exitCode).toBe(1);
-  expect(fragment.calls()).toHaveLength(1);
-});
-
-test("a read that returns an empty body retries, since the request changed nothing", () => {
-  const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "graphql", "-f", "query={viewer{login}}"]);
-  expect(result.exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(2);
-  expect(setup.delays()).toEqual([1]);
-});
-
-test("an anonymous GraphQL query with variables retries", () => {
-  const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "graphql", "-f", "query=query($login: String!) { user(login: $login) { id } }", "-f", "login=example"]);
-  expect(result.exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(2);
-});
-
-test("a GraphQL read stays a read when a field value mentions mutation", () => {
-  const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "graphql", "-f", 'query=query{repository(owner:"owner",name:"mutation-testing"){id}}']);
-  expect(result.exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(2);
-  expect(setup.delays()).toEqual([1]);
-});
-
 test.each([
   [["api", "repos/owner/repo/pulls/7/reviews", "--input", "-"], "{}"],
-  // A REST field flag makes the call a POST even without --input or -X.
-  [["api", "repos/owner/repo/check-runs", "-f", "name=code-review"], ""],
-  // A GraphQL document that mutates is a write too.
-  [["api", "graphql", "-f", "query=mutation { resolveReviewThread(input: {threadId: \"t\"}) { thread { isResolved } } }"], ""],
-  // A REST call stays REST when a field value happens to contain `graphql`, as the hosted check-run call can.
-  [["api", "repos/owner/repo/check-runs", "-f", "external_id=weekly graphql review", "-f", "name=code-review"], ""],
-])("a write that returns an empty body stops instead of duplicating itself: %j", (args, input) => {
-  const setup = fixture(["unexpected end of JSON input"]);
+  [["api", "repos/owner/repo/pulls/7/reviews", "--input=-"], "{}"],
+  [["api", "repos/owner/repo/check-runs", "--raw-field=name=code-review"], ""],
+  [["api", "graphql", "--input=-"], '{"query":"mutation { example }"}'],
+  [["api", "graphql", "--raw-field=query=mutation { example }"], ""],
+  [["api", "repos/owner/repo/pulls/7/reviews", "--method=GET", "-XPOST", "-f", "body=Reviewed"], ""],
+  [["api", "repos/owner/repo/check-runs/7", "-X", "PATCH", "--input", "-"], '{"output":{"annotations":[{}]}}'],
+  ...["mutation Submit", "mutation,Submit", "mutation# note\nSubmit"].flatMap(operation => {
+    const query = "query Read { viewer { login } }";
+    const mutation = `${operation} { addComment { id } }`;
+    return [`${query} ${mutation}`, `${mutation} ${query}`].map(document =>
+      [["api", "graphql", "--raw-field=query=" + document, "-f", "operationName=Submit"], ""]);
+  }),
+] as [string[], string][])("an undeclared operation never replays an unreadable response: %j", (args, input) => {
+  const setup = fixture(["unexpected end of JSON input"], "");
   const result = setup.run(args, input);
   expect(result.exitCode).toBe(1);
-  expect(result.stderr.toString()).toContain(`retry.sh: failed after 1 attempt(s): gh ${args.join(" ")}\n`);
-  expect(setup.calls()).toHaveLength(1);
+  expect(setup.calls()).toEqual([{ args, input }]);
+  expect(setup.delays()).toEqual([]);
+  expect(result.stderr.toString()).toContain("retry.sh: failed after 1 attempt(s):");
+});
+
+test.each([
+  "unexpected EOF", "read tcp: connection reset by peer", "i/o timeout",
+  "gh: HTTP 502", "gh: HTTP 503", "gh: HTTP 504",
+  "GraphQL: Something went wrong while executing your query",
+  "gh: Too Many Requests (HTTP 429)",
+])("an undeclared write never replays after %s", error => {
+  const setup = fixture([error], "");
+  const args = ["api", "graphql", "--input", "-"];
+  const input = '{"query":"mutation { example }"}';
+  expect(setup.run(args, input).exitCode).toBe(1);
+  expect(setup.calls()).toEqual([{ args, input }]);
   expect(setup.delays()).toEqual([]);
 });
 
-test("an explicit GET keeps field flags a read", () => {
+test.each([
+  ["api", "repos/owner/repo/actions/artifacts", "--method=GET", "--field=per_page=100"],
+  ["api", "graphql", "--raw-field=query=query($n: String!) { viewer { login } }"],
+  ["api", "graphql", "-f", 'query=query { search(query:"mutation testing",type:ISSUE,first:1){issueCount} }'],
+  ["api", "graphql", "-f", "query=query Read { viewer { login } } mutation Submit { addComment { id } }", "-f", "operationName=Read"],
+  ["api", "graphql", "-f", "query=mutation { resolveReviewThread { thread { isResolved } } }"],
+])("a declared idempotent operation retries without inspecting its arguments: %j", (...args) => {
   const setup = fixture(["unexpected end of JSON input"]);
-  const result = setup.run(["api", "repos/owner/repo/pulls/7/reviews", "--method", "GET", "-f", "per_page=100"]);
+  const result = setup.run(args);
   expect(result.exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(2);
+  expect(result.stdout.toString()).toBe("ok\n");
+  expect(setup.calls()).toEqual([{ args, input: "" }, { args, input: "" }]);
   expect(setup.delays()).toEqual([1]);
 });
 
-test("equals forms classify like their separate arguments", () => {
-  const input = fixture(["unexpected end of JSON input"]);
-  const result = input.run(["api", "graphql", "--input=-"], '{"query":"mutation { example }"}');
+test("an undeclared command wrapped in bash also executes only once", () => {
+  const setup = fixture(["unexpected EOF"], "");
+  const result = Bun.spawnSync(["bash", join(scripts, "retry.sh"), "bash", "-c", 'gh api graphql --input=-'], { env: setup.env, stdin: Buffer.from("{}"), timeout: 3000 });
   expect(result.exitCode).toBe(1);
-  expect(input.calls()).toHaveLength(1);
-  const get = fixture(["unexpected end of JSON input"]);
-  expect(get.run(["api", "repos/owner/repo/pulls/7/reviews", "--method=GET", "--field=per_page=100"]).exitCode).toBe(0);
-  const post = fixture(["unexpected end of JSON input"]);
-  expect(post.run(["api", "repos/owner/repo/check-runs", "--field=name=code-review"]).exitCode).toBe(1);
-});
-
-test.each(["--field=", "--raw-field=", "-F", "-f=", "-if"])("classify a GraphQL field attached to %s", flag => {
-  for (const [document, calls] of [["{viewer{login}}", 2], ["mutation { example }", 1]] as const) {
-    const setup = fixture(["unexpected end of JSON input"]);
-    const result = setup.run(["api", "graphql", flag + "query=" + document]);
-    expect(setup.calls()).toHaveLength(calls);
-    expect(result.exitCode).toBe(calls === 1 ? 1 : 0);
-  }
-});
-
-test.each([
-  ["--method=GET", "-XPOST", "-f", "body=Reviewed"],
-  ["-ifbody=Reviewed"],
-  ["-XPOST", "--template", "-XGET"],
-])("an attached REST write option keeps the write guard: %j", (...args) => {
-  const setup = fixture(["unexpected end of JSON input"]);
-  expect(setup.run(["api", "repos/owner/repo/pulls/7/reviews", ...args]).exitCode).toBe(1);
   expect(setup.calls()).toHaveLength(1);
-});
-
-test("a later mutation keeps the write guard even when a query opens the document", () => {
-  const document = "query Read { viewer { login } } mutation Add { addComment { id } }";
-  const selected = fixture(["unexpected end of JSON input"]);
-  expect(selected.run(["api", "graphql", "-f", `query=${document}`, "-f", "operationName=Add"]).exitCode).toBe(1);
-  const alone = fixture(["unexpected end of JSON input"]);
-  expect(alone.run(["api", "graphql", "-f", "query=query($n: String!) { viewer { login } }"]).exitCode).toBe(0);
+  expect(setup.delays()).toEqual([]);
 });
 
 test("a GraphQL server error retries", () => {
@@ -196,7 +160,7 @@ test.each([
 ])("transient failure retries and replays stdin: %s", error => {
   const setup = fixture([error]);
   const args = ["api", "graphql", "--input", "-"];
-  const input = '{"query":"mutation { example }"}';
+  const input = '{"query":"query { viewer { login } }"}';
   const result = setup.run(args, input);
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toBe("ok\n");
@@ -213,7 +177,7 @@ test.each([
 ])("rate limits retry after at least a minute and replay stdin: %s", error => {
   const setup = fixture([error]);
   const args = ["api", "graphql", "--input", "-"];
-  const input = '{"query":"mutation { example }"}';
+  const input = '{"query":"query { viewer { login } }"}';
   const result = setup.run(args, input);
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toBe("ok\n");
@@ -251,11 +215,18 @@ test("a permanent response after a network failure stops further retries", () =>
   expect(setup.delays()).toEqual([1]);
 });
 
-test("DELETE 404 remains an idempotent success", () => {
-  const setup = fixture(['gh: Not Found (HTTP 404)']);
-  expect(setup.run(["api", "repos/owner/repo/reactions/1", "-X", "DELETE"]).exitCode).toBe(0);
-  expect(setup.calls()).toHaveLength(1);
-  expect(setup.delays()).toEqual([]);
+test("only a declared idempotent delete treats 404 as success", () => {
+  const args = ["api", "repos/owner/repo/reactions/1", "-X", "DELETE"];
+  for (const [policy, exitCode] of [["", 1], ["--idempotent", 1], ["--idempotent-delete", 0]] as const) {
+    const setup = fixture(["gh: Not Found (HTTP 404)"], policy);
+    expect(setup.run(args).exitCode).toBe(exitCode);
+    expect(setup.calls()).toHaveLength(1);
+    expect(setup.delays()).toEqual([]);
+  }
+  const retry = fixture(["unexpected EOF", "gh: Not Found (HTTP 404)"], "--idempotent-delete");
+  expect(retry.run(args).exitCode).toBe(0);
+  expect(retry.calls()).toHaveLength(2);
+  expect(retry.delays()).toEqual([1]);
 });
 
 test.each([undefined, ""])("resolve-thread rejects missing PR_NUMBER (%j) before calling gh", pr => {

@@ -6,7 +6,7 @@ PUSHED=$(jq -Rrs '[split("\n")[] | select(startswith("data: ")) | .[6:] | fromjs
 # Pushes made with GITHUB_TOKEN, such as CI autofixes, start no workflow, so this review covers them instead of leaving them to a newer run.
 # The branch may move after the last Stop hook, before the SSE writer catches up.
 if [ -n "$PR_NUMBER" ]; then
-  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null) || {
+  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null) || {
     echo "::warning::Could not refresh PR #$PR_NUMBER before publication."; current=
     [ "${REVIEW_HOSTED:-}" != true ] || exit 1
   }
@@ -19,11 +19,11 @@ else
 # CI may push before this run subscribes, so whether a run exists tells them apart, not the push sender.
 for sha in $(git rev-parse HEAD) $PUSHED; do
   if [ "$sha" = "$HEAD_SHA" ]; then continue; fi
-  [ "$(GH_TOKEN=$REVIEW_ACTIONS_TOKEN bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha" \
+  [ "$(GH_TOKEN=$REVIEW_ACTIONS_TOKEN bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha" \
     --jq 'any(.workflow_runs[]; .name == env.GITHUB_WORKFLOW)' </dev/null)" = true ] || continue
   # A seeded trigger can name an older push; only a commit ahead of HEAD supersedes this review.
   # The comparison needs Contents access, which the App token already has.
-  if [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/compare/$HEAD_SHA...$sha" \
+  if [ "$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/compare/$HEAD_SHA...$sha" \
     --jq .status </dev/null)" = ahead ]; then NEWER=$sha; fi
 done
 fi
@@ -35,9 +35,9 @@ if [ -n "$NEWER" ]; then
   jq -n --arg newer "$NEWER" '{status: "completed", conclusion: "neutral", output: {
     title: ("Superseded by " + $newer[0:7] + " — review continues there"),
     summary: "A newer commit was pushed during this review, so no verdict is posted for this commit."}}' \
-    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
+    | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
   # The run that continues on the newer commit keeps its own reaction; this one is done waiting.
-  [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null
+  [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent-delete gh api "repos/$GITHUB_REPOSITORY/$EYES_REACTION_PATH" -X DELETE </dev/null
   exit 0
 fi
 # Hosted verdict recovery only needs to close a superseded check. Its verdict may be missing or invalid.
@@ -45,7 +45,7 @@ fi
 if [ -n "$current" ] && ! jq -e --arg sha "$current" 'any(.commits[]; .sha == $sha)' "$RUNNER_TEMP/review.json" > /dev/null; then
   echo "::warning::PR #$PR_NUMBER moved to $current after this review. A subsequent review run is needed for that head."
 fi
-jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
+payload=$(jq -n -L "$GITHUB_ACTION_PATH/scripts" --arg sha "$HEAD_SHA" --argjson review "$(cat "$RUNNER_TEMP/review.json")" '
 include "summary";
 ($review.commits[] | select(.sha == $sha)) as $commit | {
 name: "code-review", head_sha: $sha, status: "completed",
@@ -54,4 +54,48 @@ output: {
   title: (if $commit.conclusion == "failure" then "Blocking defect introduced here" else "Innocent commit" end),
   summary: ($review | summary_line($commit.conclusion)),
   annotations: [$review.annotations[:50][] | {path, start_line: .line, end_line: .line, annotation_level: .level, message}]
-}}' | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH --input -
+}}')
+retry_policy=()
+# GitHub appends annotations on every PATCH. A verdict with none can be sent again.
+if jq -e '.output.annotations == []' <<< "$payload" > /dev/null; then retry_policy=(--idempotent); fi
+endpoint="repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID"
+# A failed (or cancelled) publication may already have committed. Cleanup must
+# not race it with a neutral verdict, even if a subsequent read is inconclusive.
+touch "$RUNNER_TEMP/check-publication-attempted"
+patch_status=0
+# Request the actual status line for rejection detection, without logging response headers.
+bash "$GITHUB_ACTION_PATH/scripts/retry.sh" "${retry_policy[@]}" --report-rejection gh api "$endpoint" -X PATCH --input - <<< "$payload" >/dev/null || patch_status=$?
+[ "$patch_status" != 0 ] || exit 0
+
+# Reconcile the desired state instead of replaying a potentially applied PATCH.
+check=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint" </dev/null) || check=
+verdict_published() {
+  local annotations
+  [ -n "$check" ] || return 1
+  printf '%s\n' "$check" "$payload" | jq -e 'input as $expected |
+    .head_sha == $expected.head_sha and .status == $expected.status and .conclusion == $expected.conclusion
+    and .output.title == $expected.output.title and .output.summary == $expected.output.summary
+  ' >/dev/null || return 1
+  jq -e '.output.annotations == []' <<< "$payload" >/dev/null && return 0
+  annotations=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "$endpoint/annotations" --paginate </dev/null) || return 1
+  # Existing annotations can belong to earlier attempts; count matching entries, not just the total.
+  printf '%s\n' "$payload" "$annotations" | jq -en '
+    input.output.annotations as $expected
+    | [inputs[] | {path, start_line, end_line, annotation_level, message}] as $actual
+    | all($expected | group_by(.)[]; . as $group |
+        ([$actual[] | select(. == $group[0])] | length) >= ($group | length))
+  ' >/dev/null
+}
+if verdict_published; then
+  echo "::notice::Check run publication confirmed after a failed response."
+else
+  # Only definitive rejections of every request, plus a fresh read of the
+  # same unfinished check, makes the ordinary failure cleanup safe again.
+  if [ "$patch_status" = 2 ] && jq -e --arg sha "$HEAD_SHA" '.head_sha == $sha and .status == "in_progress"' <<< "$check" >/dev/null; then
+    rm -f "$RUNNER_TEMP/check-publication-attempted"
+    echo "::error::Check run publication rejected; allowing failure cleanup." >&2
+  else
+    echo "::error::Check run publication could not be confirmed; leaving the check unchanged." >&2
+  fi
+  exit 1
+fi

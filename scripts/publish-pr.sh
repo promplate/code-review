@@ -2,11 +2,11 @@
 set -eo pipefail
 # A hosted queue owns subsequent heads. Pin the submitted review to this head even if a push races the API request.
 if [ "$REVIEW_HOSTED" = true ]; then
-  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null)
+  current=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .head.sha </dev/null)
   if [ "$current" != "$HEAD_SHA" ]; then printf '%s\n' "$current" > "$RUNNER_TEMP/superseded"; exit 0; fi
 fi
 # The review state carries the verdict; its body is optional for approvals. GitHub rejects APPROVE and REQUEST_CHANGES on the App's own PRs.
-REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" </dev/null)
+REVIEWS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" </dev/null)
 # The last verdict as a whole, so the state it stands in and the head it judged cannot disagree.
 VERDICT=$(jq -c '[.[] | select(.user.login == env.BOT_LOGIN and .state != "COMMENTED")] | last // {}' <<< "$REVIEWS")
 LAST=$(jq -r '.state // ""' <<< "$VERDICT")
@@ -14,7 +14,7 @@ LAST=$(jq -r '.state // ""' <<< "$VERDICT")
 LAST_COMMENT=$(jq -r '[.[] | select(.user.login == env.BOT_LOGIN and .state == "COMMENTED")] | last | .body // ""' <<< "$REVIEWS")
 # A comment rarely changes the verdict, and repeating a change request would duplicate its threads.
 # Review comments must sit inside diff hunks, so must-fix issues elsewhere go into the body as permalinks, which GitHub renders as snippets.
-HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" --paginate \
+HUNKS=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" --paginate \
   --jq '.[] | {(.filename): [.patch // "" | scan("@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@") | (.[0] | tonumber) as $start | [$start, $start + (.[1] // "1" | tonumber)]]}' </dev/null | jq -cs add)
 # A finding an earlier review posted and nobody resolved is already on the pull request; posting it again would open a second thread for one root cause.
 # GraphQL bot logins omit the [bot] suffix used by REST.

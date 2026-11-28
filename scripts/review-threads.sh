@@ -9,7 +9,7 @@ usage() {
 
 read_api() {
   # A failed request can print an error body or a partial set of pages before the retry.
-  bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'response=$(gh api "$@") && printf "%s\n" "$response"' _ "$@" </dev/null
+  bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent bash -c 'response=$(gh api "$@") && printf "%s\n" "$response"' _ "$@" </dev/null
 }
 
 list_threads() {
@@ -44,7 +44,7 @@ case "${1:-}" in
       gh api graphql -f id="$2" -f body="$4" -f query='mutation($id: ID!, $body: String!) {
         addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } } }' >/dev/null
     fi
-    bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api graphql -f id="$2" -f query="mutation(\$id: ID!) {
+    bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api graphql -f id="$2" -f query="mutation(\$id: ID!) {
       ${1}ReviewThread(input: {threadId: \$id}) { thread { isResolved } } }" </dev/null >/dev/null
     ;;
   *) usage ;;

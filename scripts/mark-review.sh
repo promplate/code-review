@@ -9,11 +9,11 @@ if [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" != deleted ]; then
     pull_request_review_comment) [ -z "$comment" ] || subject="pulls/comments/$comment/reactions" ;;
   esac
 fi
-id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$subject" -f content=eyes --jq .id </dev/null) || {
+id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/$subject" -f content=eyes --jq .id </dev/null) || {
   # A comment can disappear after its webhook was queued; the PR body remains a usable target.
   [ "$subject" != "issues/$PR_NUMBER/reactions" ] || exit 1
   subject="issues/$PR_NUMBER/reactions"
-  id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/$GITHUB_REPOSITORY/$subject" -f content=eyes --jq .id </dev/null)
+  id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/$GITHUB_REPOSITORY/$subject" -f content=eyes --jq .id </dev/null)
 }
 [ -n "$id" ] || exit 1
 export EYES_REACTION_PATH="$subject/$id" EYES_REACTION_ID="$id"

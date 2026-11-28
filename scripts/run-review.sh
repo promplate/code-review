@@ -15,7 +15,7 @@ rm -f -- "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/superseded" "$RUNNER_TEMP/last
 # Start it in this step so the shell that reports usage can wait for its own child.
 (mkdir -p "$RUNNER_TEMP/prices" && cd "$RUNNER_TEMP/prices" && bun add --silent @pydantic/genai-prices > install.log 2>&1) &
 PRICE_PID=$!
-[ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH \
+[ "$AGENT" = true ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID -X PATCH \
   -f "output[title]=Reviewing…" -f "output[summary]=Codex is reading the diff." </dev/null > /dev/null
 jq -n --arg sha "$HEAD_SHA" --arg id "$CHECK_ID" '{sha: $sha, id: $id}' >> "$CODEX_HOME/check-runs.jsonl"
 # Seed the hook receipts from the restored session before processing new activity.

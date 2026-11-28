@@ -80,7 +80,7 @@ runs:
         # Installation tokens expire after an hour, which long reviews and merges waiting for CI outlast, so a background loop keeps the config fresh.
         ( while sleep "$(( interval * 9 / 10 ))"; do
             # A terminal error can end retry.sh immediately. Pause before asking the broker again.
-            until interval=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'refill > /dev/null && printf %s "$interval"' < /dev/null); do sleep 30; done
+            until interval=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent bash -c 'refill > /dev/null && printf %s "$interval"' < /dev/null); do sleep 30; done
           done ) >> "$RUNNER_TEMP/token.err" 2>&1 &
         echo "TOKEN_PID=$!" >> "$GITHUB_ENV"
 
@@ -112,7 +112,7 @@ runs:
         agent=$(jq -r 'if .issue and .issue.pull_request == null then "true" else "false" end' "$GITHUB_EVENT_PATH")
         # A manual dispatch carries no issue object, so its input decides: a pull request belongs in `pr`, because its runs share the session group that PR's own runs use.
         if [ -n "$DISPATCHED_ISSUE" ]; then
-          has_pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/issues/$DISPATCHED_ISSUE" --jq 'has("pull_request")' </dev/null) \
+          has_pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/issues/$DISPATCHED_ISSUE" --jq 'has("pull_request")' </dev/null) \
             || { echo "::error::#$DISPATCHED_ISSUE is not readable as an issue."; exit 1; }
           [ "$has_pr" = false ] || { echo "::error::#$DISPATCHED_ISSUE is a pull request; dispatch it with the pr input."; exit 1; }
           agent=true
@@ -120,7 +120,7 @@ runs:
         [ "$agent" != true ] || printf 'AGENT=true\nISSUE_NUMBER=%s\n' "$number" >> "$GITHUB_ENV"
         # A queued webhook can name an old head; only its PR number remains authoritative.
         pr=
-        [ "$agent" = true ] || [ -z "$number" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
+        [ "$agent" = true ] || [ -z "$number" ] || pr=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/pulls/$number" </dev/null)
         if [ -n "$pr" ]; then
           jq -e --arg repo "$GITHUB_REPOSITORY" '.head.repo.full_name == $repo' <<< "$pr" > /dev/null || { echo "SKIP=true" >> "$GITHUB_ENV"; echo "::notice::Fork PRs are not reviewed."; }
           jq -r '"PR_NUMBER=\(.number)\nHEAD_SHA=\(.head.sha)\nHEAD_BRANCH=\(.head.ref)\nBASE=\(.base.ref)\nPR_AUTHOR=\(.user.login)"' <<< "$pr" >> "$GITHUB_ENV"
@@ -136,7 +136,7 @@ runs:
           # An issue is not a review: its agent works on the default branch whatever ref the dispatch ran on.
           if [ -n "$DISPATCHED_ISSUE" ]; then
             head_branch=${{ github.event.repository.default_branch }}
-            head_sha=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/$head_branch" --jq .sha </dev/null)
+            head_sha=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/commits/$head_branch" --jq .sha </dev/null)
           else
             # Pushes outside PRs review the pushed branch, and a dispatch names the commit it wants reviewed, which the event's own SHA does not carry.
             head_branch=$GITHUB_REF_NAME head_sha=${DISPATCHED_SHA:-$GITHUB_SHA}
@@ -152,7 +152,7 @@ runs:
         # Resolve the config before restoring snapshots, whose names include its model.
         if [ -z "$CODEX_CONFIG" ] && [ -n "$CONFIG_FILE" ]; then
           # The default branch supplies trusted settings; each attempt replaces any failed response.
-          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$CONFIG_FILE" "$RUNNER_TEMP/config.toml" </dev/null
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent bash -c 'gh api "$1" -H "Accept: application/vnd.github.raw" > "$2"' _ "repos/${{ github.repository }}/contents/$CONFIG_FILE" "$RUNNER_TEMP/config.toml" </dev/null
           CODEX_CONFIG=$(cat "$RUNNER_TEMP/config.toml")
           echo "CODEX_CONFIG_FILE=$RUNNER_TEMP/config.toml" >> "$GITHUB_ENV"
         fi
@@ -298,20 +298,21 @@ runs:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
         DETAILS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/${{ job.check_run_id }}?pr=${{ env.PR_NUMBER }}&attempt=${{ github.run_attempt }}
       run: |
+        rm -f "$RUNNER_TEMP/check-publication-attempted"
         # Reuse an unfinished check run on this head: scripts/open-pr.sh leaves a queued one whose external_id is the session key of the review that opened this PR, and abandoned jobs leave in_progress ones.
-        unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=code-review" \
+        unfinished=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/commits/${{ env.HEAD_SHA }}/check-runs?check_name=code-review" \
           --jq 'first(.check_runs[] | select(.status != "completed")) | "\(.id) \(.external_id // "") \((.details_url // "") | capture("/actions/runs/(?<run>[0-9]+)").run // "") \((.details_url // "") | capture("[?&]attempt=(?<attempt>[0-9]+)").attempt // "")"' </dev/null)
         if [ -n "$unfinished" ]; then
           id=${unfinished%% *}; rest=${unfinished#* }; fork_key=${rest%% *}; rest=${rest#* }; owner=${rest%% *}; owner_attempt=${rest#* }
           # A completed owner left the check behind, and an earlier attempt of this run was interrupted before it could finish; any other live owner still has to be respected.
-          if [ -n "$owner" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" != completed ] \
+          if [ -n "$owner" ] && [ "$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/actions/runs/$owner" --jq .status </dev/null)" != completed ] \
             && ! { [ "$owner" = "$GITHUB_RUN_ID" ] && [ -n "$owner_attempt" ] && [ "$owner_attempt" != "$GITHUB_RUN_ATTEMPT" ]; }; then
             unfinished=
           fi
         fi
         if [ -n "$unfinished" ]; then
           echo "fork-key=$fork_key" >> "$GITHUB_OUTPUT"
-          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/$id -X PATCH -f status=in_progress -f details_url=$DETAILS_URL \
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/${{ github.repository }}/check-runs/$id -X PATCH -f status=in_progress -f details_url=$DETAILS_URL \
             -f "output[title]=Restoring the Codex session…" -f "output[summary]=Looking for an earlier review to continue." </dev/null > /dev/null
         else
           id=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs -f name=code-review \
@@ -477,7 +478,7 @@ runs:
         # A 404 is permanent: a file only this branch has becomes a warning, while one nobody has stays a wrong input.
         fetch() {
           local endpoint="repos/${{ github.repository }}/contents/$1"
-          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" bash -ec '
+          bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent bash -ec '
             if gh api "$1" -H "Accept: application/vnd.github.raw" > "$2" 2> "$3"; then cat "$3" >&2; exit 0; fi
             cat "$3" >&2; rm -f "$2"
             if [ -n "$4" ] && grep -q "HTTP 404" "$3" && git cat-file -e "HEAD:$5" 2> /dev/null; then echo "::warning::$4"; exit 0; fi
@@ -649,14 +650,14 @@ runs:
         # A draft this run opened can only fork the session it was written into; drafts an earlier run left pending were already waiting after a save.
         if [ -n "$(printf '%s' "$opened" | sed '/^$/d')" ]; then
           listed=false
-          [ -z "$SNAPSHOT_ID" ] || listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/actions/artifacts/$SNAPSHOT_ID" --jq '.expired == false' </dev/null) || listed=false
+          [ -z "$SNAPSHOT_ID" ] || listed=$(GH_TOKEN=${{ github.token }} bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api "repos/${{ github.repository }}/actions/artifacts/$SNAPSHOT_ID" --jq '.expired == false' </dev/null) || listed=false
           [ "$listed" = true ] || { echo "::warning::The session snapshot is unavailable, so drafts this run opened stay draft."; pending=$(comm -23 <(printf '%s\n' "$pending") <(printf '%s\n' "$opened" | sed '/^$/d' | sort -u)); [ -n "$pending" ] || exit 0; }
         fi
         left=
         while read -r url; do
           [ -n "$url" ] || continue
           # A draft closed or released by hand can never become ready here, so it leaves the list instead of being retried on every run.
-          draft=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr view "$url" --json state,isDraft --jq '.state == "OPEN" and .isDraft' </dev/null) || { left="$left$url"$'\n'; continue; }
+          draft=$(bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh pr view "$url" --json state,isDraft --jq '.state == "OPEN" and .isDraft' </dev/null) || { left="$left$url"$'\n'; continue; }
           [ "$draft" = true ] || continue
           bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh pr ready "$url" </dev/null || left="$left$url"$'\n'
         done <<< "$pending"
@@ -706,14 +707,15 @@ runs:
       env:
         GH_CONFIG_DIR: ${{ runner.temp }}/gh
       run: |
-        # A failure after the verdict is published, such as in the PR review, keeps that verdict.
-        [ "${{ steps.publish.outcome }}" = success ] || if [ "${{ job.status }}" = cancelled ]; then
-          jq -n '{status: "completed", conclusion: "cancelled", output: {title: "Review cancelled", summary: "The run was cancelled before Codex posted a verdict."}}'
-        else
-          jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
-        fi \
-          | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
-        [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
+        # Publication may have applied its verdict even if the response failed or the job was cancelled.
+        if [ "${{ steps.publish.outcome }}" != success ] && [ ! -e "$RUNNER_TEMP/check-publication-attempted" ]; then
+          if [ "${{ job.status }}" = cancelled ]; then
+            jq -n '{status: "completed", conclusion: "cancelled", output: {title: "Review cancelled", summary: "The run was cancelled before Codex posted a verdict."}}'
+          else
+            jq -n '{status: "completed", conclusion: "neutral", output: {title: "Review failed", summary: "Codex failed before posting a verdict."}}'
+          fi | bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent gh api repos/${{ github.repository }}/check-runs/${{ steps.check.outputs.id }} -X PATCH --input -
+        fi
+        [ -z "$EYES_REACTION_ID" ] || bash "$GITHUB_ACTION_PATH/scripts/retry.sh" --idempotent-delete gh api "repos/${{ github.repository }}/$EYES_REACTION_PATH" -X DELETE </dev/null
 
     - name: Stop the SSE subscription
       if: steps.app-token.outputs.skip != 'true' && (always())
